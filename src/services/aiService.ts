@@ -53,3 +53,20 @@ export const getLongitudinalInsight = async (studentName: string, gpa: number, m
   });
   return response.text;
 };
+
+export const getAnalyticsSummary = async (data: any, role: 'student' | 'instructor' | 'admin') => {
+  const ai = getAI();
+  const prompt = `Analyze the following ${role} performance data and provide a concise, actionable summary in markdown.
+  Data: ${JSON.stringify(data)}
+  Focus on: ${role === 'student' ? 'strengths, weaknesses, and career advice' : 'class trends, at-risk students, and module effectiveness'}.`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: prompt,
+    config: {
+      systemInstruction: "You are a senior academic analyst. Provide high-level insights based on data. Use professional tone and Markdown.",
+    }
+  });
+
+  return response.text;
+};

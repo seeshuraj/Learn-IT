@@ -27,7 +27,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         const user = await response.json();
         onLogin(user);
       } else {
-        setError("Invalid email. Try sarah@learnit.edu or instructor@learnit.edu");
+        setError("Invalid email. Try sarah@learnit.edu, instructor@learnit.edu, or admin@learnit.edu");
       }
     } catch (err) {
       setError("Connection failed");
@@ -104,6 +104,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
                 <button onClick={() => setEmail("sarah@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Sarah (Student)</button>
                 <button onClick={() => setEmail("michael@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Michael (Student)</button>
                 <button onClick={() => setEmail("instructor@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Dr. Aris (Instructor)</button>
+                <button onClick={() => setEmail("admin@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Admin</button>
               </div>
             </div>
           </div>

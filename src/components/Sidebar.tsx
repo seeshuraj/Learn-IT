@@ -25,9 +25,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, userR
       </div>
 
       <nav className="flex-1 px-4 py-4 space-y-1">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter(item => !item.roles || (userRole && item.roles.includes(userRole as any))).map((item) => {
           const isActive = currentPath === item.path;
-          const label = item.path === "/" && userRole === "instructor" ? "Instructor Home" : item.label;
+          const label = item.path === "/" && userRole === "instructor" ? "Instructor Home" : 
+                        item.path === "/" && userRole === "admin" ? "Admin Dashboard" : item.label;
           return (
             <button
               key={item.path}

@@ -18,15 +18,89 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
   const [course, setCourse] = useState<Course | null>(null);
   const [modules, setModules] = useState<Module[]>([]);
   const [selectedModule, setSelectedModule] = useState<Module | null>(null);
+  const [materials, setMaterials] = useState<any[]>([]);
   const [showChat, setShowChat] = useState(false);
+  const [isAddingModule, setIsAddingModule] = useState(false);
+  const [newModuleName, setNewModuleName] = useState("");
+
+  const isInstructor = user.role === 'instructor' && course.instructor_id === user.id;
 
   useEffect(() => {
     fetch("/api/courses").then(res => res.json()).then(courses => {
       const found = courses.find((c: Course) => c.id === Number(id));
       setCourse(found);
     });
-    fetch(`/api/courses/${id}/modules`).then(res => res.json()).then(setModules);
+    refreshModules();
   }, [id]);
+
+  useEffect(() => {
+    if (selectedModule) {
+      fetch(`/api/modules/${selectedModule.id}/materials`).then(res => res.json()).then(setMaterials);
+    }
+  }, [selectedModule]);
+
+  const refreshModules = () => {
+    fetch(`/api/courses/${id}/modules`).then(res => res.json()).then(setModules);
+  };
+
+  const handleAddModule = async () => {
+    if (!newModuleName.trim()) return;
+    try {
+      const response = await fetch(`/api/courses/${id}/modules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newModuleName, content: "" }),
+      });
+      if (response.ok) {
+        toast.success("Module added!");
+        setNewModuleName("");
+        setIsAddingModule(false);
+        refreshModules();
+      }
+    } catch (e) {
+      toast.error("Failed to add module");
+    }
+  };
+
+  const handleUploadNote = async (moduleId: number) => {
+    const title = prompt("Enter note title:");
+    if (!title) return;
+    try {
+      const response = await fetch(`/api/modules/${moduleId}/materials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, type: 'pdf', size: '1.2 MB' }),
+      });
+      if (response.ok) {
+        toast.success("Note uploaded!");
+        if (selectedModule?.id === moduleId) {
+          fetch(`/api/modules/${moduleId}/materials`).then(res => res.json()).then(setMaterials);
+        }
+      }
+    } catch (e) {
+      toast.error("Failed to upload note");
+    }
+  };
+
+  const handleAddAssignment = async (moduleId: number) => {
+    const title = prompt("Enter assignment title:");
+    if (!title) return;
+    const description = prompt("Enter assignment description:");
+    const due_date = prompt("Enter due date (YYYY-MM-DD):", "2026-05-01");
+    
+    try {
+      const response = await fetch(`/api/modules/${moduleId}/assignments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, description, due_date }),
+      });
+      if (response.ok) {
+        toast.success("Assignment created!");
+      }
+    } catch (e) {
+      toast.error("Failed to create assignment");
+    }
+  };
 
   if (!course) return null;
 
@@ -63,7 +137,35 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
-          <h2 className="text-xl font-bold text-slate-900 mb-4">Course Modules</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-slate-900">Course Modules</h2>
+            {isInstructor && (
+              <button 
+                onClick={() => setIsAddingModule(true)}
+                className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all"
+              >
+                + Add Module
+              </button>
+            )}
+          </div>
+
+          {isAddingModule && (
+            <div className="bg-white p-6 rounded-3xl border border-indigo-200 shadow-sm animate-in fade-in slide-in-from-top-2">
+              <h3 className="text-sm font-bold text-slate-900 mb-4">New Module</h3>
+              <input 
+                type="text" 
+                value={newModuleName}
+                onChange={(e) => setNewModuleName(e.target.value)}
+                placeholder="Module Name (e.g., Module 3: Advanced SQL)"
+                className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm mb-4 focus:ring-2 focus:ring-indigo-500"
+              />
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setIsAddingModule(false)} className="px-4 py-2 text-xs font-bold text-slate-500">Cancel</button>
+                <button onClick={handleAddModule} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">Create Module</button>
+              </div>
+            </div>
+          )}
+
           {modules.map((module, index) => (
             <div 
               key={module.id}
@@ -81,7 +183,9 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                   </div>
                   <div>
                     <h3 className="font-bold text-slate-900">{module.name}</h3>
-                    <p className="text-xs text-slate-500">2 Notes • 1 Video • 1 Assignment</p>
+                    <p className="text-xs text-slate-500">
+                      {materials.length > 0 && selectedModule?.id === module.id ? `${materials.length} Materials` : "View module content"}
+                    </p>
                   </div>
                 </div>
                 <ChevronRight className={`w-5 h-5 text-slate-400 transition-transform ${selectedModule?.id === module.id ? "rotate-90" : ""}`} />
@@ -96,31 +200,41 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                     className="border-t border-slate-50 bg-slate-50/50"
                   >
                     <div className="p-6 space-y-4">
+                      {isInstructor && (
+                        <div className="flex gap-2 mb-4">
+                          <button 
+                            onClick={() => handleUploadNote(module.id)}
+                            className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-bold text-slate-600 hover:border-indigo-200 transition-all flex items-center gap-2"
+                          >
+                            <Download className="w-3 h-3" /> Upload Note
+                          </button>
+                          <button 
+                            onClick={() => handleAddAssignment(module.id)}
+                            className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-bold text-slate-600 hover:border-indigo-200 transition-all flex items-center gap-2"
+                          >
+                            <FileText className="w-3 h-3" /> Add Assignment
+                          </button>
+                        </div>
+                      )}
+                      
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div className="bg-white p-4 rounded-2xl border border-slate-100 flex items-center justify-between group cursor-pointer hover:border-indigo-200 transition-all">
-                          <div className="flex items-center gap-3">
-                            <div className="bg-red-50 text-red-500 p-2 rounded-lg">
-                              <FileText className="w-5 h-5" />
+                        {materials.map((mat) => (
+                          <div key={mat.id} className="bg-white p-4 rounded-2xl border border-slate-100 flex items-center justify-between group cursor-pointer hover:border-indigo-200 transition-all">
+                            <div className="flex items-center gap-3">
+                              <div className={`${mat.type === 'pdf' ? 'bg-red-50 text-red-500' : 'bg-blue-50 text-blue-500'} p-2 rounded-lg`}>
+                                {mat.type === 'pdf' ? <FileText className="w-5 h-5" /> : <PlayCircle className="w-5 h-5" />}
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold text-slate-900">{mat.title}</p>
+                                <p className="text-[10px] text-slate-500 uppercase">{mat.size} • {mat.type}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="text-sm font-bold text-slate-900">Lecture Notes.pdf</p>
-                              <p className="text-[10px] text-slate-500">2.4 MB • PDF</p>
-                            </div>
+                            <Download className="w-4 h-4 text-slate-300 group-hover:text-indigo-500 transition-colors" />
                           </div>
-                          <Download className="w-4 h-4 text-slate-300 group-hover:text-indigo-500 transition-colors" />
-                        </div>
-                        <div className="bg-white p-4 rounded-2xl border border-slate-100 flex items-center justify-between group cursor-pointer hover:border-indigo-200 transition-all">
-                          <div className="flex items-center gap-3">
-                            <div className="bg-blue-50 text-blue-500 p-2 rounded-lg">
-                              <PlayCircle className="w-5 h-5" />
-                            </div>
-                            <div>
-                              <p className="text-sm font-bold text-slate-900">Module Overview.mp4</p>
-                              <p className="text-[10px] text-slate-500">15:20 • Video</p>
-                            </div>
-                          </div>
-                          <PlayCircle className="w-4 h-4 text-slate-300 group-hover:text-indigo-500 transition-colors" />
-                        </div>
+                        ))}
+                        {materials.length === 0 && (
+                          <p className="text-xs text-slate-400 italic col-span-2">No materials uploaded for this module yet.</p>
+                        )}
                       </div>
                       <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 flex items-center justify-between">
                         <div className="flex items-center gap-3">

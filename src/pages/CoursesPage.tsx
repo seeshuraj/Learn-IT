@@ -1,15 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { Course } from "../types";
+import { Course, User } from "../types";
 import { BookOpen, Search, Filter, ArrowRight, Star } from "lucide-react";
 import { Link } from "react-router-dom";
 
-export const CoursesPage: React.FC = () => {
+interface CoursesPageProps {
+  user: User;
+}
+
+export const CoursesPage: React.FC<CoursesPageProps> = ({ user }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    fetch("/api/courses").then(res => res.json()).then(setCourses);
-  }, []);
+    const endpoint = user.role === 'student' ? `/api/student/${user.id}/courses` : '/api/courses';
+    fetch(endpoint).then(res => res.json()).then(setCourses);
+  }, [user.id, user.role]);
 
   const filteredCourses = courses.filter(c => 
     c.name.toLowerCase().includes(search.toLowerCase()) || 

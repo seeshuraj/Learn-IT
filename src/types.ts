@@ -2,7 +2,8 @@ export interface User {
   id: number;
   name: string;
   email: string;
-  role: 'student' | 'instructor';
+  role: 'student' | 'instructor' | 'admin';
+  active?: number;
   year?: number;
   gpa?: number;
   major?: string;
@@ -14,6 +15,7 @@ export interface Course {
   name: string;
   instructor_id: number;
   instructor_name: string;
+  archived?: number;
 }
 
 export interface Module {
@@ -42,4 +44,7 @@ export interface Submission {
   feedback?: string;
   ai_suggestion?: string;
   assignment_title?: string;
+  student_name?: string;
+  course_name?: string;
+  submitted_at?: string;
 }

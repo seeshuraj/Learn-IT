@@ -2,8 +2,9 @@ import React, { useEffect, useState } from "react";
 import { User, Submission } from "../types";
 import { AnalyticsDashboard } from "../components/AnalyticsDashboard";
 import { Brain, Sparkles, Download, Loader2 } from "lucide-react";
-import { getLongitudinalInsight } from "../services/aiService";
+import { getLongitudinalInsight, getAnalyticsSummary } from "../services/aiService";
 import { toast, Toaster } from "sonner";
+import ReactMarkdown from "react-markdown";
 
 interface AnalyticsPageProps {
   user: User;
@@ -22,8 +23,8 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ user }) => {
     if (!stats) return;
     setIsAiLoading(true);
     try {
-      const insight = await getLongitudinalInsight(user.name, user.gpa || 0, user.major || "", stats.submissions);
-      setAiInsight(insight);
+      const summary = await getAnalyticsSummary(stats, user.role);
+      setAiInsight(summary || "");
       toast.success("AI Deep Dive Complete!");
     } catch (error) {
       toast.error("AI Analysis failed.");
@@ -64,7 +65,9 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ user }) => {
           </div>
           <div>
             <h3 className="text-lg font-bold text-indigo-900 mb-2">AI Longitudinal Insight</h3>
-            <p className="text-indigo-800 leading-relaxed">{aiInsight}</p>
+            <div className="text-indigo-800 leading-relaxed prose prose-indigo prose-sm max-w-none">
+              <ReactMarkdown>{aiInsight}</ReactMarkdown>
+            </div>
           </div>
         </div>
       )}

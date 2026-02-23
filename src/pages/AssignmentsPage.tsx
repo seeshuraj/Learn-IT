@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Assignment, User, Submission } from "../types";
 import { 
   FileText, Clock, CheckCircle2, AlertCircle, 
-  ArrowRight, Brain, Loader2, Send, ChevronDown, BookOpen
+  ArrowRight, Brain, Loader2, Send, ChevronDown, BookOpen, Plus
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { getGradingSuggestion } from "../services/aiService";
@@ -19,10 +19,40 @@ export const AssignmentsPage: React.FC<AssignmentsPageProps> = ({ user }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<{ grade: number; feedback: string } | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isAddingAssignment, setIsAddingAssignment] = useState(false);
 
   useEffect(() => {
-    fetch("/api/assignments").then(res => res.json()).then(setAssignments);
-  }, []);
+    const endpoint = user.role === 'student' ? `/api/student/${user.id}/assignments` : '/api/assignments';
+    fetch(endpoint).then(res => res.json()).then(setAssignments);
+  }, [user.id, user.role]);
+
+  const handleCreateAssignment = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const moduleId = Number(formData.get("module_id"));
+    const newAssignment = {
+      title: formData.get("title") as string,
+      description: formData.get("description") as string,
+      due_date: formData.get("due_date") as string,
+    };
+
+    try {
+      const response = await fetch(`/api/modules/${moduleId}/assignments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newAssignment),
+      });
+      if (response.ok) {
+        toast.success("Assignment created!");
+        setIsAddingAssignment(false);
+        // Refresh
+        const endpoint = user.role === 'student' ? `/api/student/${user.id}/assignments` : '/api/assignments';
+        fetch(endpoint).then(res => res.json()).then(setAssignments);
+      }
+    } catch (e) {
+      toast.error("Failed to create assignment");
+    }
+  };
 
   const handleGetAiSuggestion = async () => {
     if (!submissionText.trim()) return;
@@ -71,11 +101,58 @@ export const AssignmentsPage: React.FC<AssignmentsPageProps> = ({ user }) => {
           <h1 className="text-4xl font-bold text-slate-900">Assignments</h1>
           <p className="text-slate-500 mt-1">Track your progress and submit your work.</p>
         </div>
-        <div className="flex bg-white p-1 rounded-2xl border border-slate-200">
-          <button className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-indigo-600/20">Active</button>
-          <button className="px-4 py-2 text-slate-500 rounded-xl text-sm font-bold hover:bg-slate-50">Completed</button>
+        <div className="flex items-center gap-3">
+          {user.role === 'instructor' && (
+            <button 
+              onClick={() => setIsAddingAssignment(true)}
+              className="px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
+            >
+              <Plus className="w-5 h-5" /> Create Assignment
+            </button>
+          )}
+          <div className="flex bg-white p-1 rounded-2xl border border-slate-200">
+            <button className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-indigo-600/20">Active</button>
+            <button className="px-4 py-2 text-slate-500 rounded-xl text-sm font-bold hover:bg-slate-50">Completed</button>
+          </div>
         </div>
       </div>
+
+      {isAddingAssignment && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-[32px] shadow-2xl w-full max-w-md overflow-hidden"
+          >
+            <div className="p-8 border-b border-slate-50 bg-slate-50/50">
+              <h2 className="text-2xl font-bold text-slate-900">Create Assignment</h2>
+              <p className="text-sm text-slate-500">Assign a new task to your students.</p>
+            </div>
+            <form onSubmit={handleCreateAssignment} className="p-8 space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Module ID</label>
+                <input name="module_id" type="number" required className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" placeholder="e.g. 1" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Title</label>
+                <input name="title" required className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Assignment Title" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Description</label>
+                <textarea name="description" required className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 h-24 resize-none" placeholder="Instructions..." />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Due Date</label>
+                <input name="due_date" type="date" required className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
+              </div>
+              <div className="flex gap-3 pt-4">
+                <button type="button" onClick={() => setIsAddingAssignment(false)} className="flex-1 py-3 text-sm font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
+                <button type="submit" className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20">Create</button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-1 space-y-4">

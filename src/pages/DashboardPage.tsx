@@ -13,9 +13,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
 
   useEffect(() => {
-    fetch("/api/courses").then(res => res.json()).then(setCourses);
-    fetch("/api/assignments").then(res => res.json()).then(setAssignments);
-  }, []);
+    fetch(`/api/student/${user.id}/courses`).then(res => res.json()).then(setCourses);
+    fetch(`/api/student/${user.id}/assignments`).then(res => res.json()).then(setAssignments);
+  }, [user.id]);
 
   const upcomingAssignments = assignments.filter(a => a.status === "pending" || a.status === "overdue");
 
