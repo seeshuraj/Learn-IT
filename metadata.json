@@ -1,0 +1,5 @@
+{
+  "name": "LearnIT",
+  "description": "AI-Powered Learning Management System with longitudinal analytics, smart grading, and RAG-based module tutors.",
+  "requestFramePermissions": []
+}
