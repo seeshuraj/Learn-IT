@@ -9,12 +9,14 @@ import {
 } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
+import { ChatBot } from "./components/ChatBot";
 import { User } from "./types";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CoursesPage } from "./pages/CoursesPage";
 import { CourseDetailPage } from "./pages/CourseDetailPage";
 import { AssignmentsPage } from "./pages/AssignmentsPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { NotesPage } from "./pages/NotesPage";
 import { LoginPage } from "./pages/LoginPage";
 import { InstructorDashboard } from "./pages/InstructorDashboard";
 import { AdminDashboard } from "./pages/AdminDashboard";
@@ -24,8 +26,10 @@ import { AdminSettings } from "./pages/AdminSettings";
 
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {
-    const saved = localStorage.getItem("learnit_user");
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = sessionStorage.getItem("learnit_user");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
   });
   
   const navigate = useNavigate();
@@ -33,13 +37,13 @@ const AppContent: React.FC = () => {
 
   const handleLogin = (userData: User) => {
     setUser(userData);
-    localStorage.setItem("learnit_user", JSON.stringify(userData));
+    try { sessionStorage.setItem("learnit_user", JSON.stringify(userData)); } catch {}
     navigate("/");
   };
 
   const handleLogout = () => {
     setUser(null);
-    localStorage.removeItem("learnit_user");
+    try { sessionStorage.removeItem("learnit_user"); } catch {}
     navigate("/login");
   };
 
@@ -70,9 +74,9 @@ const AppContent: React.FC = () => {
             <Route path="/courses" element={<CoursesPage user={user!} />} />
             <Route path="/courses/:id" element={<CourseDetailPage user={user!} />} />
             <Route path="/assignments" element={<AssignmentsPage user={user!} />} />
+            <Route path="/notes" element={<NotesPage user={user!} />} />
             <Route path="/analytics" element={<AnalyticsPage user={user!} />} />
             
-            {/* Admin Routes */}
             {user?.role === 'admin' && (
               <>
                 <Route path="/admin/users" element={<AdminUserManagement />} />
@@ -83,6 +87,7 @@ const AppContent: React.FC = () => {
           </Routes>
         </main>
       </div>
+      {user?.role !== 'admin' && <ChatBot moduleTitle="General Course Assistant" />}
     </div>
   );
 };

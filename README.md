@@ -1,20 +1,75 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# LearnIT — AI-Powered University LMS
 
-# Run and deploy your AI Studio app
+> **YC-track project** — An LMS that uses LLMs to automate grading, let students chat with their own notes, and surface personalised performance analytics.
 
-This contains everything you need to run your app locally.
+## Live AI Features
 
-View your app in AI Studio: https://ai.studio/apps/0853d204-9788-48ca-bdaf-d313a647560d
+| Feature | Surface | Model |
+|---|---|---|
+| AI Grading Suggestions | Instructor Dashboard → Submissions | Gemini 2.0 Flash |
+| Notes-Aware Module Chatbot | Notes & AI Chat page | Gemini 2.0 Flash (RAG) |
+| Personalised Analytics Summary | My Analytics page | Gemini 2.0 Flash |
+| Floating Course Assistant | All student/instructor pages | Gemini 2.0 Flash |
 
-## Run Locally
+## Demo Credentials
 
-**Prerequisites:**  Node.js
+| Role | Email | Password |
+|---|---|---|
+| Student | student@learnit.com | password |
+| Instructor | instructor@learnit.com | password |
+| Admin | admin@learnit.com | password |
 
+## Setup
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm install
+cp .env.example .env   # Add your Gemini API key
+npm run dev
+```
+
+### Environment Variables
+
+```
+VITE_GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+> **No API key?** The app runs in demo mode with realistic mock AI responses — every AI feature is fully functional for demos without a key.
+
+## Tech Stack
+
+- **Frontend**: React 18 + TypeScript + Tailwind CSS + Framer Motion
+- **AI**: Google Gemini 2.0 Flash (REST API)
+- **Routing**: React Router v6
+- **Notifications**: Sonner
+- **Icons**: Lucide React
+
+## Architecture
+
+```
+src/
+  services/
+    aiService.ts        # All Gemini API calls (grading, chat, analytics)
+  pages/
+    InstructorDashboard # AI grading with accept/override tracking
+    NotesPage           # Per-module notes + RAG chatbot
+    AnalyticsPage       # Grade trends + AI summary + sparkline
+  components/
+    ChatBot             # Floating assistant on all pages
+```
+
+## YC Traction Metrics to Track
+
+- [ ] Number of instructors using AI grading suggestions
+- [ ] Accept rate vs override rate on AI grades
+- [ ] Number of chatbot questions answered per week
+- [ ] Students reporting improvement from analytics page
+
+## Roadmap
+
+- [ ] Backend API (Node/Express + PostgreSQL)
+- [ ] Real file upload → text extraction for notes RAG
+- [ ] Vector embeddings for note retrieval
+- [ ] Email alerts for at-risk students
+- [ ] Pilot with 1 real university department
