@@ -1,12 +1,14 @@
 {
-  "name": "react-example",
+  "name": "learnit",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
+    "build:server": "tsc --noEmit",
     "preview": "vite preview",
+    "start": "node --import tsx/esm server.ts",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },
@@ -16,6 +18,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "better-sqlite3": "^12.4.1",
     "clsx": "^2.1.1",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "framer-motion": "^12.34.3",
@@ -31,6 +34,8 @@
     "vite": "^6.2.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
