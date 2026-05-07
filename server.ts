@@ -146,7 +146,6 @@ async function nimChat(
 ): Promise<string> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) {
-    // fallback mock when no key is set
     return JSON.stringify({ score: 80, feedback: "Mock feedback — set NVIDIA_API_KEY.", strengths: ["Good attempt"], improvements: ["Add detail"] });
   }
   const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
@@ -177,7 +176,6 @@ async function startServer() {
   app.use(
     cors({
       origin: (origin, callback) => {
-        // allow requests with no origin (e.g. curl, Postman)
         if (!origin || allowedOrigins.includes(origin)) {
           callback(null, true);
         } else {
@@ -190,12 +188,12 @@ async function startServer() {
 
   app.use(express.json());
 
-  // ─── Health check ────────────────────────────────────────────────────────
+  // ─── Health ───────────────────────────────────────────────────────────────
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", env: process.env.NODE_ENV, ts: new Date().toISOString() });
   });
 
-  // ─── AUTH ────────────────────────────────────────────────────────────────
+  // ─── AUTH ─────────────────────────────────────────────────────────────────
   app.post("/api/login", (req, res) => {
     const { email } = req.body;
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
@@ -203,7 +201,7 @@ async function startServer() {
     else res.status(401).json({ error: "Invalid credentials" });
   });
 
-  // ─── COMMON ──────────────────────────────────────────────────────────────
+  // ─── COURSES ──────────────────────────────────────────────────────────────
   app.get("/api/courses", (_req, res) => {
     const courses = db.prepare(`
       SELECT c.*, u.name as instructor_name
@@ -245,7 +243,7 @@ async function startServer() {
     res.json({ id: result.lastInsertRowid });
   });
 
-  // ─── SUBMISSIONS ─────────────────────────────────────────────────────────
+  // ─── SUBMISSIONS ──────────────────────────────────────────────────────────
   app.get("/api/instructor/submissions", (_req, res) => {
     const submissions = db.prepare(`
       SELECT s.*, a.title as assignment_title, u.name as student_name, c.name as course_name
@@ -271,7 +269,7 @@ async function startServer() {
     res.json({ id: result.lastInsertRowid });
   });
 
-  // ─── STUDENT ─────────────────────────────────────────────────────────────
+  // ─── STUDENT ──────────────────────────────────────────────────────────────
   app.get("/api/student/:id/courses", (req, res) => {
     res.json(db.prepare(`
       SELECT c.*, u.name as instructor_name
@@ -303,7 +301,7 @@ async function startServer() {
     res.json({ user, submissions });
   });
 
-  // ─── ADMIN ───────────────────────────────────────────────────────────────
+  // ─── ADMIN ────────────────────────────────────────────────────────────────
   app.get("/api/admin/users", (_req, res) => {
     res.json(db.prepare("SELECT * FROM users").all());
   });
@@ -347,7 +345,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // ─── INSTRUCTOR ──────────────────────────────────────────────────────────
+  // ─── INSTRUCTOR ───────────────────────────────────────────────────────────
   app.get("/api/instructor/:id/courses", (req, res) => {
     res.json(db.prepare("SELECT * FROM courses WHERE instructor_id = ? AND archived = 0").all(req.params.id));
   });
@@ -369,7 +367,7 @@ async function startServer() {
     res.json({ id: result.lastInsertRowid });
   });
 
-  // ─── AI ENDPOINTS (server-side, key never exposed to browser) ────────────
+  // ─── AI ENDPOINTS ─────────────────────────────────────────────────────────
   app.post("/api/ai/grade", async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
@@ -381,10 +379,7 @@ async function startServer() {
             "Respond ONLY with a valid JSON object — no markdown, no extra text. " +
             'Shape: {"score":<int 0-100>,"feedback":"<2-3 sentences>","strengths":["...","..."],"improvements":["...","..."]}'  ,
         },
-        {
-          role: "user",
-          content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent?.slice(0, 3000)}`,
-        },
+        { role: "user", content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent?.slice(0, 3000)}` },
       ], { temperature: 0.3 });
       const cleaned = raw.replace(/```json|```/g, "").trim();
       res.json(JSON.parse(cleaned));
@@ -424,10 +419,7 @@ async function startServer() {
             "You are an ANALYTICS SUMMARY assistant for a university LMS. " +
             "Write a 3-4 sentence actionable summary. Bold key insights with **markdown**.",
         },
-        {
-          role: "user",
-          content: `Student: ${studentName}\nOverall: ${overallAverage}%\nSubmission rate: ${submissionRate}%\n\n${courseBreakdown}`,
-        },
+        { role: "user", content: `Student: ${studentName}\nOverall: ${overallAverage}%\nSubmission rate: ${submissionRate}%\n\n${courseBreakdown}` },
       ], { temperature: 0.4, maxTokens: 400 });
       res.json({ summary: answer });
     } catch (e: any) {
@@ -435,23 +427,18 @@ async function startServer() {
     }
   });
 
-  // ─── Static (production only — Vercel serves frontend separately) ─────────
+  // ─── Production static (single-server deploy) ─────────────────────────────
   if (isProduction) {
-    // In split-deploy mode (Vercel + Render), we do NOT serve frontend from here.
-    // If you ever want a single-server deploy, uncomment the lines below:
-    // app.use(express.static(path.join(__dirname, "dist")));
-    // app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "dist", "index.html")));
-    app.get("/", (_req, res) => res.json({ service: "LearnIT API", status: "running" }));
-  } else {
-    // Dev: proxy through Vite
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-    app.use(vite.middlewares);
+    app.use(express.static(path.join(__dirname, "dist")));
+    app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "dist", "index.html")));
   }
 
   const PORT = Number(process.env.PORT ?? 3000);
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`LearnIT API running on port ${PORT} [${process.env.NODE_ENV ?? "development"}]`);
+    console.log(`LearnIT API  →  http://localhost:${PORT}  [${process.env.NODE_ENV ?? "development"}]`);
+    if (!isProduction) {
+      console.log(`LearnIT App  →  http://localhost:5173  (Vite dev server)`);
+    }
   });
 }
 

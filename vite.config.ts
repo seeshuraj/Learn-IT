@@ -3,20 +3,18 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 
-// In development, Express (server.ts) embeds Vite as middleware on port 3000.
-// There is NO separate Vite dev server and therefore NO proxy needed.
-// The proxy block has been removed to prevent a self-referential loop where
-// Vite would proxy /api back to itself.
+// Dev architecture:
+//   Express (API)  → http://localhost:3000
+//   Vite  (React)  → http://localhost:5173  (proxies /api/* to :3000)
 //
-// To start dev: npm run dev  →  NODE_ENV=development tsx server.ts
-// Everything (API + HMR + React) is served from http://localhost:3000
+// Start with:  npm run dev
+// Which runs:  concurrently "cross-env NODE_ENV=development tsx server.ts" "vite"
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      // Only expose VITE_* prefixed vars to the browser bundle
       'import.meta.env.VITE_NVIDIA_API_KEY': JSON.stringify(env.VITE_NVIDIA_API_KEY ?? ''),
       'import.meta.env.VITE_API_BASE_URL': JSON.stringify(env.VITE_API_BASE_URL ?? ''),
     },
@@ -24,8 +22,15 @@ export default defineConfig(({ mode }) => {
       alias: { '@': path.resolve(__dirname, '.') },
     },
     server: {
+      port: 5173,
       hmr: process.env.DISABLE_HMR !== 'true',
-      // NO proxy — Vite runs as Express middleware in dev, not standalone
+      proxy: {
+        // Forward all /api requests to the Express server on :3000
+        '/api': {
+          target: 'http://localhost:3000',
+          changeOrigin: true,
+        },
+      },
     },
   };
 });
