@@ -1,115 +1,112 @@
-import React, { useState } from "react";
-import { User } from "../types";
-import { GraduationCap, ArrowRight, Mail, Lock, Loader2 } from "lucide-react";
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../services/api';
 
-interface LoginPageProps {
-  onLogin: (user: User) => void;
-}
+const DEMO_ACCOUNTS = [
+  { role: 'Admin',      email: 'admin@learnit.ie',      label: 'Admin' },
+  { role: 'Instructor', email: 'instructor@learnit.ie', label: 'Instructor' },
+  { role: 'Student',    email: 'student@learnit.ie',    label: 'Student' },
+];
 
-export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
-  const [email, setEmail] = useState("sarah@learnit.edu");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
+export default function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setIsLoading(true);
-    setError("");
-
+    setError('');
+    setLoading(true);
     try {
-      const response = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      
-      if (response.ok) {
-        const user = await response.json();
-        onLogin(user);
-      } else {
-        setError("Invalid email. Try sarah@learnit.edu, instructor@learnit.edu, or admin@learnit.edu");
-      }
-    } catch (err) {
-      setError("Connection failed");
+      const res = await api.login(email.trim().toLowerCase());
+      localStorage.setItem('learnit_user', JSON.stringify(res.user));
+      const role: string = res.user.role;
+      if (role === 'admin') navigate('/admin');
+      else if (role === 'instructor') navigate('/instructor');
+      else navigate('/dashboard');
+    } catch (err: any) {
+      setError(err.message ?? 'Login failed');
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  };
+  }
+
+  function quickLogin(demoEmail: string) {
+    setEmail(demoEmail);
+  }
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/20 blur-[120px] rounded-full"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/20 blur-[120px] rounded-full"></div>
-      </div>
-
-      <div className="w-full max-w-md relative">
-        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
-          <div className="p-8 bg-indigo-600 text-white text-center">
-            <div className="inline-flex bg-white/20 p-3 rounded-2xl mb-4">
-              <GraduationCap className="w-8 h-8" />
-            </div>
-            <h1 className="text-3xl font-bold mb-2">Welcome to LearnIT</h1>
-            <p className="text-indigo-100 text-sm">The AI-Powered Learning Experience</p>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-teal-50 to-slate-100 px-4">
+      <div className="w-full max-w-md">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center gap-3 mb-2">
+            <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="40" height="40" rx="10" fill="#01696f"/>
+              <text x="7" y="29" fontFamily="Georgia,serif" fontSize="26" fontWeight="bold" fill="white">L</text>
+              <circle cx="29" cy="12" r="5" fill="#4f98a3" opacity="0.9"/>
+            </svg>
+            <span className="text-2xl font-bold text-slate-800 tracking-tight">LearnIT</span>
           </div>
+          <p className="text-slate-500 text-sm">AI-Powered Learning Platform</p>
+        </div>
 
-          <div className="p-8">
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700 ml-1">Email Address</label>
-                <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input 
-                    type="email" 
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@university.edu"
-                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                    required
-                  />
-                </div>
-              </div>
+        {/* Card */}
+        <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
+          <h1 className="text-xl font-semibold text-slate-800 mb-1">Sign in</h1>
+          <p className="text-slate-500 text-sm mb-6">Enter your university email to continue</p>
 
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700 ml-1">Password</label>
-                <div className="relative">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input 
-                    type="password" 
-                    defaultValue="password"
-                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                    required
-                  />
-                </div>
-              </div>
-
-              {error && <p className="text-red-500 text-xs font-medium text-center">{error}</p>}
-
-              <button 
-                type="submit"
-                disabled={isLoading}
-                className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20 disabled:opacity-50"
-              >
-                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : (
-                  <>
-                    Sign In <ArrowRight className="w-5 h-5" />
-                  </>
-                )}
-              </button>
-            </form>
-
-            <div className="mt-8 pt-8 border-t border-slate-100 text-center">
-              <p className="text-slate-500 text-sm mb-4">Demo Accounts:</p>
-              <div className="flex flex-wrap justify-center gap-2">
-                <button onClick={() => setEmail("sarah@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Sarah (Student)</button>
-                <button onClick={() => setEmail("michael@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Michael (Student)</button>
-                <button onClick={() => setEmail("instructor@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Dr. Aris (Instructor)</button>
-                <button onClick={() => setEmail("admin@learnit.edu")} className="px-3 py-1 bg-slate-100 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-200 transition-colors">Admin</button>
-              </div>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="email">Email address</label>
+              <input
+                id="email"
+                type="email"
+                required
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@university.ie"
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
+              />
             </div>
+
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5 rounded-lg">{error}</div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg text-sm transition"
+            >
+              {loading ? 'Signing in…' : 'Sign in →'}
+            </button>
+          </form>
+
+          {/* Demo accounts */}
+          <div className="mt-6 pt-6 border-t border-slate-100">
+            <p className="text-xs text-slate-400 mb-3 uppercase tracking-wide font-medium">Demo accounts</p>
+            <div className="grid grid-cols-3 gap-2">
+              {DEMO_ACCOUNTS.map(a => (
+                <button
+                  key={a.role}
+                  onClick={() => quickLogin(a.email)}
+                  className="text-xs bg-slate-50 hover:bg-teal-50 hover:text-teal-700 border border-slate-200 hover:border-teal-300 text-slate-600 rounded-lg py-2 px-2 font-medium transition"
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400 mt-2">Click a role to pre-fill the email, then Sign in</p>
           </div>
         </div>
+
+        {/* Footer */}
+        <p className="text-center text-xs text-slate-400 mt-6">
+          LearnIT · Built with NVIDIA AI · TCD HPC
+        </p>
       </div>
     </div>
   );
-};
+}
