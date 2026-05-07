@@ -9,7 +9,7 @@ interface Assignment {
   due_date: string;
   max_grade: number;
   module_name: string;
-  course_title: string;
+  course_name: string;
   submission_id?: number;
   submission_content?: string;
   grade?: number;
@@ -17,10 +17,9 @@ interface Assignment {
   submitted_at?: string;
 }
 
-export default function AssignmentsPage() {
-  const userRaw = localStorage.getItem('learnit_user');
-  const user = userRaw ? JSON.parse(userRaw) : null;
+interface Props { user: any; }
 
+export default function AssignmentsPage({ user }: Props) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Assignment | null>(null);
@@ -46,7 +45,6 @@ export default function AssignmentsPage() {
       await api.submitAssignment(selected.id, user.id, content.trim());
       setSuccess('Assignment submitted successfully!');
       setContent('');
-      // refresh
       const updated = await api.getStudentAssignments(user.id);
       setAssignments(updated);
       setSelected(updated.find(a => a.id === selected.id) ?? null);
@@ -58,8 +56,8 @@ export default function AssignmentsPage() {
   }
 
   const filtered = assignments.filter(a => {
-    if (filter === 'pending') return !a.submission_id;
-    if (filter === 'submitted') return !!a.submission_id;
+    if (filter === 'pending') return !a.grade;
+    if (filter === 'submitted') return !!a.grade || !!a.submission_id;
     return true;
   });
 
@@ -76,7 +74,7 @@ export default function AssignmentsPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Assignments</h1>
-          <p className="text-slate-500 text-sm mt-1">{assignments.length} total · {assignments.filter(a => !a.submission_id).length} pending</p>
+          <p className="text-slate-500 text-sm mt-1">{assignments.length} total · {assignments.filter(a => !a.grade && !a.submission_id).length} pending</p>
         </div>
         <div className="flex gap-2">
           {(['all', 'pending', 'submitted'] as const).map(f => (
@@ -92,12 +90,11 @@ export default function AssignmentsPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Assignment list */}
         <div className="lg:col-span-2 space-y-3">
           {filtered.length === 0 && (
             <div className="text-center py-12 text-slate-400">
               <div className="text-3xl mb-2">📋</div>
-              <p className="text-sm">No assignments in this filter</p>
+              <p className="text-sm">No assignments here</p>
             </div>
           )}
           {filtered.map(a => (
@@ -105,15 +102,13 @@ export default function AssignmentsPage() {
               key={a.id}
               onClick={() => { setSelected(a); setContent(''); setError(''); setSuccess(''); }}
               className={`w-full text-left border rounded-xl p-4 transition ${
-                selected?.id === a.id
-                  ? 'border-teal-500 bg-teal-50'
-                  : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
+                selected?.id === a.id ? 'border-teal-500 bg-teal-50' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
               }`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-slate-800 text-sm truncate">{a.title}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{a.course_title} · {a.module_name}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{a.course_name} · {a.module_name}</p>
                 </div>
                 <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${
                   a.grade != null
@@ -132,7 +127,6 @@ export default function AssignmentsPage() {
           ))}
         </div>
 
-        {/* Detail / submit panel */}
         <div className="lg:col-span-3">
           {!selected ? (
             <div className="flex items-center justify-center h-64 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">
@@ -145,14 +139,15 @@ export default function AssignmentsPage() {
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
               <div>
                 <h2 className="text-lg font-semibold text-slate-800">{selected.title}</h2>
-                <p className="text-xs text-slate-500 mt-1">{selected.course_title} · {selected.module_name} · Due {new Date(selected.due_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {selected.course_name} · {selected.module_name} · Due {new Date(selected.due_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}
+                </p>
               </div>
 
               <div className="prose prose-sm prose-slate max-w-none bg-slate-50 rounded-lg p-4">
                 <ReactMarkdown>{selected.description}</ReactMarkdown>
               </div>
 
-              {/* Graded feedback */}
               {selected.grade != null && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                   <div className="flex items-center gap-2 mb-2">
@@ -167,18 +162,18 @@ export default function AssignmentsPage() {
                 </div>
               )}
 
-              {/* Already submitted but not graded */}
               {selected.submission_id && selected.grade == null && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <p className="text-sm text-blue-700 font-medium">✓ Submitted — awaiting grade</p>
-                  <p className="text-xs text-blue-500 mt-1">Submitted {selected.submitted_at ? new Date(selected.submitted_at).toLocaleDateString('en-IE') : ''}</p>
+                  <p className="text-xs text-blue-500 mt-1">
+                    Submitted {selected.submitted_at ? new Date(selected.submitted_at).toLocaleDateString('en-IE') : ''}
+                  </p>
                   {selected.submission_content && (
                     <p className="text-xs text-blue-600 mt-2 font-mono bg-blue-100 rounded p-2 line-clamp-3">{selected.submission_content}</p>
                   )}
                 </div>
               )}
 
-              {/* Submit form */}
               {!selected.submission_id && (
                 <form onSubmit={handleSubmit} className="space-y-3">
                   <label className="block text-sm font-medium text-slate-700">Your Answer</label>

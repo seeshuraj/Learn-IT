@@ -30,6 +30,8 @@ export const api = {
 
   // Modules
   getModuleMaterials: (moduleId: number) => request<any[]>(`/api/modules/${moduleId}/materials`),
+  uploadMaterial: (moduleId: number, title: string, type: string, size: string) =>
+    request<any>(`/api/modules/${moduleId}/materials`, { method: 'POST', body: JSON.stringify({ title, type, size }) }),
   getModuleAssignments: (moduleId: number) => request<any[]>(`/api/modules/${moduleId}/assignments`),
   createAssignment: (moduleId: number, data: any) =>
     request<any>(`/api/modules/${moduleId}/assignments`, { method: 'POST', body: JSON.stringify(data) }),
@@ -48,6 +50,7 @@ export const api = {
 
   // Instructor
   getInstructorCourses: (instructorId: number) => request<any[]>(`/api/instructor/${instructorId}/courses`),
+  getInstructorModules: (instructorId: number) => request<any[]>(`/api/instructor/${instructorId}/modules`),
   getCourseAnalytics: (courseId: number) => request<any>(`/api/instructor/courses/${courseId}/analytics`),
   createInstructorAssignment: (data: any) =>
     request<any>('/api/instructor/assignments', { method: 'POST', body: JSON.stringify(data) }),
