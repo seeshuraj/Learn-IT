@@ -11,18 +11,18 @@ import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { ChatBot } from "./components/ChatBot";
 import { User } from "./types";
-import DashboardPage from "./pages/DashboardPage";
-import CoursesPage from "./pages/CoursesPage";
-import CourseDetailPage from "./pages/CourseDetailPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { CoursesPage } from "./pages/CoursesPage";
+import { CourseDetailPage } from "./pages/CourseDetailPage";
 import AssignmentsPage from "./pages/AssignmentsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import NotesPage from "./pages/NotesPage";
 import LoginPage from "./pages/LoginPage";
-import InstructorDashboard from "./pages/InstructorDashboard";
-import AdminDashboard from "./pages/AdminDashboard";
-import AdminUserManagement from "./pages/AdminUserManagement";
-import AdminCourseManagement from "./pages/AdminCourseManagement";
-import AdminSettings from "./pages/AdminSettings";
+import { InstructorDashboard } from "./pages/InstructorDashboard";
+import { AdminDashboard } from "./pages/AdminDashboard";
+import { AdminUserManagement } from "./pages/AdminUserManagement";
+import { AdminCourseManagement } from "./pages/AdminCourseManagement";
+import { AdminSettings } from "./pages/AdminSettings";
 
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {
