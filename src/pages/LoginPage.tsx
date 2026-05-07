@@ -1,39 +1,34 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { User } from '../types';
 import { api } from '../services/api';
 
 const DEMO_ACCOUNTS = [
-  { role: 'Admin',      email: 'admin@learnit.ie',      label: 'Admin' },
-  { role: 'Instructor', email: 'instructor@learnit.ie', label: 'Instructor' },
-  { role: 'Student',    email: 'student@learnit.ie',    label: 'Student' },
+  { role: 'Admin',      email: 'admin@learnit.edu',      label: 'Admin' },
+  { role: 'Instructor', email: 'instructor@learnit.edu', label: 'Instructor' },
+  { role: 'Student',    email: 'sarah@learnit.edu',      label: 'Student' },
 ];
 
-export default function LoginPage() {
+interface LoginPageProps {
+  onLogin: (user: User) => void;
+}
+
+export default function LoginPage({ onLogin }: LoginPageProps) {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      const res = await api.login(email.trim().toLowerCase());
-      localStorage.setItem('learnit_user', JSON.stringify(res.user));
-      const role: string = res.user.role;
-      if (role === 'admin') navigate('/admin');
-      else if (role === 'instructor') navigate('/instructor');
-      else navigate('/dashboard');
+      const user = await api.login(email.trim().toLowerCase());
+      onLogin(user);
     } catch (err: any) {
-      setError(err.message ?? 'Login failed');
+      setError(err.message ?? 'Invalid credentials');
     } finally {
       setLoading(false);
     }
-  }
-
-  function quickLogin(demoEmail: string) {
-    setEmail(demoEmail);
   }
 
   return (
@@ -66,7 +61,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                placeholder="you@university.ie"
+                placeholder="you@university.edu"
                 className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
               />
             </div>
@@ -91,7 +86,8 @@ export default function LoginPage() {
               {DEMO_ACCOUNTS.map(a => (
                 <button
                   key={a.role}
-                  onClick={() => quickLogin(a.email)}
+                  type="button"
+                  onClick={() => setEmail(a.email)}
                   className="text-xs bg-slate-50 hover:bg-teal-50 hover:text-teal-700 border border-slate-200 hover:border-teal-300 text-slate-600 rounded-lg py-2 px-2 font-medium transition"
                 >
                   {a.label}
@@ -102,7 +98,6 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Footer */}
         <p className="text-center text-xs text-slate-400 mt-6">
           LearnIT · Built with NVIDIA AI · TCD HPC
         </p>
