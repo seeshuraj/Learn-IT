@@ -1,75 +1,101 @@
-# LearnIT — AI-Powered University LMS
+# LearnIT — AI-Powered LMS
 
-> **YC-track project** — An LMS that uses LLMs to automate grading, let students chat with their own notes, and surface personalised performance analytics.
+An AI-enhanced Learning Management System for universities. Supports student, instructor, and admin roles with AI-assisted grading, notes-based chatbot, and analytics summaries.
 
-## Live AI Features
+---
 
-| Feature | Surface | Model |
-|---|---|---|
-| AI Grading Suggestions | Instructor Dashboard → Submissions | Gemini 2.0 Flash |
-| Notes-Aware Module Chatbot | Notes & AI Chat page | Gemini 2.0 Flash (RAG) |
-| Personalised Analytics Summary | My Analytics page | Gemini 2.0 Flash |
-| Floating Course Assistant | All student/instructor pages | Gemini 2.0 Flash |
-
-## Demo Credentials
-
-| Role | Email | Password |
-|---|---|---|
-| Student | student@learnit.com | password |
-| Instructor | instructor@learnit.com | password |
-| Admin | admin@learnit.com | password |
-
-## Setup
+## Quick Start (Development)
 
 ```bash
+# 1. Install dependencies
 npm install
-cp .env.example .env   # Add your Gemini API key
+
+# 2. Copy env file and fill in values (NVIDIA_API_KEY optional — mock AI works without it)
+cp .env.example .env
+
+# 3. Start the dev server (Express + Vite on the same port)
 npm run dev
+
+# Open: http://localhost:3000
 ```
 
-### Environment Variables
+> **How it works in dev:** `server.ts` starts Express on port 3000 and embeds Vite as middleware. This means API routes (`/api/*`) and the React frontend (with HMR) are both served from a single port — no proxy needed, no separate terminals.
+
+---
+
+## Demo Accounts
+
+| Role | Email | Password |
+|------|-------|----------|
+| Admin | admin@learnit.edu | *(any — auth is email-only in demo)* |
+| Instructor | instructor@learnit.edu | *(any)* |
+| Student | sarah@learnit.edu | *(any)* |
+| Student | michael@learnit.edu | *(any)* |
+
+---
+
+## Project Structure
 
 ```
-VITE_GEMINI_API_KEY=your_gemini_api_key_here
+Learn-IT/
+├── server.ts          # Express API + Vite middleware (single entrypoint)
+├── src/
+│   ├── App.tsx        # React router + auth context
+│   ├── pages/         # Role-based page components
+│   ├── components/    # Shared UI components
+│   ├── services/
+│   │   ├── api.ts     # Typed API client
+│   │   └── aiService.ts
+│   ├── constants.ts   # Nav items
+│   └── types.ts       # Shared TypeScript types
+├── vite.config.ts
+├── package.json
+└── .env.example
 ```
 
-Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).
-
-> **No API key?** The app runs in demo mode with realistic mock AI responses — every AI feature is fully functional for demos without a key.
+---
 
 ## Tech Stack
 
-- **Frontend**: React 18 + TypeScript + Tailwind CSS + Framer Motion
-- **AI**: Google Gemini 2.0 Flash (REST API)
-- **Routing**: React Router v6
-- **Notifications**: Sonner
-- **Icons**: Lucide React
+| Layer | Tech |
+|-------|------|
+| Frontend | React 19, TypeScript, Tailwind CSS v4, Recharts |
+| Backend | Express, better-sqlite3, tsx |
+| AI | NVIDIA NIM (Mistral Large) via server-side proxy |
+| Dev server | Vite embedded as Express middleware |
+| Deployment | Vercel (frontend) + Render (API) |
 
-## Architecture
+---
 
+## Deployment
+
+### Backend (Render)
+
+1. Set environment: `NODE_ENV=production`, `PORT=3000`, `NVIDIA_API_KEY`, `CORS_ORIGIN`
+2. Build command: `npm install`
+3. Start command: `npm start`
+
+### Frontend (Vercel)
+
+1. Set `VITE_API_BASE_URL=https://your-render-url.onrender.com`
+2. Build command: `npm run build`
+3. Output directory: `dist`
+
+---
+
+## Common Issues
+
+### `POST /api/login` → 405
+
+This means you have a **standalone Vite dev server** (e.g. ran `vite` directly or an old `npm run dev` that only started Vite). The fix:
+
+```bash
+# Always use this — starts Express+Vite together:
+npm run dev
 ```
-src/
-  services/
-    aiService.ts        # All Gemini API calls (grading, chat, analytics)
-  pages/
-    InstructorDashboard # AI grading with accept/override tracking
-    NotesPage           # Per-module notes + RAG chatbot
-    AnalyticsPage       # Grade trends + AI summary + sparkline
-  components/
-    ChatBot             # Floating assistant on all pages
-```
 
-## YC Traction Metrics to Track
+Do **not** run `vite` or `npx vite` directly. The Vite proxy has been removed from `vite.config.ts` because Vite runs inside Express, not alongside it.
 
-- [ ] Number of instructors using AI grading suggestions
-- [ ] Accept rate vs override rate on AI grades
-- [ ] Number of chatbot questions answered per week
-- [ ] Students reporting improvement from analytics page
+### AI returns mock responses
 
-## Roadmap
-
-- [ ] Backend API (Node/Express + PostgreSQL)
-- [ ] Real file upload → text extraction for notes RAG
-- [ ] Vector embeddings for note retrieval
-- [ ] Email alerts for at-risk students
-- [ ] Pilot with 1 real university department
+Add your `NVIDIA_API_KEY` to `.env`. Get a free key at [build.nvidia.com](https://build.nvidia.com). Without a key the server returns hardcoded mock data so the UI still works.
