@@ -64,10 +64,25 @@ function MiniSparkline() {
   );
 }
 
+// Render **bold** markdown inline
+function BoldText({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.startsWith("**") && p.endsWith("**") ? (
+          <strong key={i} className="font-bold text-indigo-900">{p.slice(2, -2)}</strong>
+        ) : (
+          <span key={i}>{p}</span>
+        )
+      )}
+    </>
+  );
+}
+
 export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ user }) => {
   const [aiSummary, setAiSummary] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [hasFetched, setHasFetched] = useState(false);
   const data = MOCK_ANALYTICS;
   const sorted = [...data.courses].sort((a, b) => b.average - a.average);
   const best = sorted[0];
@@ -75,10 +90,10 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ user }) => {
 
   const fetchSummary = async () => {
     setIsLoading(true);
+    setAiSummary("");
     try {
       const summary = await getAnalyticsSummary(data);
       setAiSummary(summary);
-      setHasFetched(true);
     } catch {
       toast.error("Could not load AI summary.");
     } finally {
@@ -114,33 +129,33 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ user }) => {
         ))}
       </div>
 
-      <div className="bg-gradient-to-br from-indigo-50 to-violet-50 p-6 rounded-[28px] border border-indigo-100">
+      <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-6 rounded-[28px] border border-green-100">
         <div className="flex items-center gap-2 mb-4">
-          <div className="bg-indigo-600 p-2 rounded-xl">
+          <div className="bg-green-700 p-2 rounded-xl">
             <Brain className="w-4 h-4 text-white" />
           </div>
-          <h3 className="text-sm font-bold text-indigo-900">AI Performance Summary</h3>
-          <div className="ml-auto flex items-center gap-1 bg-white/60 px-2.5 py-1 rounded-full border border-indigo-100">
-            <Sparkles className="w-3 h-3 text-violet-500" />
-            <span className="text-[10px] font-bold text-violet-600 uppercase tracking-wider">Gemini</span>
+          <h3 className="text-sm font-bold text-green-900">AI Performance Summary</h3>
+          <div className="ml-auto flex items-center gap-1 bg-white/60 px-2.5 py-1 rounded-full border border-green-100">
+            <Sparkles className="w-3 h-3 text-green-600" />
+            <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">NVIDIA NIM</span>
           </div>
         </div>
         <AnimatePresence mode="wait">
           {isLoading ? (
             <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-3 py-2">
-              <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
-              <span className="text-sm text-indigo-600">Generating your personalised summary…</span>
+              <Loader2 className="w-5 h-5 text-green-600 animate-spin" />
+              <span className="text-sm text-green-700">Generating your personalised summary…</span>
             </motion.div>
           ) : (
-            <motion.p key="summary" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="text-sm text-indigo-900 leading-relaxed">
-              {aiSummary || "Click Refresh to generate your AI summary."}
+            <motion.p key="summary" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="text-sm text-green-900 leading-relaxed">
+              {aiSummary ? <BoldText text={aiSummary} /> : "Click Refresh to generate your AI summary."}
             </motion.p>
           )}
         </AnimatePresence>
         <button
-          onClick={() => { setHasFetched(false); fetchSummary(); }}
+          onClick={fetchSummary}
           disabled={isLoading}
-          className="mt-4 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors disabled:opacity-40"
+          className="mt-4 text-xs font-bold text-green-700 hover:text-green-900 transition-colors disabled:opacity-40"
         >
           ↻ Refresh Summary
         </button>

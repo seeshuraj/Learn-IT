@@ -5,7 +5,7 @@ import {
   FileText, ChevronDown, ChevronUp, Sparkles, Upload
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { askModuleChatbot } from "../services/aiService";
+import { askModuleChatbot, ConversationTurn } from "../services/aiService";
 import { toast, Toaster } from "sonner";
 
 interface NotesPageProps { user: User; }
@@ -82,14 +82,20 @@ export const NotesPage: React.FC<NotesPageProps> = ({ user }) => {
     if (!q || isLoading) return;
     setInput("");
     const userMsg: ChatMessage = { role: "user", content: q, timestamp: new Date() };
-    setMessages((prev) => ({ ...prev, [selectedModule.id]: [...(prev[selectedModule.id] ?? []), userMsg] }));
+    const updatedMsgs = [...currentMessages, userMsg];
+    setMessages((prev) => ({ ...prev, [selectedModule.id]: updatedMsgs }));
     setIsLoading(true);
     try {
-      const answer = await askModuleChatbot(q, selectedModule.title, currentNotes);
+      // Build conversation history for context window
+      const history: ConversationTurn[] = currentMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const answer = await askModuleChatbot(q, selectedModule.title, currentNotes, history);
       const assistantMsg: ChatMessage = { role: "assistant", content: answer, timestamp: new Date() };
       setMessages((prev) => ({ ...prev, [selectedModule.id]: [...(prev[selectedModule.id] ?? []), assistantMsg] }));
     } catch {
-      toast.error("AI assistant unavailable. Check your API key.");
+      toast.error("AI assistant unavailable. Check your NVIDIA API key.");
     } finally {
       setIsLoading(false);
     }
@@ -177,9 +183,9 @@ export const NotesPage: React.FC<NotesPageProps> = ({ user }) => {
               <h2 className="text-sm font-bold text-slate-900">AI Study Assistant</h2>
               <p className="text-xs text-slate-400">Grounded in your {selectedModule.course} notes</p>
             </div>
-            <div className="ml-auto flex items-center gap-1 bg-violet-50 px-3 py-1.5 rounded-full">
-              <Sparkles className="w-3 h-3 text-violet-500" />
-              <span className="text-[10px] font-bold text-violet-600 uppercase tracking-wider">Gemini</span>
+            <div className="ml-auto flex items-center gap-1 bg-green-50 px-3 py-1.5 rounded-full">
+              <Sparkles className="w-3 h-3 text-green-600" />
+              <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">NVIDIA NIM</span>
             </div>
           </div>
 
@@ -191,7 +197,7 @@ export const NotesPage: React.FC<NotesPageProps> = ({ user }) => {
                 </div>
                 <p className="text-sm font-semibold text-slate-600 mb-1">Ask anything about your notes</p>
                 <p className="text-xs text-slate-400 max-w-[200px]">
-                  Try: "Explain AVL rotations" or "What's the difference between clustered and non-clustered index?"
+                  Try: &ldquo;Explain AVL rotations&rdquo; or &ldquo;What&apos;s the difference between clustered and non-clustered index?&rdquo;
                 </p>
               </div>
             )}
@@ -213,8 +219,8 @@ export const NotesPage: React.FC<NotesPageProps> = ({ user }) => {
                   >
                     {msg.role === "assistant" && (
                       <div className="flex items-center gap-1.5 mb-2">
-                        <Brain className="w-3 h-3 text-violet-500" />
-                        <span className="text-[10px] font-bold text-violet-500 uppercase tracking-wider">AI Assistant</span>
+                        <Brain className="w-3 h-3 text-green-600" />
+                        <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">NVIDIA NIM</span>
                       </div>
                     )}
                     <p className="whitespace-pre-wrap">{msg.content}</p>
@@ -228,7 +234,7 @@ export const NotesPage: React.FC<NotesPageProps> = ({ user }) => {
             {isLoading && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
                 <div className="bg-slate-50 border border-slate-100 px-4 py-3 rounded-2xl rounded-bl-sm flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 text-violet-500 animate-spin" />
+                  <Loader2 className="w-4 h-4 text-green-600 animate-spin" />
                   <span className="text-xs text-slate-500">Thinking…</span>
                 </div>
               </motion.div>
