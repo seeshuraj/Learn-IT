@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "NODE_ENV=development tsx server.ts",
+    "dev": "cross-env NODE_ENV=development tsx server.ts",
     "build": "vite build",
     "build:server": "tsc --noEmit",
     "preview": "vite preview",
@@ -19,6 +19,7 @@
     "better-sqlite3": "^12.4.1",
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
+    "cross-env": "^7.0.3",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "framer-motion": "^12.34.3",
