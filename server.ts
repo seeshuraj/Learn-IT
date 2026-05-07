@@ -146,7 +146,7 @@ async function nimChat(
 ): Promise<string> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) {
-    return JSON.stringify({ score: 80, feedback: "Mock feedback — set NVIDIA_API_KEY.", strengths: ["Good attempt"], improvements: ["Add detail"] });
+    return "Mock AI response — set NVIDIA_API_KEY in .env to enable real responses.";
   }
   const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
     method: "POST",
@@ -281,7 +281,9 @@ async function startServer() {
 
   app.get("/api/student/:id/assignments", (req, res) => {
     res.json(db.prepare(`
-      SELECT a.*, m.name as module_name, c.name as course_name, s.grade, s.feedback
+      SELECT a.*, m.name as module_name, c.name as course_name,
+             s.id as submission_id, s.grade, s.feedback,
+             s.content as submission_content, s.submitted_at
       FROM assignments a
       JOIN modules m ON a.module_id = m.id
       JOIN courses c ON m.course_id = c.id
@@ -299,6 +301,86 @@ async function startServer() {
       WHERE s.student_id = ? AND s.grade IS NOT NULL
     `).all(req.params.id);
     res.json({ user, submissions });
+  });
+
+  // ─── STUDENT ANALYTICS ────────────────────────────────────────────────────
+  // GET /api/students/:id/analytics
+  // Returns per-course grade breakdown, KPIs, and grade history for AnalyticsPage
+  app.get("/api/students/:id/analytics", (req, res) => {
+    const studentId = req.params.id;
+    const student = db.prepare("SELECT name FROM users WHERE id = ?").get(studentId) as any;
+    if (!student) return res.status(404).json({ error: "Student not found" });
+
+    const enrolledCourses = db.prepare(`
+      SELECT c.id, c.code as course_code, c.name as course_name
+      FROM enrollments e JOIN courses c ON e.course_id = c.id
+      WHERE e.student_id = ? AND c.archived = 0
+    `).all(studentId) as any[];
+
+    const courses = enrolledCourses.map((course: any) => {
+      const totalAssignments = db.prepare(`
+        SELECT COUNT(*) as count FROM assignments a
+        JOIN modules m ON a.module_id = m.id
+        WHERE m.course_id = ? AND a.status = 'active'
+      `).get(course.id) as any;
+
+      const grades = db.prepare(`
+        SELECT a.title, s.grade, s.submitted_at
+        FROM submissions s
+        JOIN assignments a ON s.assignment_id = a.id
+        JOIN modules m ON a.module_id = m.id
+        WHERE s.student_id = ? AND m.course_id = ? AND s.grade IS NOT NULL
+        ORDER BY s.submitted_at ASC
+      `).all(studentId, course.id) as any[];
+
+      const avg = grades.length > 0
+        ? grades.reduce((sum: number, g: any) => sum + g.grade, 0) / grades.length
+        : null;
+
+      // late count: submitted_at > due_date (best-effort, due_date on assignment)
+      const lateCount = db.prepare(`
+        SELECT COUNT(*) as count FROM submissions s
+        JOIN assignments a ON s.assignment_id = a.id
+        JOIN modules m ON a.module_id = m.id
+        WHERE s.student_id = ? AND m.course_id = ?
+          AND a.due_date IS NOT NULL
+          AND date(s.submitted_at) > date(a.due_date)
+      `).get(studentId, course.id) as any;
+
+      return {
+        course_code: course.course_code,
+        course_name: course.course_name,
+        assignments_total: totalAssignments.count,
+        assignments_submitted: grades.length,
+        avg_grade: avg != null ? Math.round(avg * 10) / 10 : null,
+        late: lateCount.count,
+        grades,
+      };
+    });
+
+    const allGrades = courses.flatMap((c: any) => c.grades.map((g: any) => g.grade));
+    const overall_avg = allGrades.length > 0
+      ? Math.round((allGrades.reduce((a: number, b: number) => a + b, 0) / allGrades.length) * 10) / 10
+      : null;
+
+    const totalAssignmentsRow = db.prepare(`
+      SELECT COUNT(*) as count FROM assignments a
+      JOIN modules m ON a.module_id = m.id
+      JOIN enrollments e ON m.course_id = e.course_id
+      WHERE e.student_id = ? AND a.status = 'active'
+    `).get(studentId) as any;
+
+    const totalSubmittedRow = db.prepare(
+      "SELECT COUNT(*) as count FROM submissions WHERE student_id = ?"
+    ).get(studentId) as any;
+
+    res.json({
+      student_name: student.name,
+      overall_avg,
+      total_submitted: totalSubmittedRow.count,
+      total_pending: Math.max(0, totalAssignmentsRow.count - totalSubmittedRow.count),
+      courses,
+    });
   });
 
   // ─── ADMIN ────────────────────────────────────────────────────────────────
@@ -377,12 +459,17 @@ async function startServer() {
           content:
             "You are a GRADING ASSISTANT for a university LMS. " +
             "Respond ONLY with a valid JSON object — no markdown, no extra text. " +
-            'Shape: {"score":<int 0-100>,"feedback":"<2-3 sentences>","strengths":["...","..."],"improvements":["...","..."]}'  ,
+            'Shape: {"score":<int 0-100>,"feedback":"<2-3 sentences>","strengths":["...","..."],"improvements":["...","..."]}',
         },
         { role: "user", content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent?.slice(0, 3000)}` },
       ], { temperature: 0.3 });
       const cleaned = raw.replace(/```json|```/g, "").trim();
-      res.json(JSON.parse(cleaned));
+      try {
+        res.json(JSON.parse(cleaned));
+      } catch {
+        // NIM returned plain text instead of JSON (mock mode)
+        res.json({ score: 80, feedback: cleaned, strengths: ["Good attempt"], improvements: ["Add more detail"] });
+      }
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -408,20 +495,44 @@ async function startServer() {
     }
   });
 
+  // POST /api/ai/analytics-summary
+  // Accepts the full analytics payload from AnalyticsPage and returns
+  // a personalised 3-4 sentence AI summary of student performance
   app.post("/api/ai/analytics-summary", async (req, res) => {
     try {
-      const { studentName, courses, overallAverage, submissionRate } = req.body;
-      const courseBreakdown = courses.map((c: any) => `${c.name}: avg ${c.average}%, ${c.assignments} assignments, ${c.late} late`).join("\n");
-      const answer = await nimChat([
+      const { analytics } = req.body;
+      if (!analytics) return res.status(400).json({ error: "analytics payload required" });
+
+      const courseBreakdown = (analytics.courses ?? []).map((c: any) =>
+        `${c.course_code ?? ''} ${c.course_name}: avg ${
+          c.avg_grade != null ? c.avg_grade + "%" : "no grades yet"
+        }, ${c.assignments_submitted}/${c.assignments_total} submitted, ${c.late ?? 0} late`
+      ).join("\n");
+
+      const submissionRate = analytics.total_submitted + analytics.total_pending > 0
+        ? Math.round((analytics.total_submitted / (analytics.total_submitted + analytics.total_pending)) * 100)
+        : 0;
+
+      const prompt =
+        `Student: ${analytics.student_name}\n` +
+        `Overall average: ${analytics.overall_avg != null ? analytics.overall_avg + "%" : "no grades yet"}\n` +
+        `Submission rate: ${submissionRate}%\n` +
+        `Pending assignments: ${analytics.total_pending}\n\n` +
+        `Course breakdown:\n${courseBreakdown}`;
+
+      const summary = await nimChat([
         {
           role: "system",
           content:
-            "You are an ANALYTICS SUMMARY assistant for a university LMS. " +
-            "Write a 3-4 sentence actionable summary. Bold key insights with **markdown**.",
+            "You are an academic advisor AI for a university LMS. " +
+            "Write a concise 3-4 sentence personalised summary: where the student is doing well, " +
+            "where they should focus more effort, and one concrete actionable tip. " +
+            "Be encouraging but honest. Use plain text, no bullet points.",
         },
-        { role: "user", content: `Student: ${studentName}\nOverall: ${overallAverage}%\nSubmission rate: ${submissionRate}%\n\n${courseBreakdown}` },
-      ], { temperature: 0.4, maxTokens: 400 });
-      res.json({ summary: answer });
+        { role: "user", content: prompt },
+      ], { temperature: 0.4, maxTokens: 350 });
+
+      res.json({ summary });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
