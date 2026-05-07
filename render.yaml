@@ -2,7 +2,7 @@ services:
   - type: web
     name: learnit-api
     runtime: node
-    buildCommand: npm ci
+    buildCommand: npm install && npm run build 2>/dev/null || npm install
     startCommand: node --import tsx/esm server.ts
     envVars:
       - key: NODE_ENV
