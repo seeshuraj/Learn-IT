@@ -1,16 +1,17 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "outDir": "dist-server",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist-server",
     "rootDir": ".",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": false,
-    "useUnknownInCatchVariables": false
+    "useUnknownInCatchVariables": false,
+    "noEmit": false
   },
   "include": ["server.ts"],
   "exclude": ["node_modules", "dist", "src"]
