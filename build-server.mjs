@@ -11,16 +11,9 @@ await build({
   target: 'node18',
   format: 'esm',
   outfile: 'dist-server/server.js',
-  // Keep native modules external so esbuild doesn't try to bundle .node binaries
-  external: [
-    'better-sqlite3',
-    'mammoth',
-    'pdf-parse',
-    'multer',
-    // keep all node built-ins external
-    'fs', 'path', 'url', 'module', 'os', 'crypto', 'stream', 'http', 'https',
-    'net', 'tls', 'zlib', 'events', 'util', 'buffer', 'child_process',
-  ],
+  // Keep ALL node_modules external — many are CJS and use dynamic require() internally
+  // which breaks when bundled into an ESM output file.
+  packages: 'external',
   banner: {
     js: '// LearnIT server bundle',
   },
