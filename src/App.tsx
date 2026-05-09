@@ -20,10 +20,10 @@ import NotesPage from "./pages/NotesPage";
 import LoginPage from "./pages/LoginPage";
 import LandingPage from "./pages/LandingPage";
 import { InstructorDashboard } from "./pages/InstructorDashboard";
-import { AdminDashboard } from "./pages/AdminDashboard";
-import { AdminUserManagement } from "./pages/AdminUserManagement";
-import { AdminCourseManagement } from "./pages/AdminCourseManagement";
-import { AdminSettings } from "./pages/AdminSettings";
+import AdminDashboard from "./pages/AdminDashboard";
+import AdminUserManagement from "./pages/AdminUserManagement";
+import AdminCourseManagement from "./pages/AdminCourseManagement";
+import AdminSettings from "./pages/AdminSettings";
 
 const PUBLIC_PATHS = ["/landing", "/login"];
 
