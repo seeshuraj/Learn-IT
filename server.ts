@@ -694,6 +694,12 @@ async function startServer() {
     res.json({ id: result.lastInsertRowid });
   });
 
+  app.delete("/api/admin/courses/:id", (req, res) => {
+    db.prepare("DELETE FROM enrollments WHERE course_id=?").run(req.params.id);
+    db.prepare("DELETE FROM courses WHERE id=?").run(req.params.id);
+    res.json({ success: true });
+  });
+
   app.get("/api/admin/stats", (_req, res) => {
     const activeUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE active=1").get() as any;
     const totalCourses = db.prepare("SELECT COUNT(*) as count FROM courses WHERE archived=0").get() as any;
@@ -849,9 +855,12 @@ async function startServer() {
         }
       }
 
-      const effectiveRubric = rubric || (submission ? db.prepare(
-        "SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=?)"
-      ).get(submission_id) as any)?.rubric || "Grade on overall quality, correctness, and clarity.";
+      // Fixed: avoid (cast)?.prop pattern that breaks esbuild
+      const fallbackRubricRow = submission
+        ? db.prepare("SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=?)").get(submission_id)
+        : null;
+      const fallbackRubric = fallbackRubricRow ? (fallbackRubricRow as any).rubric : null;
+      const effectiveRubric = rubric || fallbackRubric || "Grade on overall quality, correctness, and clarity.";
 
       const raw = await nimChat([
         {
