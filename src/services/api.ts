@@ -47,10 +47,19 @@ export const api = {
   getStudentCourses: (studentId: number) => request<any[]>(`/api/student/${studentId}/courses`),
   getStudentAssignments: (studentId: number) => request<any[]>(`/api/student/${studentId}/assignments`),
   getStudentStats: (studentId: number) => request<any>(`/api/student/${studentId}/stats`),
+  getStudentAnalytics: (studentId: number) => request<any>(`/api/students/${studentId}/analytics`),
+  getStudentNotes: (studentId: number) => request<any[]>(`/api/students/${studentId}/notes`),
+
+  // Notes
+  getModuleNotes: (moduleId: number, studentId?: number) => {
+    const qs = studentId ? `?student_id=${studentId}` : '';
+    return request<any[]>(`/api/modules/${moduleId}/notes${qs}`);
+  },
+  deleteNote: (noteId: number) =>
+    request<any>(`/api/notes/${noteId}`, { method: 'DELETE' }),
 
   // Instructor
   getInstructorCourses: (instructorId: number) => request<any[]>(`/api/instructor/${instructorId}/courses`),
-  getInstructorModules: (instructorId: number) => request<any[]>(`/api/instructor/${instructorId}/modules`),
   getCourseAnalytics: (courseId: number) => request<any>(`/api/instructor/courses/${courseId}/analytics`),
   createInstructorAssignment: (data: any) =>
     request<any>('/api/instructor/assignments', { method: 'POST', body: JSON.stringify(data) }),
@@ -67,14 +76,23 @@ export const api = {
     request<any>('/api/admin/settings', { method: 'POST', body: JSON.stringify({ key, value }) }),
   createAdminCourse: (data: any) =>
     request<any>('/api/admin/courses', { method: 'POST', body: JSON.stringify(data) }),
+  getEnrollments: (courseId: number) => request<any[]>(`/api/admin/enrollments/${courseId}`),
+  addEnrollment: (courseId: number, studentId: number) =>
+    request<any>('/api/admin/enrollments', { method: 'POST', body: JSON.stringify({ course_id: courseId, student_id: studentId }) }),
+  removeEnrollment: (enrollmentId: number) =>
+    request<any>(`/api/admin/enrollments/${enrollmentId}`, { method: 'DELETE' }),
+  bulkEnroll: (courseId: number, emails: string[]) =>
+    request<any>('/api/admin/bulk-enroll', { method: 'POST', body: JSON.stringify({ course_id: courseId, emails }) }),
 
-  // AI (all AI calls go through backend — NVIDIA key never in browser)
+  // AI — all calls go through backend so NVIDIA_API_KEY stays server-side
   aiGrade: (submissionContent: string, rubric: string) =>
     request<any>('/api/ai/grade', { method: 'POST', body: JSON.stringify({ submissionContent, rubric }) }),
-  aiChat: (question: string, moduleTitle: string, notesContext: string, history: any[]) =>
-    request<any>('/api/ai/chat', { method: 'POST', body: JSON.stringify({ question, moduleTitle, notesContext, history }) }),
-  aiAnalyticsSummary: (data: any) =>
-    request<any>('/api/ai/analytics-summary', { method: 'POST', body: JSON.stringify(data) }),
+  aiGradePdf: (submissionId: number, rubric: string, moduleId?: number) =>
+    request<any>('/api/ai/grade-pdf', { method: 'POST', body: JSON.stringify({ submission_id: submissionId, rubric, module_id: moduleId }) }),
+  aiChat: (question: string, moduleTitle: string, moduleId: number | null, history: any[]) =>
+    request<any>('/api/ai/chat', { method: 'POST', body: JSON.stringify({ question, moduleTitle, moduleId, history }) }),
+  aiAnalyticsSummary: (analytics: any) =>
+    request<any>('/api/ai/analytics-summary', { method: 'POST', body: JSON.stringify({ analytics }) }),
 
   // Health
   health: () => request<any>('/api/health'),

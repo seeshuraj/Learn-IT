@@ -18,11 +18,14 @@ import AssignmentsPage from "./pages/AssignmentsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import NotesPage from "./pages/NotesPage";
 import LoginPage from "./pages/LoginPage";
+import LandingPage from "./pages/LandingPage";
 import { InstructorDashboard } from "./pages/InstructorDashboard";
 import { AdminDashboard } from "./pages/AdminDashboard";
 import { AdminUserManagement } from "./pages/AdminUserManagement";
 import { AdminCourseManagement } from "./pages/AdminCourseManagement";
 import { AdminSettings } from "./pages/AdminSettings";
+
+const PUBLIC_PATHS = ["/landing", "/login"];
 
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {
@@ -44,15 +47,20 @@ const AppContent: React.FC = () => {
   const handleLogout = () => {
     setUser(null);
     try { sessionStorage.removeItem("learnit_user"); } catch {}
-    navigate("/login");
+    navigate("/landing");
   };
 
-  if (!user && location.pathname !== "/login") {
-    return <Navigate to="/login" replace />;
+  // Public routes — no auth required
+  if (location.pathname === "/landing") {
+    return <LandingPage />;
   }
-
   if (location.pathname === "/login") {
     return <LoginPage onLogin={handleLogin} />;
+  }
+
+  // Auth guard — redirect unauthenticated users to landing
+  if (!user) {
+    return <Navigate to="/landing" replace />;
   }
 
   return (
@@ -84,6 +92,9 @@ const AppContent: React.FC = () => {
                 <Route path="/admin/settings" element={<AdminSettings />} />
               </>
             )}
+
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
       </div>
