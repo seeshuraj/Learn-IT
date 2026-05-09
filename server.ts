@@ -325,15 +325,31 @@ async function startServer() {
   const app = express();
 
   // ─── CORS ────────────────────────────────────────────────────────────────
-  const allowedOrigins = [
+  // Static origins always allowed (localhost dev + any extras from env)
+  const staticAllowed = [
     "http://localhost:5173",
     "http://localhost:3000",
-    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : []),
+    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map(s => s.trim()) : []),
   ];
+
+  // Vercel generates a brand-new subdomain on every preview deploy, so we
+  // accept the entire *.vercel.app namespace rather than hardcoding each URL.
+  const VERCEL_RE = /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9-]+\.vercel\.app$/i;
+
+  function isOriginAllowed(origin: string): boolean {
+    if (staticAllowed.includes(origin)) return true;
+    if (VERCEL_RE.test(origin)) return true;
+    // Also allow the canonical *.vercel.app production alias (e.g. learn-it.vercel.app)
+    if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin)) return true;
+    return false;
+  }
+
   app.use(cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-      else callback(new Error(`CORS: origin ${origin} not allowed`));
+      // No origin = same-origin or server-to-server (always OK)
+      if (!origin) return callback(null, true);
+      if (isOriginAllowed(origin)) return callback(null, true);
+      callback(new Error(`CORS: origin ${origin} not allowed`));
     },
     credentials: true,
   }));
@@ -686,7 +702,8 @@ async function startServer() {
     }
   });
 
-  app.put("/api/admin/users/:id", (req, res) => {    const { name, email, role, active, major, year } = req.body;
+  app.put("/api/admin/users/:id", (req, res) => {
+    const { name, email, role, active, major, year } = req.body;
     db.prepare("UPDATE users SET name=?, email=?, role=?, active=?, major=?, year=? WHERE id=?").run(name, email, role, active, major, year, req.params.id);
     res.json({ success: true });
   });
