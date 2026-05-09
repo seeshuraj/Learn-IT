@@ -280,7 +280,6 @@ async function nimChat(
 async function nimEmbed(texts: string[]): Promise<number[][]> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) {
-    // Return mock embeddings (random unit vectors) for dev without API key
     return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
   }
   const res = await fetch("https://integrate.api.nvidia.com/v1/embeddings", {
@@ -420,7 +419,6 @@ async function startServer() {
     res.json({ id: result.lastInsertRowid });
   });
 
-  // File upload submission
   app.post("/api/submissions/upload", uploadSubmission.array("files", 5), async (req: any, res) => {
     const { assignment_id, student_id, content = "" } = req.body;
     if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
@@ -500,16 +498,13 @@ async function startServer() {
     const file = req.file;
     if (!file || !student_id) return res.status(400).json({ error: "file and student_id required" });
 
-    // 1. Extract text
     const text = await extractText(file.path, file.mimetype);
 
-    // 2. Save note record
     const result = db.prepare(
       "INSERT INTO notes (student_id, module_id, filename, original_name, file_path, content_text, file_type) VALUES (?, ?, ?, ?, ?, ?, ?)"
     ).run(student_id, req.params.id, file.filename, file.originalname, file.path, text, file.mimetype);
     const noteId = result.lastInsertRowid;
 
-    // 3. Chunk + embed (async, don't block response)
     const chunks = chunkText(text);
     if (chunks.length > 0) {
       try {
@@ -523,8 +518,8 @@ async function startServer() {
           });
         });
         insertMany();
-      } catch (e) {
-        console.error("Embedding error:", e);
+      } catch (_e) {
+        console.error("Embedding error:", _e);
       }
     }
 
@@ -546,7 +541,6 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // GET all notes for a student across all modules
   app.get("/api/students/:id/notes", (req, res) => {
     const notes = db.prepare(`
       SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
@@ -683,7 +677,7 @@ async function startServer() {
     try {
       const result = db.prepare("INSERT INTO users (name, email, role, major, year) VALUES (?, ?, ?, ?, ?)").run(name, email, role, major, year);
       res.json({ id: result.lastInsertRowid });
-    } catch {
+    } catch (_e) {
       res.status(400).json({ error: "Email already exists" });
     }
   });
@@ -751,7 +745,6 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Bulk enroll by email list
   app.post("/api/admin/bulk-enroll", (req, res) => {
     const { course_id, emails } = req.body as { course_id: number; emails: string[] };
     if (!course_id || !Array.isArray(emails)) return res.status(400).json({ error: "course_id and emails[] required" });
@@ -808,7 +801,6 @@ async function startServer() {
   });
 
   // ─── AI ENDPOINTS ─────────────────────────────────────────────────────────
-  // Standard text grading
   app.post("/api/ai/grade", async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
@@ -823,7 +815,7 @@ async function startServer() {
       try {
         const cleaned = raw.replace(/```json|```/g, "").trim();
         res.json(JSON.parse(cleaned));
-      } catch {
+      } catch (_e) {
         res.json({ score: 75, feedback: raw, strengths: ["Reviewed"], improvements: ["See feedback"] });
       }
     } catch (e: any) {
@@ -831,13 +823,11 @@ async function startServer() {
     }
   });
 
-  // PDF/file grading with OCR + RAG notes context
   app.post("/api/ai/grade-pdf", async (req, res) => {
     try {
       const { submission_id, rubric, module_id } = req.body;
       if (!submission_id) return res.status(400).json({ error: "submission_id required" });
 
-      // 1. Get text content from submission
       const submission = db.prepare("SELECT * FROM submissions WHERE id=?").get(submission_id) as any;
       const files = db.prepare("SELECT * FROM submission_files WHERE submission_id=?").all(submission_id) as any[];
 
@@ -851,7 +841,6 @@ async function startServer() {
         return res.status(400).json({ error: "No readable content found in submission" });
       }
 
-      // 2. Fetch relevant notes chunks (RAG)
       let notesContext = "";
       if (module_id) {
         const relevantChunks = await retrieveChunks(module_id, fullText.slice(0, 500), 4);
@@ -860,7 +849,6 @@ async function startServer() {
         }
       }
 
-      // 3. Call NIM
       const effectiveRubric = rubric || (submission ? db.prepare(
         "SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=?)"
       ).get(submission_id) as any)?.rubric || "Grade on overall quality, correctness, and clarity.";
@@ -881,11 +869,10 @@ async function startServer() {
       let result: any;
       try {
         result = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      } catch {
+      } catch (_e) {
         result = { score: 75, feedback: raw, strengths: ["Reviewed"], improvements: ["See feedback"], rubric_breakdown: [] };
       }
 
-      // 4. Persist AI result to submission
       db.prepare(
         "UPDATE submissions SET ai_score=?, ai_feedback=?, ai_strengths=?, ai_improvements=? WHERE id=?"
       ).run(
@@ -902,12 +889,10 @@ async function startServer() {
     }
   });
 
-  // RAG-powered module chatbot
   app.post("/api/ai/chat", async (req, res) => {
     try {
       const { question, moduleTitle, moduleId, history = [] } = req.body;
 
-      // Retrieve relevant note chunks
       let notesContext = "No notes uploaded for this module yet.";
       if (moduleId) {
         const chunks = await retrieveChunks(moduleId, question, 5);
@@ -933,7 +918,6 @@ async function startServer() {
     }
   });
 
-  // Analytics AI summary
   app.post("/api/ai/analytics-summary", async (req, res) => {
     try {
       const { analytics } = req.body;
