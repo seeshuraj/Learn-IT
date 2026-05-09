@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { api } from '../services/api';
+import { useEffect, useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 
 interface Assignment {
@@ -7,47 +6,83 @@ interface Assignment {
   title: string;
   description: string;
   due_date: string;
-  max_grade: number;
+  max_points: number;
   module_name: string;
   course_name: string;
   submission_id?: number;
   submission_content?: string;
   grade?: number;
+  ai_score?: number;
+  ai_feedback?: string;
   feedback?: string;
   submitted_at?: string;
 }
 
 interface Props { user: any; }
 
+const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
 export default function AssignmentsPage({ user }: Props) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Assignment | null>(null);
-  const [content, setContent] = useState('');
+  const [textContent, setTextContent] = useState('');
+  const [files, setFiles] = useState<FileList | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [filter, setFilter] = useState<'all' | 'pending' | 'submitted'>('all');
+  const [submitMode, setSubmitMode] = useState<'text' | 'file'>('text');
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!user) return;
-    api.getStudentAssignments(user.id)
-      .then(setAssignments)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    fetchAssignments();
   }, [user?.id]);
+
+  async function fetchAssignments() {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/student/${user.id}/assignments`);
+      const data = await res.json();
+      setAssignments(data);
+    } catch (e) {
+      setError('Could not load assignments.');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selected || !content.trim()) return;
+    if (!selected) return;
+    if (submitMode === 'text' && !textContent.trim()) return setError('Answer cannot be empty.');
+    if (submitMode === 'file' && (!files || files.length === 0)) return setError('Select at least one file.');
+
     setSubmitting(true); setError(''); setSuccess('');
     try {
-      await api.submitAssignment(selected.id, user.id, content.trim());
-      setSuccess('Assignment submitted successfully!');
-      setContent('');
-      const updated = await api.getStudentAssignments(user.id);
-      setAssignments(updated);
-      setSelected(updated.find(a => a.id === selected.id) ?? null);
+      if (submitMode === 'file') {
+        const formData = new FormData();
+        formData.append('assignment_id', String(selected.id));
+        formData.append('student_id', String(user.id));
+        formData.append('content', textContent);
+        Array.from(files!).forEach(f => formData.append('files', f));
+        const res = await fetch(`${API}/api/submissions/upload`, { method: 'POST', body: formData });
+        if (!res.ok) throw new Error((await res.json()).error ?? 'Upload failed');
+      } else {
+        const res = await fetch(`${API}/api/submissions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assignment_id: selected.id, student_id: user.id, content: textContent }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error ?? 'Submission failed');
+      }
+      setSuccess('Submitted successfully!');
+      setTextContent(''); setFiles(null);
+      if (fileRef.current) fileRef.current.value = '';
+      await fetchAssignments();
+      const updated = assignments.find(a => a.id === selected.id);
+      if (updated) setSelected(updated);
     } catch (e: any) {
       setError(e.message ?? 'Submission failed');
     } finally {
@@ -56,8 +91,8 @@ export default function AssignmentsPage({ user }: Props) {
   }
 
   const filtered = assignments.filter(a => {
-    if (filter === 'pending') return !a.grade;
-    if (filter === 'submitted') return !!a.grade || !!a.submission_id;
+    if (filter === 'pending') return !a.submission_id;
+    if (filter === 'submitted') return !!a.submission_id;
     return true;
   });
 
@@ -71,10 +106,12 @@ export default function AssignmentsPage({ user }: Props) {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Assignments</h1>
-          <p className="text-slate-500 text-sm mt-1">{assignments.length} total · {assignments.filter(a => !a.grade && !a.submission_id).length} pending</p>
+          <p className="text-slate-500 text-sm mt-1">
+            {assignments.length} total · {assignments.filter(a => !a.submission_id).length} pending
+          </p>
         </div>
         <div className="flex gap-2">
           {(['all', 'pending', 'submitted'] as const).map(f => (
@@ -90,25 +127,28 @@ export default function AssignmentsPage({ user }: Props) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        {/* Assignment list */}
         <div className="lg:col-span-2 space-y-3">
           {filtered.length === 0 && (
             <div className="text-center py-12 text-slate-400">
               <div className="text-3xl mb-2">📋</div>
-              <p className="text-sm">No assignments here</p>
+              <p className="text-sm">No assignments</p>
             </div>
           )}
           {filtered.map(a => (
             <button
               key={a.id}
-              onClick={() => { setSelected(a); setContent(''); setError(''); setSuccess(''); }}
+              onClick={() => { setSelected(a); setTextContent(''); setError(''); setSuccess(''); setFiles(null); }}
               className={`w-full text-left border rounded-xl p-4 transition ${
-                selected?.id === a.id ? 'border-teal-500 bg-teal-50' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
+                selected?.id === a.id
+                  ? 'border-teal-500 bg-teal-50'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
               }`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-slate-800 text-sm truncate">{a.title}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{a.course_name} · {a.module_name}</p>
+                  <p className="text-xs text-slate-500 mt-0.5 truncate">{a.course_name} · {a.module_name}</p>
                 </div>
                 <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${
                   a.grade != null
@@ -122,11 +162,14 @@ export default function AssignmentsPage({ user }: Props) {
                   {a.grade != null ? `${a.grade}%` : a.submission_id ? 'Submitted' : isOverdue(a.due_date) ? 'Overdue' : 'Pending'}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-2">Due {new Date(a.due_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+              <p className="text-xs text-slate-400 mt-2">
+                Due {new Date(a.due_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
             </button>
           ))}
         </div>
 
+        {/* Detail + submission */}
         <div className="lg:col-span-3">
           {!selected ? (
             <div className="flex items-center justify-center h-64 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">
@@ -140,7 +183,9 @@ export default function AssignmentsPage({ user }: Props) {
               <div>
                 <h2 className="text-lg font-semibold text-slate-800">{selected.title}</h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  {selected.course_name} · {selected.module_name} · Due {new Date(selected.due_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  {selected.course_name} · {selected.module_name} ·
+                  Due {new Date(selected.due_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  {selected.max_points && ` · ${selected.max_points} pts`}
                 </p>
               </div>
 
@@ -148,11 +193,17 @@ export default function AssignmentsPage({ user }: Props) {
                 <ReactMarkdown>{selected.description}</ReactMarkdown>
               </div>
 
+              {/* Graded result */}
               {selected.grade != null && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-lg font-bold text-green-700">{selected.grade}%</span>
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xl font-bold text-green-700">{selected.grade}%</span>
                     <span className="text-xs text-green-600 bg-green-100 px-2 py-0.5 rounded-full">Graded</span>
+                    {selected.ai_score != null && (
+                      <span className="text-xs text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full">
+                        AI suggested: {selected.ai_score}%
+                      </span>
+                    )}
                   </div>
                   {selected.feedback && (
                     <div className="prose prose-sm prose-green max-w-none">
@@ -162,33 +213,80 @@ export default function AssignmentsPage({ user }: Props) {
                 </div>
               )}
 
+              {/* Pending submission state */}
               {selected.submission_id && selected.grade == null && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <p className="text-sm text-blue-700 font-medium">✓ Submitted — awaiting grade</p>
                   <p className="text-xs text-blue-500 mt-1">
-                    Submitted {selected.submitted_at ? new Date(selected.submitted_at).toLocaleDateString('en-IE') : ''}
+                    {selected.submitted_at && new Date(selected.submitted_at).toLocaleDateString('en-IE')}
                   </p>
-                  {selected.submission_content && (
-                    <p className="text-xs text-blue-600 mt-2 font-mono bg-blue-100 rounded p-2 line-clamp-3">{selected.submission_content}</p>
-                  )}
                 </div>
               )}
 
+              {/* Submission form */}
               {!selected.submission_id && (
-                <form onSubmit={handleSubmit} className="space-y-3">
-                  <label className="block text-sm font-medium text-slate-700">Your Answer</label>
-                  <textarea
-                    className="w-full h-40 text-sm border border-slate-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
-                    placeholder="Write your answer here…"
-                    value={content}
-                    onChange={e => setContent(e.target.value)}
-                    required
-                  />
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  {/* Toggle: text vs file */}
+                  <div className="flex gap-2">
+                    {(['text', 'file'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setSubmitMode(mode)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                          submitMode === mode
+                            ? 'bg-teal-700 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {mode === 'text' ? '✏️ Text answer' : '📎 Upload files'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {submitMode === 'text' ? (
+                    <textarea
+                      className="w-full h-40 text-sm border border-slate-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
+                      placeholder="Write your answer here…"
+                      value={textContent}
+                      onChange={e => setTextContent(e.target.value)}
+                    />
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        ref={fileRef}
+                        type="file"
+                        multiple
+                        accept=".pdf,.docx,.doc,.txt,.jpg,.jpeg,.png"
+                        onChange={e => setFiles(e.target.files)}
+                        className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-teal-50 file:text-teal-700 file:font-medium hover:file:bg-teal-100"
+                      />
+                      <textarea
+                        className="w-full h-20 text-sm border border-slate-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
+                        placeholder="Optional: add a note with your file submission…"
+                        value={textContent}
+                        onChange={e => setTextContent(e.target.value)}
+                      />
+                      {files && files.length > 0 && (
+                        <div className="space-y-1">
+                          {Array.from(files).map((f, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 rounded px-3 py-1.5">
+                              <span>📎</span>
+                              <span className="truncate">{f.name}</span>
+                              <span className="text-slate-400 shrink-0">({(f.size / 1024).toFixed(0)} KB)</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
                   {success && <p className="text-sm text-green-600 bg-green-50 border border-green-200 rounded-lg px-3 py-2">{success}</p>}
+
                   <button
                     type="submit"
-                    disabled={submitting || !content.trim()}
+                    disabled={submitting}
                     className="w-full bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg text-sm transition"
                   >
                     {submitting ? 'Submitting…' : 'Submit Assignment →'}
