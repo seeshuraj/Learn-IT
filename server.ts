@@ -17,10 +17,14 @@ const mammoth = require("mammoth");
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// In production the bundle lives in dist-server/, but static assets (dist/) and
+// uploads/ are relative to the project root. process.cwd() always points there.
+const PROJECT_ROOT = process.cwd();
+
 const isProduction = process.env.NODE_ENV === "production";
 
 // ─── Upload directories ────────────────────────────────────────────────────
-const UPLOADS_DIR = path.join(__dirname, "uploads");
+const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
 const NOTES_DIR = path.join(UPLOADS_DIR, "notes");
 const SUBMISSIONS_DIR = path.join(UPLOADS_DIR, "submissions");
 [UPLOADS_DIR, NOTES_DIR, SUBMISSIONS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
@@ -39,7 +43,7 @@ const uploadNote = multer({ storage: notesStorage, limits: { fileSize: 20 * 1024
 const uploadSubmission = multer({ storage: submissionStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ─── Database ──────────────────────────────────────────────────────────────
-const db = new Database("learnit.db");
+const db = new Database(path.join(PROJECT_ROOT, "learnit.db"));
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -682,8 +686,7 @@ async function startServer() {
     }
   });
 
-  app.put("/api/admin/users/:id", (req, res) => {
-    const { name, email, role, active, major, year } = req.body;
+  app.put("/api/admin/users/:id", (req, res) => {    const { name, email, role, active, major, year } = req.body;
     db.prepare("UPDATE users SET name=?, email=?, role=?, active=?, major=?, year=? WHERE id=?").run(name, email, role, active, major, year, req.params.id);
     res.json({ success: true });
   });
@@ -855,7 +858,6 @@ async function startServer() {
         }
       }
 
-      // Fixed: avoid (cast)?.prop pattern that breaks esbuild
       const fallbackRubricRow = submission
         ? db.prepare("SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=?)").get(submission_id)
         : null;
@@ -960,8 +962,9 @@ async function startServer() {
 
   // ─── Production static ─────────────────────────────────────────────────────
   if (isProduction) {
-    app.use(express.static(path.join(__dirname, "dist")));
-    app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "dist", "index.html")));
+    const DIST_DIR = path.join(PROJECT_ROOT, "dist");
+    app.use(express.static(DIST_DIR));
+    app.get("*", (_req, res) => res.sendFile(path.join(DIST_DIR, "index.html")));
   }
 
   const PORT = Number(process.env.PORT ?? 3000);
