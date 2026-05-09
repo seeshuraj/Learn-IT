@@ -20,7 +20,8 @@ interface Assignment {
 
 interface Props { user: any; }
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Use VITE_API_BASE_URL (set in Vercel env) or empty string (Vite proxy in dev)
+const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
 
 export default function AssignmentsPage({ user }: Props) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -43,9 +44,9 @@ export default function AssignmentsPage({ user }: Props) {
   async function fetchAssignments() {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/student/${user.id}/assignments`);
+      const res = await fetch(`${BASE}/api/student/${user.id}/assignments`, { credentials: 'include' });
       const data = await res.json();
-      setAssignments(data);
+      setAssignments(Array.isArray(data) ? data : []);
     } catch (e) {
       setError('Could not load assignments.');
     } finally {
@@ -67,22 +68,27 @@ export default function AssignmentsPage({ user }: Props) {
         formData.append('student_id', String(user.id));
         formData.append('content', textContent);
         Array.from(files!).forEach(f => formData.append('files', f));
-        const res = await fetch(`${API}/api/submissions/upload`, { method: 'POST', body: formData });
+        const res = await fetch(`${BASE}/api/submissions/upload`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+        });
         if (!res.ok) throw new Error((await res.json()).error ?? 'Upload failed');
       } else {
-        const res = await fetch(`${API}/api/submissions`, {
+        const res = await fetch(`${BASE}/api/submissions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ assignment_id: selected.id, student_id: user.id, content: textContent }),
         });
         if (!res.ok) throw new Error((await res.json()).error ?? 'Submission failed');
       }
-      setSuccess('Submitted successfully!');
+      setSuccess('Submitted successfully! ✓');
       setTextContent(''); setFiles(null);
       if (fileRef.current) fileRef.current.value = '';
       await fetchAssignments();
-      const updated = assignments.find(a => a.id === selected.id);
-      if (updated) setSelected(updated);
+      // refresh selected card
+      setSelected(prev => prev ? { ...prev, submission_id: -1 } : null);
     } catch (e: any) {
       setError(e.message ?? 'Submission failed');
     } finally {
@@ -239,7 +245,7 @@ export default function AssignmentsPage({ user }: Props) {
                             : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                         }`}
                       >
-                        {mode === 'text' ? '✏️ Text answer' : '📎 Upload files'}
+                        {mode === 'text' ? '✏️ Text answer' : '📎 Upload PDF / files'}
                       </button>
                     ))}
                   </div>
@@ -252,32 +258,43 @@ export default function AssignmentsPage({ user }: Props) {
                       onChange={e => setTextContent(e.target.value)}
                     />
                   ) : (
-                    <div className="space-y-2">
-                      <input
-                        ref={fileRef}
-                        type="file"
-                        multiple
-                        accept=".pdf,.docx,.doc,.txt,.jpg,.jpeg,.png"
-                        onChange={e => setFiles(e.target.files)}
-                        className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-teal-50 file:text-teal-700 file:font-medium hover:file:bg-teal-100"
-                      />
+                    <div className="space-y-3">
+                      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Attach files (PDF, DOCX, images)</label>
+                      <div className="border-2 border-dashed border-slate-200 rounded-xl p-5 text-center hover:border-teal-300 transition">
+                        <input
+                          ref={fileRef}
+                          type="file"
+                          multiple
+                          accept=".pdf,.docx,.doc,.txt,.jpg,.jpeg,.png"
+                          onChange={e => setFiles(e.target.files)}
+                          className="hidden"
+                          id="assignment-file-input"
+                        />
+                        <label htmlFor="assignment-file-input" className="cursor-pointer">
+                          <div className="text-2xl mb-2">📎</div>
+                          <p className="text-sm text-slate-600">
+                            <span className="text-teal-700 font-medium underline">Browse files</span> or drag & drop
+                          </p>
+                          <p className="text-xs text-slate-400 mt-1">PDF, DOCX, TXT, JPG, PNG · max 20MB each</p>
+                        </label>
+                      </div>
+                      {files && files.length > 0 && (
+                        <div className="space-y-1">
+                          {Array.from(files).map((f, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                              <span>📎</span>
+                              <span className="truncate flex-1">{f.name}</span>
+                              <span className="text-slate-400 shrink-0">({(f.size / 1024).toFixed(0)} KB)</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         className="w-full h-20 text-sm border border-slate-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
                         placeholder="Optional: add a note with your file submission…"
                         value={textContent}
                         onChange={e => setTextContent(e.target.value)}
                       />
-                      {files && files.length > 0 && (
-                        <div className="space-y-1">
-                          {Array.from(files).map((f, i) => (
-                            <div key={i} className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 rounded px-3 py-1.5">
-                              <span>📎</span>
-                              <span className="truncate">{f.name}</span>
-                              <span className="text-slate-400 shrink-0">({(f.size / 1024).toFixed(0)} KB)</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   )}
 

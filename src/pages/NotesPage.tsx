@@ -19,7 +19,8 @@ interface Module {
 
 interface Props { user: any; }
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Use relative paths so Vite proxy (dev) and VITE_API_BASE_URL (prod) both work
+const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
 
 const FILE_ICONS: Record<string, string> = {
   'application/pdf': '📄',
@@ -50,19 +51,19 @@ export default function NotesPage({ user }: Props) {
   async function loadData() {
     setLoading(true);
     try {
-      // Load all notes for this student
-      const notesRes = await fetch(`${API}/api/students/${user.id}/notes`);
+      const notesRes = await fetch(`${BASE}/api/students/${user.id}/notes`, { credentials: 'include' });
       const notesData = await notesRes.json();
-      setNotes(notesData);
+      setNotes(Array.isArray(notesData) ? notesData : []);
 
-      // Load all modules from enrolled courses
-      const coursesRes = await fetch(`${API}/api/student/${user.id}/courses`);
+      const coursesRes = await fetch(`${BASE}/api/student/${user.id}/courses`, { credentials: 'include' });
       const courses = await coursesRes.json();
       const allModules: Module[] = [];
-      for (const course of courses) {
-        const modRes = await fetch(`${API}/api/courses/${course.id}/modules`);
+      for (const course of (Array.isArray(courses) ? courses : [])) {
+        const modRes = await fetch(`${BASE}/api/courses/${course.id}/modules`, { credentials: 'include' });
         const mods = await modRes.json();
-        mods.forEach((m: any) => allModules.push({ id: m.id, name: m.name, course_name: course.name }));
+        (Array.isArray(mods) ? mods : []).forEach((m: any) =>
+          allModules.push({ id: m.id, name: m.name, course_name: course.name })
+        );
       }
       setModules(allModules);
       if (allModules.length > 0 && !selectedModule) setSelectedModule(allModules[0].id);
@@ -93,10 +94,11 @@ export default function NotesPage({ user }: Props) {
     formData.append('student_id', String(user.id));
 
     try {
-      setUploadProgress('Extracting text…');
-      const res = await fetch(`${API}/api/modules/${selectedModule}/notes`, {
+      setUploadProgress('Extracting text & embedding…');
+      const res = await fetch(`${BASE}/api/modules/${selectedModule}/notes`, {
         method: 'POST',
         body: formData,
+        credentials: 'include',
       });
       if (!res.ok) throw new Error((await res.json()).error ?? 'Upload failed');
       const data = await res.json();
@@ -113,7 +115,7 @@ export default function NotesPage({ user }: Props) {
 
   async function deleteNote(id: number) {
     if (!confirm('Delete this note? Its embeddings will also be removed.')) return;
-    await fetch(`${API}/api/notes/${id}`, { method: 'DELETE' });
+    await fetch(`${BASE}/api/notes/${id}`, { method: 'DELETE', credentials: 'include' });
     setNotes(prev => prev.filter(n => n.id !== id));
   }
 
@@ -134,7 +136,7 @@ export default function NotesPage({ user }: Props) {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-800">My Notes</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Upload PDFs, DOCX, or text files — they're chunked, embedded, and fed to your module chatbot.
+          Upload PDFs, DOCX, or text files — they&apos;re chunked, embedded, and fed to your module chatbot.
         </p>
       </div>
 
@@ -143,7 +145,7 @@ export default function NotesPage({ user }: Props) {
         <div className="lg:col-span-1 space-y-2">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Modules</p>
           {modules.length === 0 && (
-            <p className="text-xs text-slate-400">No modules found</p>
+            <p className="text-xs text-slate-400">No modules found. Enrol in a course first.</p>
           )}
           {modules.map(m => (
             <button
@@ -216,8 +218,8 @@ export default function NotesPage({ user }: Props) {
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
-              {error}
+            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 flex items-center justify-between">
+              <span>{error}</span>
               <button onClick={() => setError('')} className="ml-2 text-red-400 hover:text-red-600">✕</button>
             </div>
           )}
