@@ -20,12 +20,10 @@ import NotesPage from "./pages/NotesPage";
 import LoginPage from "./pages/LoginPage";
 import LandingPage from "./pages/LandingPage";
 import { InstructorDashboard } from "./pages/InstructorDashboard";
-import AdminDashboard from "./pages/AdminDashboard";
-import AdminUserManagement from "./pages/AdminUserManagement";
+import { AdminDashboard } from "./pages/AdminDashboard";
+import { AdminUserManagement } from "./pages/AdminUserManagement";
 import AdminCourseManagement from "./pages/AdminCourseManagement";
-import AdminSettings from "./pages/AdminSettings";
-
-const PUBLIC_PATHS = ["/landing", "/login"];
+import { AdminSettings } from "./pages/AdminSettings";
 
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {
@@ -50,18 +48,9 @@ const AppContent: React.FC = () => {
     navigate("/landing");
   };
 
-  // Public routes — no auth required
-  if (location.pathname === "/landing") {
-    return <LandingPage />;
-  }
-  if (location.pathname === "/login") {
-    return <LoginPage onLogin={handleLogin} />;
-  }
-
-  // Auth guard — redirect unauthenticated users to landing
-  if (!user) {
-    return <Navigate to="/landing" replace />;
-  }
+  if (location.pathname === "/landing") return <LandingPage />;
+  if (location.pathname === "/login") return <LoginPage onLogin={handleLogin} />;
+  if (!user) return <Navigate to="/landing" replace />;
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -84,7 +73,6 @@ const AppContent: React.FC = () => {
             <Route path="/assignments" element={<AssignmentsPage user={user!} />} />
             <Route path="/notes" element={<NotesPage user={user!} />} />
             <Route path="/analytics" element={<AnalyticsPage user={user!} />} />
-            
             {user?.role === 'admin' && (
               <>
                 <Route path="/admin/users" element={<AdminUserManagement />} />
@@ -92,8 +80,6 @@ const AppContent: React.FC = () => {
                 <Route path="/admin/settings" element={<AdminSettings />} />
               </>
             )}
-
-            {/* Fallback */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
