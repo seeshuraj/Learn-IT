@@ -55,13 +55,33 @@ async function run(sql: string, params: any[] = []) {
 }
 
 // ─── Sanitize text for Postgres UTF8 ─────────────────────────────────────
-// Strips null bytes (0x00) and any other characters invalid in PostgreSQL UTF8
 function sanitizeText(text: string): string {
-  // Remove null bytes and other C0/C1 control chars except tab, newline, carriage-return
   return text
-    .replace(/\x00/g, "")                         // null bytes
-    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")  // other non-printable controls
-    .replace(/\uFFFD/g, "");                       // replacement character from bad decoding
+    .replace(/\x00/g, "")
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .replace(/\uFFFD/g, "");
+}
+
+// ─── Ensure user exists, upsert if missing ────────────────────────────────
+// If the student_id from the session doesn't exist in the users table yet
+// (e.g. seeded in a previous DB), insert a placeholder so FK constraints pass.
+async function ensureUserExists(id: string | number): Promise<boolean> {
+  const existing = await queryOne("SELECT id FROM users WHERE id=$1", [id]);
+  if (existing) return true;
+  // Upsert a minimal placeholder row so the FK is satisfied
+  try {
+    await run(
+      `INSERT INTO users (id, name, email, role, active)
+       VALUES ($1, 'Unknown User', 'unknown_' || $1 || '@learnitapp.local', 'student', 1)
+       ON CONFLICT (id) DO NOTHING`,
+      [id]
+    );
+    console.warn(`[ensureUserExists] Auto-created placeholder for missing user id=${id}`);
+    return true;
+  } catch (e) {
+    console.error(`[ensureUserExists] Failed to upsert user id=${id}:`, e);
+    return false;
+  }
 }
 
 // ─── Upload directories ────────────────────────────────────────────────────
@@ -322,6 +342,7 @@ async function startServer() {
     try {
       const { assignment_id, student_id, content } = req.body;
       if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
+      await ensureUserExists(student_id);
       const existing = await queryOne("SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2", [assignment_id, student_id]);
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
@@ -336,6 +357,7 @@ async function startServer() {
     try {
       const { assignment_id, student_id, content = "" } = req.body;
       if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
+      await ensureUserExists(student_id);
       const existing = await queryOne("SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2", [assignment_id, student_id]);
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
@@ -418,7 +440,10 @@ async function startServer() {
       const { student_id } = req.body;
       const file = req.file;
       if (!file || !student_id) return res.status(400).json({ error: "file and student_id required" });
-      // extractText already calls sanitizeText internally
+
+      // ── Guard: ensure student exists in users table before FK insert ──
+      await ensureUserExists(student_id);
+
       const text = await extractText(file.path, file.mimetype);
       const result = await run(
         "INSERT INTO notes (student_id,module_id,filename,original_name,file_path,content_text,file_type) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
@@ -432,7 +457,6 @@ async function startServer() {
           for (let i = 0; i < chunks.length; i++) {
             await run(
               "INSERT INTO note_chunks (note_id,chunk_index,chunk_text,embedding) VALUES ($1,$2,$3,$4)",
-              // sanitize each chunk just in case chunkText reintroduces edge cases
               [noteId, i, sanitizeText(chunks[i]), JSON.stringify(embeddings[i] ?? [])]
             );
           }
