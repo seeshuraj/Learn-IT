@@ -1,5 +1,4 @@
 import express, { Request, Response, NextFunction } from "express";
-import cors from "cors";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -17,10 +16,7 @@ const mammoth = require("mammoth");
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// In production the bundle lives in dist-server/, but static assets (dist/) and
-// uploads/ are relative to the project root. process.cwd() always points there.
 const PROJECT_ROOT = process.cwd();
-
 const isProduction = process.env.NODE_ENV === "production";
 
 // ─── Upload directories ────────────────────────────────────────────────────
@@ -324,32 +320,27 @@ async function retrieveChunks(moduleId: string | number, query: string, topK = 5
 async function startServer() {
   const app = express();
 
-  // ─── CORS ────────────────────────────────────────────────────────────────
-  // Static origins always allowed (localhost dev + any extras from env)
-  const staticAllowed = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map(s => s.trim()) : []),
-  ];
+  // ─── CORS — manual middleware (more reliable than cors() on Render) ───────
+  // Allowed origins: localhost dev + any *.vercel.app deployment
+  const ALLOWED_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
 
-  // Allow ALL *.vercel.app subdomains (preview + production deployments)
-  const VERCEL_RE = /^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const origin = req.headers.origin as string | undefined;
+    const allow = !origin || ALLOWED_RE.test(origin) ? (origin ?? "*") : "";
+    if (allow) {
+      res.setHeader("Access-Control-Allow-Origin", allow);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
+    }
+    // Respond immediately to OPTIONS preflight
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
 
-  function isOriginAllowed(origin: string): boolean {
-    if (staticAllowed.includes(origin)) return true;
-    if (VERCEL_RE.test(origin)) return true;
-    return false;
-  }
-
-  app.use(cors({
-    origin: (origin, callback) => {
-      // No origin = same-origin or server-to-server (always OK)
-      if (!origin) return callback(null, true);
-      if (isOriginAllowed(origin)) return callback(null, true);
-      callback(new Error(`CORS: origin ${origin} not allowed`));
-    },
-    credentials: true,
-  }));
   app.use(express.json());
   app.use("/uploads", express.static(UPLOADS_DIR));
 
