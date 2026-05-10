@@ -35,21 +35,19 @@ const FILE_ICONS: Record<string, string> = {
 export default function NotesPage({ user }: Props) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [modules, setModules] = useState<Module[]>([]);
-  const [selectedModule, setSelectedModule] = useState<number | null>(null);
+  const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
+  const [activeNote, setActiveNote] = useState<Note | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [previewNote, setPreviewNote] = useState<Note | null>(null);
 
   const isInstructor = user?.role === 'instructor' || user?.role === 'admin';
 
-  useEffect(() => {
-    if (!user) return;
-    loadData();
-  }, [user?.id]);
+  useEffect(() => { if (user) loadData(); }, [user?.id]);
 
   async function loadData() {
     setLoading(true);
     try {
+      // Fetch modules via enrolled courses
       const coursesRes = await fetch(`${BASE}/api/student/${user.id}/courses`, { credentials: 'include' });
       const courses = await coursesRes.json();
       const allModules: Module[] = [];
@@ -62,17 +60,17 @@ export default function NotesPage({ user }: Props) {
       }
       setModules(allModules);
 
+      // Fetch notes
       const notesRes = await fetch(`${BASE}/api/students/${user.id}/notes`, { credentials: 'include' });
       const notesData = await notesRes.json();
       const fetchedNotes: Note[] = Array.isArray(notesData) ? notesData : [];
       setNotes(fetchedNotes);
 
-      // Auto-select the first module that actually HAS notes, otherwise first module
+      // Auto-select: prefer module that has notes
       if (fetchedNotes.length > 0) {
-        const firstNoteModuleId = fetchedNotes[0].module_id;
-        setSelectedModule(prev => prev ?? firstNoteModuleId);
+        setSelectedModuleId(prev => prev ?? fetchedNotes[0].module_id);
       } else if (allModules.length > 0) {
-        setSelectedModule(prev => prev ?? allModules[0].id);
+        setSelectedModuleId(prev => prev ?? allModules[0].id);
       }
     } catch {
       setError('Could not load notes.');
@@ -81,26 +79,52 @@ export default function NotesPage({ user }: Props) {
     }
   }
 
-  const filteredNotes = selectedModule
-    ? notes.filter(n => n.module_id === selectedModule)
+  // All unique module IDs that appear in sidebar (enrolled modules + any note modules not in list)
+  const allModuleIds = new Set([
+    ...modules.map(m => m.id),
+    ...notes.map(n => n.module_id),
+  ]);
+
+  // Build sidebar module list — include modules from notes even if not in enrolled list
+  const sidebarModules: Module[] = [
+    ...modules,
+    ...notes
+      .filter(n => !modules.find(m => m.id === n.module_id))
+      .map(n => ({ id: n.module_id, name: n.module_name, course_name: n.course_name }))
+      .filter((m, i, arr) => arr.findIndex(x => x.id === m.id) === i),
+  ];
+
+  const filteredNotes = selectedModuleId
+    ? notes.filter(n => n.module_id === selectedModuleId)
     : notes;
 
-  const currentModule = modules.find(m => m.id === selectedModule)
-    ?? (notes.find(n => n.module_id === selectedModule)
-      ? { id: selectedModule!, name: notes.find(n => n.module_id === selectedModule)!.module_name, course_name: notes.find(n => n.module_id === selectedModule)!.course_name }
-      : undefined);
+  const currentModule = sidebarModules.find(m => m.id === selectedModuleId);
 
-  // For AI chat: use selected module if it has notes, else use the first module that has notes
-  const chatModuleId = filteredNotes.length > 0
-    ? selectedModule
-    : notes.length > 0 ? notes[0].module_id : selectedModule;
-  const chatModuleTitle = currentModule
-    ? `${currentModule.name} · ${currentModule.course_name}`
-    : 'Course Assistant';
+  // AI chat: use activeNote's module_id if previewing, else selected module, else first module with notes
+  const chatModuleId: number | undefined =
+    activeNote?.module_id ??
+    (filteredNotes.length > 0 ? selectedModuleId ?? undefined : undefined) ??
+    (notes.length > 0 ? notes[0].module_id : undefined);
+
+  const chatModuleTitle = activeNote
+    ? `${activeNote.module_name} · ${activeNote.course_name}`
+    : currentModule
+      ? `${currentModule.name} · ${currentModule.course_name}`
+      : 'Course Assistant';
 
   function getFileUrl(note: Note): string {
     if (note.cloudinary_url) return note.cloudinary_url;
     return `${BASE}/uploads/notes/${note.filename}`;
+  }
+
+  // For Cloudinary raw PDFs, use Google Docs viewer as fallback for in-browser rendering
+  function getPdfViewerUrl(note: Note): string {
+    const url = getFileUrl(note);
+    if (note.cloudinary_url) {
+      // Google Docs viewer renders PDFs from any public URL
+      return `https://docs.google.com/viewer?url=${encodeURIComponent(url)}&embedded=true`;
+    }
+    return `${url}#toolbar=1&navpanes=0`;
   }
 
   function canPreview(note: Note): boolean {
@@ -125,32 +149,32 @@ export default function NotesPage({ user }: Props) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Module selector */}
+        {/* Module sidebar */}
         <div className="lg:col-span-1 space-y-2">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Modules</p>
-          {modules.length === 0 && (
+          {sidebarModules.length === 0 && (
             <p className="text-xs text-slate-400">No modules found. Enrol in a course first.</p>
           )}
-          {modules.map(m => (
+          {sidebarModules.map(m => (
             <button
               key={m.id}
-              onClick={() => { setSelectedModule(m.id); setPreviewNote(null); }}
+              onClick={() => { setSelectedModuleId(m.id); setActiveNote(null); }}
               className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition ${
-                selectedModule === m.id
+                selectedModuleId === m.id
                   ? 'bg-teal-700 text-white font-semibold'
                   : 'bg-white border border-slate-200 text-slate-700 hover:border-teal-300'
               }`}
             >
               <p className="truncate font-medium">{m.name}</p>
-              <p className={`text-xs mt-0.5 truncate ${selectedModule === m.id ? 'text-teal-200' : 'text-slate-400'}`}>
-                {m.course_name}
-              </p>
+              <p className={`text-xs mt-0.5 truncate ${
+                selectedModuleId === m.id ? 'text-teal-200' : 'text-slate-400'
+              }`}>{m.course_name}</p>
             </button>
           ))}
         </div>
 
-        {/* Notes list + preview */}
-        <div className="lg:col-span-3 space-y-5">
+        {/* Main content */}
+        <div className="lg:col-span-3 space-y-4">
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 flex items-center justify-between">
               <span>{error}</span>
@@ -158,51 +182,61 @@ export default function NotesPage({ user }: Props) {
             </div>
           )}
 
-          {/* Inline PDF/text preview */}
-          {previewNote && (
+          {/* PDF / text viewer */}
+          {activeNote && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-                <span className="text-sm font-medium text-slate-700 truncate">{previewNote.original_name}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-medium text-slate-700 truncate">{activeNote.original_name}</span>
+                  {activeNote.cloudinary_url && (
+                    <span className="text-xs text-teal-500 shrink-0">☁ Cloud</span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <a
-                    href={getFileUrl(previewNote)}
-                    download={previewNote.original_name}
+                    href={getFileUrl(activeNote)}
                     target="_blank"
                     rel="noopener noreferrer"
+                    className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
+                  >
+                    ↗ Open
+                  </a>
+                  <a
+                    href={getFileUrl(activeNote)}
+                    download={activeNote.original_name}
                     className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
                   >
                     ↓ Download
                   </a>
                   <button
-                    onClick={() => setPreviewNote(null)}
+                    onClick={() => setActiveNote(null)}
                     className="text-slate-400 hover:text-slate-600 text-lg leading-none px-1"
                   >✕</button>
                 </div>
               </div>
-              {previewNote.file_type === 'application/pdf' ? (
-                <iframe
-                  src={`${getFileUrl(previewNote)}#toolbar=1&navpanes=0`}
-                  className="w-full"
-                  style={{ height: '70vh' }}
-                  title={previewNote.original_name}
-                />
-              ) : (
-                <iframe
-                  src={getFileUrl(previewNote)}
-                  className="w-full"
-                  style={{ height: '50vh' }}
-                  title={previewNote.original_name}
-                />
-              )}
+              <iframe
+                key={activeNote.id}
+                src={getPdfViewerUrl(activeNote)}
+                className="w-full border-0"
+                style={{ height: '72vh' }}
+                title={activeNote.original_name}
+                allow="fullscreen"
+              />
             </div>
           )}
 
+          {/* Notes list */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-semibold text-slate-700">
                 {currentModule ? `Notes for ${currentModule.name}` : 'All Notes'}
                 <span className="ml-2 text-xs font-normal text-slate-400">({filteredNotes.length})</span>
               </p>
+              {chatModuleId && (
+                <span className="text-xs text-indigo-500 font-medium">
+                  🧠 AI using module #{chatModuleId}
+                </span>
+              )}
             </div>
 
             {filteredNotes.length === 0 ? (
@@ -218,24 +252,22 @@ export default function NotesPage({ user }: Props) {
                 {filteredNotes.map(note => (
                   <div
                     key={note.id}
-                    className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4 hover:border-slate-300 transition"
+                    className={`bg-white border rounded-xl px-4 py-3 flex items-center justify-between gap-4 transition ${
+                      activeNote?.id === note.id
+                        ? 'border-indigo-300 ring-1 ring-indigo-200'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <span className="text-xl shrink-0">
-                        {FILE_ICONS[note.file_type] ?? '📄'}
-                      </span>
+                      <span className="text-xl shrink-0">{FILE_ICONS[note.file_type] ?? '📄'}</span>
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-slate-800 truncate">{note.original_name}</p>
                         <p className="text-xs text-slate-400 mt-0.5">
-                          {note.chunk_count > 0
-                            ? `${note.chunk_count} chunks embedded · `
-                            : 'Processing · '}
+                          {note.chunk_count > 0 ? `${note.chunk_count} chunks · ` : 'Processing · '}
                           {new Date(note.uploaded_at).toLocaleDateString('en-IE', {
                             day: 'numeric', month: 'short', year: 'numeric',
                           })}
-                          {note.cloudinary_url && (
-                            <span className="ml-1 text-teal-500">☁ Cloud</span>
-                          )}
+                          {note.cloudinary_url && <span className="ml-1 text-teal-500">☁</span>}
                         </p>
                       </div>
                     </div>
@@ -247,11 +279,14 @@ export default function NotesPage({ user }: Props) {
                       )}
                       {canPreview(note) && (
                         <button
-                          onClick={() => setPreviewNote(previewNote?.id === note.id ? null : note)}
-                          className="text-xs px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg transition font-medium"
-                          title="Preview file"
+                          onClick={() => setActiveNote(activeNote?.id === note.id ? null : note)}
+                          className={`text-xs px-3 py-1.5 border rounded-lg transition font-medium ${
+                            activeNote?.id === note.id
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+                          }`}
                         >
-                          {previewNote?.id === note.id ? '✕ Close' : '👁 Preview'}
+                          {activeNote?.id === note.id ? '✕ Close' : '👁 Preview & Chat'}
                         </button>
                       )}
                       <a
@@ -260,7 +295,6 @@ export default function NotesPage({ user }: Props) {
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
-                        title="Download file"
                       >
                         ↓ Download
                       </a>
@@ -270,13 +304,11 @@ export default function NotesPage({ user }: Props) {
                             if (!confirm('Delete this note?')) return;
                             await fetch(`${BASE}/api/notes/${note.id}`, { method: 'DELETE', credentials: 'include' });
                             setNotes(prev => prev.filter(n => n.id !== note.id));
-                            if (previewNote?.id === note.id) setPreviewNote(null);
+                            if (activeNote?.id === note.id) setActiveNote(null);
                           }}
                           className="text-slate-300 hover:text-red-500 transition text-lg leading-none"
                           title="Delete note"
-                        >
-                          ×
-                        </button>
+                        >×</button>
                       )}
                     </div>
                   </div>
@@ -287,9 +319,9 @@ export default function NotesPage({ user }: Props) {
         </div>
       </div>
 
-      {/* ChatBot — always uses the module that has notes */}
+      {/* ChatBot — always bound to the active/selected note's module */}
       <ChatBot
-        moduleId={chatModuleId ?? undefined}
+        moduleId={chatModuleId}
         moduleTitle={chatModuleTitle}
       />
     </div>
