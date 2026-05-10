@@ -71,11 +71,6 @@ function sanitizeText(t: string) {
 
 // ── Cloudinary helpers ────────────────────────────────────────────────────
 
-/**
- * Upload a local file to Cloudinary.
- * `filename` must be ONLY the bare filename — Cloudinary prepends `folder`
- * automatically, so never include the folder in `filename`.
- */
 async function uploadToCloudinary(
   localPath: string,
   folder: string,
@@ -99,16 +94,15 @@ async function uploadToCloudinary(
 
 /**
  * Extract the public_id from a Cloudinary secure_url.
- * Works for paths like:
- *   https://res.cloudinary.com/<cloud>/raw/upload/v123/folder/file.pdf
- * Returns e.g. "folder/file" (no extension) for raw resources.
+ * For RAW resources the public_id INCLUDES the file extension.
+ * e.g. "https://res.cloudinary.com/<cloud>/raw/upload/v123/folder/file.pdf"
+ *   → "folder/file.pdf"
  */
 function publicIdFromUrl(url: string): string {
-  // everything after "/upload/" (strip optional /v<version>/)
   const m = url.match(/\/upload\/(?:v\d+\/)?(.+)$/);
   if (!m) return "";
-  // strip file extension for raw resources
-  return m[1].replace(/\.[^/.]+$/, "");
+  // Do NOT strip the extension — raw resources require it in the public_id
+  return m[1];
 }
 
 async function deleteFromCloudinary(publicId: string): Promise<void> {
@@ -122,11 +116,16 @@ async function deleteFromCloudinary(publicId: string): Promise<void> {
 }
 
 /**
- * Generate a short-lived signed URL for a Cloudinary raw resource.
- * This lets the backend fetch the file even if CDN delivery quirks exist.
+ * Generate a short-lived signed download URL for a Cloudinary raw resource.
+ * Splits public_id into (base, format) so the API resolves the file correctly.
  */
-function signedDownloadUrl(publicId: string, expiresInSec = 60): string {
-  return cloudinary.utils.private_download_url(publicId, "", {
+function signedDownloadUrl(publicId: string, expiresInSec = 120): string {
+  // For raw resources the public_id includes the extension (e.g. "folder/file.pdf").
+  // private_download_url wants the extension passed separately as `format`.
+  const lastDot = publicId.lastIndexOf(".");
+  const base   = lastDot !== -1 ? publicId.slice(0, lastDot) : publicId;
+  const format = lastDot !== -1 ? publicId.slice(lastDot + 1) : "";
+  return cloudinary.utils.private_download_url(base, format, {
     resource_type: "raw",
     expires_at: Math.floor(Date.now() / 1000) + expiresInSec,
   });
@@ -360,9 +359,9 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── PDF PROXY ───────────────────────────────────────────────────────────
-  // Fetches the file via a Cloudinary signed URL (bypasses CDN quirks),
-  // then streams it inline so the browser iframe renders the PDF.
+  // ── PDF PROXY ─────────────────────────────────────────────────────────
+  // Uses Cloudinary SDK signed download URL so raw resources are always
+  // accessible regardless of CDN delivery settings.
   app.get("/api/notes/:id/proxy", async (req, res) => {
     try {
       const note = await queryOne(
@@ -375,11 +374,9 @@ async function startServer() {
       const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
 
       if (note.cloudinary_url && hasCloudinary) {
-        // Derive public_id and generate a signed download URL — this bypasses
-        // any CDN access restrictions on raw resources.
         const pubId     = publicIdFromUrl(note.cloudinary_url);
-        console.log(`[proxy] public_id=${pubId}  stored_url=${note.cloudinary_url}`);
         const signedUrl = signedDownloadUrl(pubId, 120);
+        console.log(`[proxy] public_id=${pubId}`);
         console.log(`[proxy] signed_url=${signedUrl}`);
 
         const upstream = await fetchWithTimeout(signedUrl, {}, 30000);
@@ -388,7 +385,7 @@ async function startServer() {
           console.error(`[proxy] Cloudinary ${upstream.status}:`, body);
           return res.status(502).json({
             error: `Cloudinary returned ${upstream.status}`,
-            detail: body.slice(0, 200),
+            detail: body.slice(0, 300),
           });
         }
 
@@ -621,7 +618,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Notes ────────────────────────────────────────────────────────────────
+  // ── Notes ──────────────────────────────────────────────────────────────
   app.post("/api/modules/:id/notes", uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
@@ -632,13 +629,10 @@ async function startServer() {
       let cloudinaryId  = "";
 
       if (hasCloudinary && file.buffer) {
-        // Extract text first
         text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-        // Write tmp file for upload
         const ext     = path.extname(file.originalname).toLowerCase();
         const tmpPath = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
         fs.writeFileSync(tmpPath, file.buffer);
-        // Bare filename only — Cloudinary prepends the folder automatically
         const filename = `${req.params.id}-${Date.now()}`;
         const url = await uploadToCloudinary(tmpPath, "learnit/notes", filename);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
@@ -663,7 +657,6 @@ async function startServer() {
       );
       const noteId = result.lastInsertId;
 
-      // Embed and store chunks
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
@@ -1107,12 +1100,9 @@ async function startServer() {
         {
           role: "system",
           content:
-            `You are a helpful STUDY ASSISTANT for the module "${moduleTitle ?? "General"}".
-` +
-            `Answer questions based on the course notes below.
-` +
-            `If the answer is not covered in the notes, say so honestly but offer general guidance.
-` +
+            `You are a helpful STUDY ASSISTANT for the module "${moduleTitle ?? "General"}".\n` +
+            `Answer questions based on the course notes below.\n` +
+            `If the answer is not covered in the notes, say so honestly but offer general guidance.\n` +
             `\n--- COURSE NOTES ---\n${notesContext}\n--- END NOTES ---`,
         },
         ...history.slice(-6),
