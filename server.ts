@@ -116,7 +116,6 @@ function cosineSim(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
-// Shared fetch helper with timeout
 async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 25000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -126,6 +125,9 @@ async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 2500
     clearTimeout(timer);
   }
 }
+
+// NIM_CHAT_MODEL: meta/llama-3.1-8b-instruct is the most reliably free endpoint on integrate.api.nvidia.com
+const NIM_CHAT_MODEL = "meta/llama-3.1-8b-instruct";
 
 async function nimChat(
   messages: { role: string; content: string }[],
@@ -139,14 +141,18 @@ async function nimChat(
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: "mistralai/mistral-nemo-12b-instruct",
+        model: NIM_CHAT_MODEL,
         messages,
         temperature: opts.temperature ?? 0.4,
         max_tokens: opts.maxTokens ?? 1024,
       }),
     }
   );
-  if (!res.ok) throw new Error(`NVIDIA NIM ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    console.error(`[nimChat] NVIDIA API error ${res.status}:`, errBody);
+    throw new Error(`NVIDIA NIM ${res.status}: ${errBody}`);
+  }
   const data = await res.json() as any;
   return data.choices?.[0]?.message?.content ?? "";
 }
@@ -168,7 +174,11 @@ async function nimEmbed(texts: string[], inputType: "passage" | "query" = "passa
       }),
     }
   );
-  if (!res.ok) throw new Error(`NVIDIA Embed ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    console.error(`[nimEmbed] NVIDIA Embed error ${res.status}:`, errBody);
+    throw new Error(`NVIDIA Embed ${res.status}: ${errBody}`);
+  }
   const data = await res.json() as any;
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }
@@ -182,7 +192,6 @@ async function retrieveChunks(moduleId: string | number, queryText: string, topK
     [moduleId]
   );
   if (!chunks.length) return [];
-  // Use input_type='query' for the retrieval question — critical for nv-embedqa-e5-v5
   const [queryEmbed] = await nimEmbed([queryText], "query");
   const scored = chunks.map((c: any) => {
     const emb: number[] = JSON.parse(c.embedding ?? "[]");
@@ -397,7 +406,6 @@ async function startServer() {
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
-          // Use input_type='passage' for indexing
           const embeddings = await nimEmbed(chunks, "passage");
           for (let i = 0; i < chunks.length; i++) {
             await run(
@@ -790,7 +798,6 @@ async function startServer() {
           if (chunks.length > 0) notesContext = chunks.join("\n\n---\n");
         } catch (embErr: any) {
           console.error("RAG retrieval failed, answering without context:", embErr.message);
-          // Fall through — answer without notes context rather than 500ing
         }
       }
       const answer = await nimChat([
@@ -799,7 +806,10 @@ async function startServer() {
         { role: "user", content: question },
       ], { temperature: 0.4, maxTokens: 800 });
       res.json({ answer });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) {
+      console.error("[/api/ai/chat] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.post("/api/ai/analytics-summary", async (req, res) => {
