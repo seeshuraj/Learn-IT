@@ -21,12 +21,14 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
   const [modules, setModules] = useState<Module[]>([]);
   const [selectedModule, setSelectedModule] = useState<Module | null>(null);
   const [materials, setMaterials] = useState<any[]>([]);
-  const [showChat, setShowChat] = useState(false);
   const [isAddingModule, setIsAddingModule] = useState(false);
   const [newModuleName, setNewModuleName] = useState("");
 
   // Safe: only evaluate after course is loaded
   const isInstructor = course != null && user.role === 'instructor' && course.instructor_id === user.id;
+
+  // Active module for chatbot context: prefer selected, fallback to first
+  const activeModule = selectedModule ?? modules[0] ?? null;
 
   useEffect(() => {
     fetch(`${BASE}/api/courses`, { credentials: 'include' })
@@ -95,7 +97,6 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
     }
   };
 
-  // Show a loading state while course data loads
   if (!course) return (
     <div className="flex items-center justify-center min-h-[60vh]">
       <div className="animate-spin rounded-full h-8 w-8 border-2 border-indigo-600 border-t-transparent" />
@@ -121,13 +122,6 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
           <div className="flex gap-3">
             <button className="px-6 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-all">
               Course Syllabus
-            </button>
-            <button
-              onClick={() => setShowChat(!showChat)}
-              className="px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
-            >
-              <Bot className="w-5 h-5" />
-              AI Module Tutor
             </button>
           </div>
         </div>
@@ -233,12 +227,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                           <Bot className="w-5 h-5 text-indigo-600" />
                           <p className="text-sm font-medium text-indigo-900">Need help with this module?</p>
                         </div>
-                        <button
-                          onClick={() => setShowChat(true)}
-                          className="text-xs font-bold text-indigo-600 hover:text-indigo-700"
-                        >
-                          Ask AI Tutor →
-                        </button>
+                        <span className="text-xs font-bold text-indigo-600">Use the chat bubble →</span>
                       </div>
                     </div>
                   </motion.div>
@@ -290,16 +279,11 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
         </div>
       </div>
 
-      {showChat && (
-        <div className="fixed bottom-8 right-8 z-50">
-          <ChatBot
-            moduleId={selectedModule?.id || modules[0]?.id || 1}
-            moduleName={selectedModule?.name || modules[0]?.name || "Course"}
-            moduleContent={selectedModule?.content || modules[0]?.content || ""}
-            onClose={() => setShowChat(false)}
-          />
-        </div>
-      )}
+      {/* ChatBot floats on every course page — context switches with selected module */}
+      <ChatBot
+        moduleId={activeModule?.id}
+        moduleTitle={activeModule?.name ?? course.name}
+      />
     </div>
   );
 };

@@ -1,14 +1,19 @@
 import React, { useState, useRef, useEffect } from "react";
 import { MessageSquare, X, Send, Loader2, Brain, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { askModuleChatbot } from "../services/aiService";
+
+const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
 
 interface Message { role: "user" | "assistant"; content: string; }
-interface ChatBotProps { moduleTitle?: string; notesContext?: string; }
+
+interface ChatBotProps {
+  moduleId?: number;
+  moduleTitle?: string;
+}
 
 export const ChatBot: React.FC<ChatBotProps> = ({
+  moduleId,
   moduleTitle = "General Course Assistant",
-  notesContext = "",
 }) => {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -18,17 +23,40 @@ export const ChatBot: React.FC<ChatBotProps> = ({
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
 
+  // Reset conversation when module changes
+  useEffect(() => { setMessages([]); }, [moduleId]);
+
   const send = async () => {
     const q = input.trim();
     if (!q || loading) return;
     setInput("");
-    setMessages((p) => [...p, { role: "user", content: q }]);
+    const updatedMessages: Message[] = [...messages, { role: "user", content: q }];
+    setMessages(updatedMessages);
     setLoading(true);
     try {
-      const answer = await askModuleChatbot(q, moduleTitle, notesContext);
-      setMessages((p) => [...p, { role: "assistant", content: answer }]);
-    } catch {
-      setMessages((p) => [...p, { role: "assistant", content: "Sorry, I couldn't reach the AI service." }]);
+      const res = await fetch(`${BASE}/api/ai/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          question: q,
+          moduleTitle,
+          moduleId,
+          // pass last 6 turns of history so backend has context
+          history: updatedMessages.slice(-7, -1).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setMessages((p) => [...p, { role: "assistant", content: data.answer ?? "No response received." }]);
+    } catch (e: any) {
+      setMessages((p) => [
+        ...p,
+        { role: "assistant", content: `Sorry, I couldn't reach the AI service. (${e.message})` },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -63,7 +91,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
               </div>
               <div className="flex items-center gap-1 bg-white/20 px-2 py-1 rounded-full">
                 <Sparkles className="w-3 h-3 text-white" />
-                <span className="text-[9px] font-bold text-white uppercase tracking-wider">Gemini</span>
+                <span className="text-[9px] font-bold text-white uppercase tracking-wider">RAG</span>
               </div>
             </div>
 
@@ -74,7 +102,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
                     <MessageSquare className="w-7 h-7 text-slate-300" />
                   </div>
                   <p className="text-xs font-semibold text-slate-500 mb-1">Ask me anything</p>
-                  <p className="text-[11px] text-slate-400">I'll answer based on your course notes.</p>
+                  <p className="text-[11px] text-slate-400">I'll answer based on uploaded course notes.</p>
                 </div>
               )}
               {messages.map((msg, i) => (
