@@ -332,15 +332,12 @@ async function startServer() {
     ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map(s => s.trim()) : []),
   ];
 
-  // Vercel generates a brand-new subdomain on every preview deploy, so we
-  // accept the entire *.vercel.app namespace rather than hardcoding each URL.
-  const VERCEL_RE = /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9-]+\.vercel\.app$/i;
+  // Allow ALL *.vercel.app subdomains (preview + production deployments)
+  const VERCEL_RE = /^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
 
   function isOriginAllowed(origin: string): boolean {
     if (staticAllowed.includes(origin)) return true;
     if (VERCEL_RE.test(origin)) return true;
-    // Also allow the canonical *.vercel.app production alias (e.g. learn-it.vercel.app)
-    if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin)) return true;
     return false;
   }
 
