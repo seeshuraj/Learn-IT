@@ -33,7 +33,6 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  // Transaction pooler (port 6543) does not support prepared statements
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
@@ -53,6 +52,16 @@ async function queryOne(sql: string, params: any[] = []) {
 async function run(sql: string, params: any[] = []) {
   const { rows, rowCount } = await pool.query(sql, params);
   return { lastInsertId: rows[0]?.id ?? null, changes: rowCount ?? 0 };
+}
+
+// ─── Sanitize text for Postgres UTF8 ─────────────────────────────────────
+// Strips null bytes (0x00) and any other characters invalid in PostgreSQL UTF8
+function sanitizeText(text: string): string {
+  // Remove null bytes and other C0/C1 control chars except tab, newline, carriage-return
+  return text
+    .replace(/\x00/g, "")                         // null bytes
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")  // other non-printable controls
+    .replace(/\uFFFD/g, "");                       // replacement character from bad decoding
 }
 
 // ─── Upload directories ────────────────────────────────────────────────────
@@ -81,14 +90,14 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
     if (ext === ".pdf" || mimetype === "application/pdf") {
       const buf = fs.readFileSync(filePath);
       const data = await pdfParse(buf);
-      return data.text ?? "";
+      return sanitizeText(data.text ?? "");
     }
     if (ext === ".docx" || mimetype.includes("wordprocessingml")) {
       const result = await mammoth.extractRawText({ path: filePath });
-      return result.value ?? "";
+      return sanitizeText(result.value ?? "");
     }
     if (ext === ".txt" || mimetype === "text/plain") {
-      return fs.readFileSync(filePath, "utf-8");
+      return sanitizeText(fs.readFileSync(filePath, "utf-8"));
     }
     return "";
   } catch (e) {
@@ -317,7 +326,7 @@ async function startServer() {
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
         "INSERT INTO submissions (assignment_id,student_id,content) VALUES ($1,$2,$3) RETURNING id",
-        [assignment_id, student_id, content]
+        [assignment_id, student_id, sanitizeText(content ?? "")]
       );
       res.json({ id: result.lastInsertId });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -331,7 +340,7 @@ async function startServer() {
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
         "INSERT INTO submissions (assignment_id,student_id,content) VALUES ($1,$2,$3) RETURNING id",
-        [assignment_id, student_id, content]
+        [assignment_id, student_id, sanitizeText(content)]
       );
       const submissionId = result.lastInsertId;
       const files: any[] = req.files ?? [];
@@ -409,6 +418,7 @@ async function startServer() {
       const { student_id } = req.body;
       const file = req.file;
       if (!file || !student_id) return res.status(400).json({ error: "file and student_id required" });
+      // extractText already calls sanitizeText internally
       const text = await extractText(file.path, file.mimetype);
       const result = await run(
         "INSERT INTO notes (student_id,module_id,filename,original_name,file_path,content_text,file_type) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
@@ -422,7 +432,8 @@ async function startServer() {
           for (let i = 0; i < chunks.length; i++) {
             await run(
               "INSERT INTO note_chunks (note_id,chunk_index,chunk_text,embedding) VALUES ($1,$2,$3,$4)",
-              [noteId, i, chunks[i], JSON.stringify(embeddings[i] ?? [])]
+              // sanitize each chunk just in case chunkText reintroduces edge cases
+              [noteId, i, sanitizeText(chunks[i]), JSON.stringify(embeddings[i] ?? [])]
             );
           }
         } catch (_e) { console.error("Embedding error:", _e); }
