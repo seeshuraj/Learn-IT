@@ -68,14 +68,13 @@ function sanitizeText(text: string): string {
     .replace(/\uFFFD/g, "");
 }
 
-// Upload a local file to Cloudinary and return the secure URL
 async function uploadToCloudinary(localPath: string, folder: string, publicId: string): Promise<string | null> {
   if (!hasCloudinary) return null;
   try {
     const result = await cloudinary.uploader.upload(localPath, {
       folder,
       public_id: publicId,
-      resource_type: "raw", // handles PDF, DOCX, TXT etc.
+      resource_type: "raw",
       overwrite: true,
     });
     return result.secure_url;
@@ -85,7 +84,6 @@ async function uploadToCloudinary(localPath: string, folder: string, publicId: s
   }
 }
 
-// Delete a file from Cloudinary by its public_id
 async function deleteFromCloudinary(publicId: string): Promise<void> {
   if (!hasCloudinary) return;
   try {
@@ -100,7 +98,6 @@ const NOTES_DIR = path.join(UPLOADS_DIR, "notes");
 const SUBMISSIONS_DIR = path.join(UPLOADS_DIR, "submissions");
 [UPLOADS_DIR, NOTES_DIR, SUBMISSIONS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
-// Use memory storage when Cloudinary is configured (no disk needed after upload)
 const memStorage = multer.memoryStorage();
 const diskNotesStorage = multer.diskStorage({
   destination: (_req: any, _file: any, cb: any) => cb(null, NOTES_DIR),
@@ -120,7 +117,6 @@ const uploadSubmission = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-// Write a buffer to a temp file, extract text, then delete the temp file
 async function extractTextFromBuffer(buffer: Buffer, mimetype: string, originalname: string): Promise<string> {
   const ext = path.extname(originalname).toLowerCase();
   const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
@@ -185,7 +181,6 @@ async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 2500
   }
 }
 
-// meta/llama-3.3-70b-instruct — confirmed active on free trial keys
 const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
 
 async function nimChat(
@@ -286,6 +281,46 @@ async function startServer() {
       res.json({ status: "ok", db: "postgres", env: process.env.NODE_ENV, cloudinary: hasCloudinary, ts: new Date().toISOString() });
     } catch (e: any) {
       res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  // ─── PDF PROXY ────────────────────────────────────────────────────────────
+  // Fetches the Cloudinary raw file server-side and streams it with correct
+  // Content-Type so the browser iframe can render it without CORS issues.
+  app.get("/api/notes/:id/proxy", async (req, res) => {
+    try {
+      const note = await queryOne(
+        "SELECT cloudinary_url, file_type, original_name, file_path FROM notes WHERE id=$1",
+        [req.params.id]
+      );
+      if (!note) return res.status(404).json({ error: "Note not found" });
+
+      if (note.cloudinary_url) {
+        // Stream from Cloudinary
+        const upstream = await fetch(note.cloudinary_url);
+        if (!upstream.ok) return res.status(502).json({ error: "Could not fetch from Cloudinary" });
+        const contentType = note.file_type || upstream.headers.get("content-type") || "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`); 
+        // Stream the body
+        const reader = (upstream.body as any);
+        if (reader && typeof reader.pipe === "function") {
+          reader.pipe(res);
+        } else {
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          res.send(buf);
+        }
+      } else if (note.file_path && fs.existsSync(note.file_path)) {
+        // Local disk fallback
+        res.setHeader("Content-Type", note.file_type || "application/octet-stream");
+        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`); 
+        res.sendFile(path.resolve(note.file_path));
+      } else {
+        res.status(404).json({ error: "File not found on disk or cloud" });
+      }
+    } catch (e: any) {
+      console.error("[proxy] error:", e.message);
+      res.status(500).json({ error: e.message });
     }
   });
 
@@ -413,7 +448,6 @@ async function startServer() {
         let fileUrl = "";
         let cloudinaryId = "";
         if (hasCloudinary && file.buffer) {
-          // Write buffer to temp, upload to Cloudinary, delete temp
           const ext = path.extname(file.originalname).toLowerCase();
           const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
           fs.writeFileSync(tmpPath, file.buffer);
@@ -481,7 +515,6 @@ async function startServer() {
       let cloudinaryId = "";
 
       if (hasCloudinary && file.buffer) {
-        // Extract text from buffer via temp file, then upload original buffer to Cloudinary
         text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
         const ext = path.extname(file.originalname).toLowerCase();
         const tmpPath = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
@@ -492,7 +525,6 @@ async function startServer() {
         cloudinaryUrl = url ?? "";
         cloudinaryId = publicId;
       } else {
-        // Disk storage fallback
         text = await extractText(file.path, file.mimetype);
       }
 
@@ -546,12 +578,10 @@ async function startServer() {
   app.delete("/api/notes/:id", async (req, res) => {
     try {
       const note = await queryOne("SELECT file_path, cloudinary_url FROM notes WHERE id=$1", [req.params.id]);
-      // Delete from Cloudinary if stored there
       if (note?.cloudinary_url) {
-        // Extract public_id from URL: last two path segments without extension
         try {
           const urlParts = note.cloudinary_url.split("/");
-          const publicIdWithExt = urlParts.slice(-3).join("/"); // folder/subfolder/filename
+          const publicIdWithExt = urlParts.slice(-3).join("/");
           const publicId = publicIdWithExt.replace(/\.[^/.]+$/, "");
           await deleteFromCloudinary(publicId);
         } catch (_) {}
@@ -880,7 +910,6 @@ async function startServer() {
       const files = await query("SELECT * FROM submission_files WHERE submission_id=$1", [submission_id]);
       let fullText = submission?.content ?? "";
       for (const file of files) {
-        // Try to extract from local path; Cloudinary files are raw so we skip re-downloading
         if (file.file_path && fs.existsSync(file.file_path)) {
           const extracted = await extractText(file.file_path, file.file_type);
           if (extracted) fullText += "\n\n" + extracted;
