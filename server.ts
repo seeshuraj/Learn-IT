@@ -126,8 +126,8 @@ async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 2500
   }
 }
 
-// Stable free NIM chat endpoint — mistral-7b-instruct-v0.3
-const NIM_CHAT_MODEL = "mistralai/mistral-7b-instruct-v0.3";
+// meta/llama-3.3-70b-instruct — confirmed active on free trial keys
+const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
 
 async function nimChat(
   messages: { role: string; content: string }[],
