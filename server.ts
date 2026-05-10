@@ -38,50 +38,24 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
-// Helper: run a query and return rows
 async function query(sql: string, params: any[] = []) {
   const { rows } = await pool.query(sql, params);
   return rows;
 }
-// Helper: run a query and return first row or null
 async function queryOne(sql: string, params: any[] = []) {
   const { rows } = await pool.query(sql, params);
   return rows[0] ?? null;
 }
-// Helper: run INSERT/UPDATE/DELETE and return lastID for INSERTs
 async function run(sql: string, params: any[] = []) {
   const { rows, rowCount } = await pool.query(sql, params);
   return { lastInsertId: rows[0]?.id ?? null, changes: rowCount ?? 0 };
 }
 
-// ─── Sanitize text for Postgres UTF8 ─────────────────────────────────────
 function sanitizeText(text: string): string {
   return text
     .replace(/\x00/g, "")
     .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
     .replace(/\uFFFD/g, "");
-}
-
-// ─── Ensure user exists, upsert if missing ────────────────────────────────
-// If the student_id from the session doesn't exist in the users table yet
-// (e.g. seeded in a previous DB), insert a placeholder so FK constraints pass.
-async function ensureUserExists(id: string | number): Promise<boolean> {
-  const existing = await queryOne("SELECT id FROM users WHERE id=$1", [id]);
-  if (existing) return true;
-  // Upsert a minimal placeholder row so the FK is satisfied
-  try {
-    await run(
-      `INSERT INTO users (id, name, email, role, active)
-       VALUES ($1, 'Unknown User', 'unknown_' || $1 || '@learnitapp.local', 'student', 1)
-       ON CONFLICT (id) DO NOTHING`,
-      [id]
-    );
-    console.warn(`[ensureUserExists] Auto-created placeholder for missing user id=${id}`);
-    return true;
-  } catch (e) {
-    console.error(`[ensureUserExists] Failed to upsert user id=${id}:`, e);
-    return false;
-  }
 }
 
 // ─── Upload directories ────────────────────────────────────────────────────
@@ -90,7 +64,6 @@ const NOTES_DIR = path.join(UPLOADS_DIR, "notes");
 const SUBMISSIONS_DIR = path.join(UPLOADS_DIR, "submissions");
 [UPLOADS_DIR, NOTES_DIR, SUBMISSIONS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
-// ─── Multer storage configs ────────────────────────────────────────────────
 const notesStorage = multer.diskStorage({
   destination: (_req: any, _file: any, cb: any) => cb(null, NOTES_DIR),
   filename: (_req: any, file: any, cb: any) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
@@ -103,7 +76,6 @@ const submissionStorage = multer.diskStorage({
 const uploadNote = multer({ storage: notesStorage, limits: { fileSize: 20 * 1024 * 1024 } });
 const uploadSubmission = multer({ storage: submissionStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-// ─── Text extraction helpers ───────────────────────────────────────────────
 async function extractText(filePath: string, mimetype: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
   try {
@@ -126,7 +98,6 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
   }
 }
 
-// ─── Chunking helper ───────────────────────────────────────────────────────
 function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const chunks: string[] = [];
@@ -138,7 +109,6 @@ function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
   return chunks.filter(c => c.trim().length > 20);
 }
 
-// ─── Cosine similarity helper ─────────────────────────────────────────────
 function cosineSim(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
@@ -149,7 +119,6 @@ function cosineSim(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
-// ─── AI helper (NVIDIA NIM) ────────────────────────────────────────────────
 async function nimChat(
   messages: { role: string; content: string }[],
   opts: { temperature?: number; maxTokens?: number } = {}
@@ -171,7 +140,6 @@ async function nimChat(
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-// ─── Embedding helper (NVIDIA NIM) ────────────────────────────────────────
 async function nimEmbed(texts: string[]): Promise<number[][]> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
@@ -190,7 +158,6 @@ async function nimEmbed(texts: string[]): Promise<number[][]> {
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }
 
-// ─── RAG retrieval ────────────────────────────────────────────────────────
 async function retrieveChunks(moduleId: string | number, queryText: string, topK = 5): Promise<string[]> {
   const chunks = await query(
     `SELECT nc.chunk_text, nc.embedding
@@ -212,7 +179,6 @@ async function retrieveChunks(moduleId: string | number, queryText: string, topK
 async function startServer() {
   const app = express();
 
-  // ─── CORS — manual middleware ────────────────────────────────────────────
   const ALLOWED_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
 
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -342,7 +308,6 @@ async function startServer() {
     try {
       const { assignment_id, student_id, content } = req.body;
       if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
-      await ensureUserExists(student_id);
       const existing = await queryOne("SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2", [assignment_id, student_id]);
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
@@ -357,7 +322,6 @@ async function startServer() {
     try {
       const { assignment_id, student_id, content = "" } = req.body;
       if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
-      await ensureUserExists(student_id);
       const existing = await queryOne("SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2", [assignment_id, student_id]);
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
@@ -409,45 +373,16 @@ async function startServer() {
   });
 
   // ─── NOTES ────────────────────────────────────────────────────────────────
-  app.get("/api/modules/:id/notes", async (req, res) => {
-    try {
-      const { student_id } = req.query;
-      let notes;
-      if (student_id) {
-        notes = await query(`
-          SELECT n.id,n.original_name,n.file_type,n.uploaded_at,n.module_id,
-                 m.name as module_name,
-                 (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
-          FROM notes n JOIN modules m ON n.module_id = m.id
-          WHERE n.module_id=$1 AND n.student_id=$2 ORDER BY n.uploaded_at DESC
-        `, [req.params.id, student_id]);
-      } else {
-        notes = await query(`
-          SELECT n.id,n.original_name,n.file_type,n.uploaded_at,n.module_id,
-                 m.name as module_name,u.name as student_name,
-                 (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
-          FROM notes n JOIN modules m ON n.module_id = m.id
-          JOIN users u ON n.student_id = u.id
-          WHERE n.module_id=$1 ORDER BY n.uploaded_at DESC
-        `, [req.params.id]);
-      }
-      res.json(notes);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
-
+  // POST: only instructors upload notes — student_id is NULL for instructor notes
   app.post("/api/modules/:id/notes", uploadNote.single("file"), async (req: any, res) => {
     try {
-      const { student_id } = req.body;
       const file = req.file;
-      if (!file || !student_id) return res.status(400).json({ error: "file and student_id required" });
-
-      // ── Guard: ensure student exists in users table before FK insert ──
-      await ensureUserExists(student_id);
-
+      if (!file) return res.status(400).json({ error: "file required" });
+      // student_id is NULL for instructor uploads; ignore any passed value
       const text = await extractText(file.path, file.mimetype);
       const result = await run(
-        "INSERT INTO notes (student_id,module_id,filename,original_name,file_path,content_text,file_type) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
-        [student_id, req.params.id, file.filename, file.originalname, file.path, text, file.mimetype]
+        "INSERT INTO notes (student_id,module_id,filename,original_name,file_path,content_text,file_type) VALUES (NULL,$1,$2,$3,$4,$5,$6) RETURNING id",
+        [req.params.id, file.filename, file.originalname, file.path, text, file.mimetype]
       );
       const noteId = result.lastInsertId;
       const chunks = chunkText(text);
@@ -466,6 +401,23 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // GET all instructor notes for a module (used by students to view notes)
+  app.get("/api/modules/:id/notes", async (req, res) => {
+    try {
+      const notes = await query(`
+        SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
+               m.name as module_name, c.name as course_name,
+               (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
+        FROM notes n
+        JOIN modules m ON n.module_id = m.id
+        JOIN courses c ON m.course_id = c.id
+        WHERE n.module_id = $1 AND n.student_id IS NULL
+        ORDER BY n.uploaded_at DESC
+      `, [req.params.id]);
+      res.json(notes);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   app.delete("/api/notes/:id", async (req, res) => {
     try {
       const note = await queryOne("SELECT file_path FROM notes WHERE id=$1", [req.params.id]);
@@ -476,16 +428,21 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // GET notes visible to a student = instructor notes for all their enrolled modules
   app.get("/api/students/:id/notes", async (req, res) => {
     try {
       res.json(await query(`
-        SELECT n.id,n.original_name,n.file_type,n.uploaded_at,n.module_id,
-               m.name as module_name,c.name as course_name,
+        SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
+               m.name as module_name, c.name as course_name,
                (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
         FROM notes n
         JOIN modules m ON n.module_id = m.id
         JOIN courses c ON m.course_id = c.id
-        WHERE n.student_id=$1 ORDER BY n.uploaded_at DESC
+        JOIN enrollments e ON e.course_id = c.id
+        WHERE e.student_id = $1
+          AND n.student_id IS NULL
+          AND c.archived = 0
+        ORDER BY n.uploaded_at DESC
       `, [req.params.id]));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -682,7 +639,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── ADMIN ENROLLMENT ─────────────────────────────────────────────────────
   app.get("/api/admin/enrollments/:courseId", async (req, res) => {
     try {
       res.json(await query(`
