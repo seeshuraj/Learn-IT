@@ -6,6 +6,10 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { createRequire } from "module";
 import fs from "fs";
+import dns from "dns";
+
+// Force IPv4 DNS resolution (required on Render / hosts that resolve to IPv6)
+dns.setDefaultResultOrder("ipv4first");
 
 dotenv.config();
 
@@ -29,6 +33,10 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  // Transaction pooler (port 6543) does not support prepared statements
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
 // Helper: run a query and return rows
