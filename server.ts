@@ -10,28 +10,29 @@ import dns from "dns";
 import { v2 as cloudinary } from "cloudinary";
 
 dns.setDefaultResultOrder("ipv4first");
-
 dotenv.config();
 
-// Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const hasCloudinary = !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+const hasCloudinary = !!(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
 if (hasCloudinary) console.log("[Cloudinary] configured ✓");
-else console.warn("[Cloudinary] env vars missing — files will be stored locally only");
+else console.warn("[Cloudinary] env vars missing — files stored locally only");
 
 const require = createRequire(import.meta.url);
-const multer = require("multer");
+const multer   = require("multer");
 const pdfParse = require("pdf-parse");
-const mammoth = require("mammoth");
+const mammoth  = require("mammoth");
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const __filename  = fileURLToPath(import.meta.url);
+const __dirname   = path.dirname(__filename);
 const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -61,24 +62,34 @@ async function run(sql: string, params: any[] = []) {
   return { lastInsertId: rows[0]?.id ?? null, changes: rowCount ?? 0 };
 }
 
-function sanitizeText(text: string): string {
-  return text
+function sanitizeText(t: string) {
+  return t
     .replace(/\x00/g, "")
     .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
     .replace(/\uFFFD/g, "");
 }
 
-// uploadToCloudinary: `folder` is the Cloudinary folder, `filename` is ONLY
-// the filename portion (no folder prefix) to avoid doubled paths.
-async function uploadToCloudinary(localPath: string, folder: string, filename: string): Promise<string | null> {
+// ── Cloudinary helpers ────────────────────────────────────────────────────
+
+/**
+ * Upload a local file to Cloudinary.
+ * `filename` must be ONLY the bare filename — Cloudinary prepends `folder`
+ * automatically, so never include the folder in `filename`.
+ */
+async function uploadToCloudinary(
+  localPath: string,
+  folder: string,
+  filename: string
+): Promise<string | null> {
   if (!hasCloudinary) return null;
   try {
     const result = await cloudinary.uploader.upload(localPath, {
       folder,
-      public_id: filename,   // just the filename — Cloudinary prepends `folder` automatically
+      public_id: filename,
       resource_type: "raw",
       overwrite: true,
     });
+    console.log(`[Cloudinary] uploaded → ${result.public_id}  url=${result.secure_url}`);
     return result.secure_url;
   } catch (e) {
     console.error("[Cloudinary] upload error:", e);
@@ -86,28 +97,62 @@ async function uploadToCloudinary(localPath: string, folder: string, filename: s
   }
 }
 
+/**
+ * Extract the public_id from a Cloudinary secure_url.
+ * Works for paths like:
+ *   https://res.cloudinary.com/<cloud>/raw/upload/v123/folder/file.pdf
+ * Returns e.g. "folder/file" (no extension) for raw resources.
+ */
+function publicIdFromUrl(url: string): string {
+  // everything after "/upload/" (strip optional /v<version>/)
+  const m = url.match(/\/upload\/(?:v\d+\/)?(.+)$/);
+  if (!m) return "";
+  // strip file extension for raw resources
+  return m[1].replace(/\.[^/.]+$/, "");
+}
+
 async function deleteFromCloudinary(publicId: string): Promise<void> {
-  if (!hasCloudinary) return;
+  if (!hasCloudinary || !publicId) return;
   try {
     await cloudinary.uploader.destroy(publicId, { resource_type: "raw" });
+    console.log(`[Cloudinary] deleted ${publicId}`);
   } catch (e) {
     console.error("[Cloudinary] delete error:", e);
   }
 }
 
-const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
-const NOTES_DIR = path.join(UPLOADS_DIR, "notes");
+/**
+ * Generate a short-lived signed URL for a Cloudinary raw resource.
+ * This lets the backend fetch the file even if CDN delivery quirks exist.
+ */
+function signedDownloadUrl(publicId: string, expiresInSec = 60): string {
+  return cloudinary.utils.private_download_url(publicId, "", {
+    resource_type: "raw",
+    expires_at: Math.floor(Date.now() / 1000) + expiresInSec,
+  });
+}
+
+// ── File system dirs ──────────────────────────────────────────────────────
+
+const UPLOADS_DIR     = path.join(PROJECT_ROOT, "uploads");
+const NOTES_DIR       = path.join(UPLOADS_DIR, "notes");
 const SUBMISSIONS_DIR = path.join(UPLOADS_DIR, "submissions");
-[UPLOADS_DIR, NOTES_DIR, SUBMISSIONS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+[UPLOADS_DIR, NOTES_DIR, SUBMISSIONS_DIR].forEach(d =>
+  fs.mkdirSync(d, { recursive: true })
+);
+
+// ── Multer storage ────────────────────────────────────────────────────────
 
 const memStorage = multer.memoryStorage();
 const diskNotesStorage = multer.diskStorage({
   destination: (_req: any, _file: any, cb: any) => cb(null, NOTES_DIR),
-  filename: (_req: any, file: any, cb: any) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
+  filename: (_req: any, file: any, cb: any) =>
+    cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
 });
 const diskSubmissionStorage = multer.diskStorage({
   destination: (_req: any, _file: any, cb: any) => cb(null, SUBMISSIONS_DIR),
-  filename: (_req: any, file: any, cb: any) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
+  filename: (_req: any, file: any, cb: any) =>
+    cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
 });
 
 const uploadNote = multer({
@@ -119,8 +164,14 @@ const uploadSubmission = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-async function extractTextFromBuffer(buffer: Buffer, mimetype: string, originalname: string): Promise<string> {
-  const ext = path.extname(originalname).toLowerCase();
+// ── Text extraction ───────────────────────────────────────────────────────
+
+async function extractTextFromBuffer(
+  buffer: Buffer,
+  mimetype: string,
+  originalname: string
+): Promise<string> {
+  const ext     = path.extname(originalname).toLowerCase();
   const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
   fs.writeFileSync(tmpPath, buffer);
   try {
@@ -134,7 +185,7 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
   const ext = path.extname(filePath).toLowerCase();
   try {
     if (ext === ".pdf" || mimetype === "application/pdf") {
-      const buf = fs.readFileSync(filePath);
+      const buf  = fs.readFileSync(filePath);
       const data = await pdfParse(buf);
       return sanitizeText(data.text ?? "");
     }
@@ -152,8 +203,10 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
   }
 }
 
+// ── RAG helpers ───────────────────────────────────────────────────────────
+
 function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
+  const words  = text.split(/\s+/).filter(Boolean);
   const chunks: string[] = [];
   let i = 0;
   while (i < words.length) {
@@ -166,14 +219,42 @@ function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
 function cosineSim(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
+    dot   += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
-async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 25000): Promise<Response> {
+async function retrieveChunks(
+  moduleId: string | number,
+  queryText: string,
+  topK = 5
+): Promise<string[]> {
+  const chunks = await query(
+    `SELECT nc.chunk_text, nc.embedding
+     FROM note_chunks nc
+     JOIN notes n ON nc.note_id = n.id
+     WHERE n.module_id = $1`,
+    [moduleId]
+  );
+  if (!chunks.length) return [];
+  const [queryEmbed] = await nimEmbed([queryText], "query");
+  const scored = chunks.map((c: any) => {
+    const emb: number[] = JSON.parse(c.embedding ?? "[]");
+    return { text: c.chunk_text, score: cosineSim(queryEmbed, emb) };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK).map(s => s.text);
+}
+
+// ── Network helpers ───────────────────────────────────────────────────────
+
+async function fetchWithTimeout(
+  url: string,
+  opts: RequestInit,
+  timeoutMs = 25000
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -182,6 +263,8 @@ async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 2500
     clearTimeout(timer);
   }
 }
+
+// ── NVIDIA NIM ────────────────────────────────────────────────────────────
 
 const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
 
@@ -200,20 +283,23 @@ async function nimChat(
         model: NIM_CHAT_MODEL,
         messages,
         temperature: opts.temperature ?? 0.4,
-        max_tokens: opts.maxTokens ?? 1024,
+        max_tokens:  opts.maxTokens  ?? 1024,
       }),
     }
   );
   if (!res.ok) {
     const errBody = await res.text();
-    console.error(`[nimChat] NVIDIA API error ${res.status}:`, errBody);
+    console.error(`[nimChat] ${res.status}:`, errBody);
     throw new Error(`NVIDIA NIM ${res.status}: ${errBody}`);
   }
   const data = await res.json() as any;
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-async function nimEmbed(texts: string[], inputType: "passage" | "query" = "passage"): Promise<number[][]> {
+async function nimEmbed(
+  texts: string[],
+  inputType: "passage" | "query" = "passage"
+): Promise<number[][]> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
   const res = await fetchWithTimeout(
@@ -222,53 +308,38 @@ async function nimEmbed(texts: string[], inputType: "passage" | "query" = "passa
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: "nvidia/nv-embedqa-e5-v5",
-        input: texts,
+        model:      "nvidia/nv-embedqa-e5-v5",
+        input:      texts,
         input_type: inputType,
-        truncate: "END",
+        truncate:   "END",
       }),
     }
   );
   if (!res.ok) {
     const errBody = await res.text();
-    console.error(`[nimEmbed] NVIDIA Embed error ${res.status}:`, errBody);
+    console.error(`[nimEmbed] ${res.status}:`, errBody);
     throw new Error(`NVIDIA Embed ${res.status}: ${errBody}`);
   }
   const data = await res.json() as any;
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }
 
-async function retrieveChunks(moduleId: string | number, queryText: string, topK = 5): Promise<string[]> {
-  const chunks = await query(
-    `SELECT nc.chunk_text, nc.embedding
-     FROM note_chunks nc
-     JOIN notes n ON nc.note_id = n.id
-     WHERE n.module_id = $1`,
-    [moduleId]
-  );
-  if (!chunks.length) return [];
-  const [queryEmbed] = await nimEmbed([queryText], "query");
-  const scored = chunks.map((c: any) => {
-    const emb: number[] = JSON.parse(c.embedding ?? "[]");
-    return { text: c.chunk_text, score: cosineSim(queryEmbed, emb) };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK).map(s => s.text);
-}
+// ── Express app ───────────────────────────────────────────────────────────
 
 async function startServer() {
   const app = express();
 
-  const ALLOWED_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
+  const ALLOWED_RE =
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
 
   app.use((req: Request, res: Response, next: NextFunction) => {
     const origin = req.headers.origin as string | undefined;
-    const allow = !origin || ALLOWED_RE.test(origin) ? (origin ?? "*") : "";
+    const allow  = !origin || ALLOWED_RE.test(origin) ? (origin ?? "*") : "";
     if (allow) {
-      res.setHeader("Access-Control-Allow-Origin", allow);
+      res.setHeader("Access-Control-Allow-Origin",   allow);
       res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
+      res.setHeader("Access-Control-Allow-Methods",  "GET,POST,PUT,DELETE,PATCH,OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers",  "Content-Type,Authorization,X-Requested-With");
     }
     if (req.method === "OPTIONS") { res.sendStatus(204); return; }
     next();
@@ -277,16 +348,21 @@ async function startServer() {
   app.use(express.json());
   app.use("/uploads", express.static(UPLOADS_DIR));
 
+  // ── Health ────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
     try {
       await pool.query("SELECT 1");
-      res.json({ status: "ok", db: "postgres", env: process.env.NODE_ENV, cloudinary: hasCloudinary, ts: new Date().toISOString() });
-    } catch (e: any) {
-      res.status(500).json({ status: "error", message: e.message });
-    }
+      res.json({
+        status: "ok", db: "postgres",
+        env: process.env.NODE_ENV, cloudinary: hasCloudinary,
+        ts: new Date().toISOString(),
+      });
+    } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ─── PDF PROXY ────────────────────────────────────────────────────────────
+  // ── PDF PROXY ───────────────────────────────────────────────────────────
+  // Fetches the file via a Cloudinary signed URL (bypasses CDN quirks),
+  // then streams it inline so the browser iframe renders the PDF.
   app.get("/api/notes/:id/proxy", async (req, res) => {
     try {
       const note = await queryOne(
@@ -295,63 +371,87 @@ async function startServer() {
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
 
-      if (note.cloudinary_url) {
-        const upstream = await fetch(note.cloudinary_url);
-        if (!upstream.ok) return res.status(502).json({ error: "Could not fetch from Cloudinary" });
-        const contentType = note.file_type || upstream.headers.get("content-type") || "application/octet-stream";
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`); 
-        const reader = (upstream.body as any);
-        if (reader && typeof reader.pipe === "function") {
-          reader.pipe(res);
-        } else {
-          const buf = Buffer.from(await upstream.arrayBuffer());
-          res.send(buf);
+      const contentType = note.file_type || "application/octet-stream";
+      const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
+
+      if (note.cloudinary_url && hasCloudinary) {
+        // Derive public_id and generate a signed download URL — this bypasses
+        // any CDN access restrictions on raw resources.
+        const pubId     = publicIdFromUrl(note.cloudinary_url);
+        console.log(`[proxy] public_id=${pubId}  stored_url=${note.cloudinary_url}`);
+        const signedUrl = signedDownloadUrl(pubId, 120);
+        console.log(`[proxy] signed_url=${signedUrl}`);
+
+        const upstream = await fetchWithTimeout(signedUrl, {}, 30000);
+        if (!upstream.ok) {
+          const body = await upstream.text();
+          console.error(`[proxy] Cloudinary ${upstream.status}:`, body);
+          return res.status(502).json({
+            error: `Cloudinary returned ${upstream.status}`,
+            detail: body.slice(0, 200),
+          });
         }
-      } else if (note.file_path && fs.existsSync(note.file_path)) {
-        res.setHeader("Content-Type", note.file_type || "application/octet-stream");
-        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`); 
-        res.sendFile(path.resolve(note.file_path));
-      } else {
-        res.status(404).json({ error: "File not found on disk or cloud" });
+
+        res.setHeader("Content-Type",        contentType);
+        res.setHeader("Content-Disposition", disposition);
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        return res.send(buf);
       }
+
+      // Local disk fallback
+      if (note.file_path && fs.existsSync(note.file_path)) {
+        res.setHeader("Content-Type",        contentType);
+        res.setHeader("Content-Disposition", disposition);
+        return res.sendFile(path.resolve(note.file_path));
+      }
+
+      res.status(404).json({ error: "File not found on disk or cloud" });
     } catch (e: any) {
       console.error("[proxy] error:", e.message);
       res.status(500).json({ error: e.message });
     }
   });
 
+  // ── Auth ───────────────────────────────────────────────────────────────
   app.post("/api/login", async (req, res) => {
     try {
       const { email } = req.body;
-      const user = await queryOne("SELECT * FROM users WHERE email = $1 AND active = 1", [email]);
+      const user = await queryOne(
+        "SELECT * FROM users WHERE email = $1 AND active = 1", [email]
+      );
       if (user) res.json(user);
       else res.status(401).json({ error: "Invalid credentials" });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Courses ────────────────────────────────────────────────────────────
   app.get("/api/courses", async (_req, res) => {
     try {
-      const rows = await query(`
+      res.json(await query(`
         SELECT c.*, u.name as instructor_name,
           (SELECT COUNT(*) FROM enrollments e WHERE e.course_id = c.id) as enrollment_count
         FROM courses c JOIN users u ON c.instructor_id = u.id
         WHERE c.archived = 0
-      `);
-      res.json(rows);
+      `));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.get("/api/courses/:id/modules", async (req, res) => {
     try {
-      res.json(await query("SELECT * FROM modules WHERE course_id = $1 ORDER BY display_order ASC", [req.params.id]));
+      res.json(await query(
+        "SELECT * FROM modules WHERE course_id = $1 ORDER BY display_order ASC",
+        [req.params.id]
+      ));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.post("/api/courses/:id/modules", async (req, res) => {
     try {
       const { name, content } = req.body;
-      const last = await queryOne("SELECT MAX(display_order) as maxorder FROM modules WHERE course_id = $1", [req.params.id]);
+      const last = await queryOne(
+        "SELECT MAX(display_order) as maxorder FROM modules WHERE course_id = $1",
+        [req.params.id]
+      );
       const result = await run(
         "INSERT INTO modules (course_id, name, content, display_order) VALUES ($1,$2,$3,$4) RETURNING id",
         [req.params.id, name, content, (parseInt(last?.maxorder) || 0) + 1]
@@ -360,6 +460,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Materials ──────────────────────────────────────────────────────────
   app.get("/api/modules/:id/materials", async (req, res) => {
     try {
       res.json(await query("SELECT * FROM materials WHERE module_id = $1", [req.params.id]));
@@ -377,10 +478,14 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Assignments ────────────────────────────────────────────────────────
   app.get("/api/modules/:id/assignments", async (req, res) => {
     try {
       const status = (req.query.status as string) || "active";
-      res.json(await query("SELECT * FROM assignments WHERE module_id = $1 AND status = $2", [req.params.id, status]));
+      res.json(await query(
+        "SELECT * FROM assignments WHERE module_id = $1 AND status = $2",
+        [req.params.id, status]
+      ));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -414,11 +519,16 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Submissions ────────────────────────────────────────────────────────
   app.post("/api/submissions", async (req, res) => {
     try {
       const { assignment_id, student_id, content } = req.body;
-      if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
-      const existing = await queryOne("SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2", [assignment_id, student_id]);
+      if (!assignment_id || !student_id)
+        return res.status(400).json({ error: "assignment_id and student_id required" });
+      const existing = await queryOne(
+        "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
+        [assignment_id, student_id]
+      );
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
         "INSERT INTO submissions (assignment_id,student_id,content) VALUES ($1,$2,$3) RETURNING id",
@@ -431,8 +541,12 @@ async function startServer() {
   app.post("/api/submissions/upload", uploadSubmission.array("files", 5), async (req: any, res) => {
     try {
       const { assignment_id, student_id, content = "" } = req.body;
-      if (!assignment_id || !student_id) return res.status(400).json({ error: "assignment_id and student_id required" });
-      const existing = await queryOne("SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2", [assignment_id, student_id]);
+      if (!assignment_id || !student_id)
+        return res.status(400).json({ error: "assignment_id and student_id required" });
+      const existing = await queryOne(
+        "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
+        [assignment_id, student_id]
+      );
       if (existing) return res.status(409).json({ error: "Already submitted" });
       const result = await run(
         "INSERT INTO submissions (assignment_id,student_id,content) VALUES ($1,$2,$3) RETURNING id",
@@ -442,17 +556,16 @@ async function startServer() {
       const files: any[] = req.files ?? [];
       const savedFiles: any[] = [];
       for (const file of files) {
-        let fileUrl = "";
+        let fileUrl      = "";
         let cloudinaryId = "";
         if (hasCloudinary && file.buffer) {
-          const ext = path.extname(file.originalname).toLowerCase();
+          const ext     = path.extname(file.originalname).toLowerCase();
           const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
           fs.writeFileSync(tmpPath, file.buffer);
-          // Only pass the filename (no folder prefix) to avoid doubled paths
           const filename = `${submissionId}-${Date.now()}`;
           const url = await uploadToCloudinary(tmpPath, "learnit/submissions", filename);
           try { fs.unlinkSync(tmpPath); } catch (_) {}
-          fileUrl = url ?? "";
+          fileUrl      = url ?? "";
           cloudinaryId = `learnit/submissions/${filename}`;
         } else if (file.path) {
           fileUrl = `/uploads/submissions/${file.filename}`;
@@ -469,7 +582,10 @@ async function startServer() {
 
   app.get("/api/submissions/:id/files", async (req, res) => {
     try {
-      const files = await query("SELECT id,filename,original_name,file_type,uploaded_at,cloudinary_url FROM submission_files WHERE submission_id=$1", [req.params.id]);
+      const files = await query(
+        "SELECT id,filename,original_name,file_type,uploaded_at,cloudinary_url FROM submission_files WHERE submission_id=$1",
+        [req.params.id]
+      );
       res.json(files.map((f: any) => ({
         ...f,
         url: f.cloudinary_url || `/uploads/submissions/${f.filename}`,
@@ -497,43 +613,57 @@ async function startServer() {
   app.post("/api/submissions/:id/grade", async (req, res) => {
     try {
       const { grade, feedback } = req.body;
-      await run("UPDATE submissions SET grade=$1,feedback=$2 WHERE id=$3", [grade, feedback, req.params.id]);
+      await run(
+        "UPDATE submissions SET grade=$1,feedback=$2 WHERE id=$3",
+        [grade, feedback, req.params.id]
+      );
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── NOTES ────────────────────────────────────────────────────────────────
+  // ── Notes ────────────────────────────────────────────────────────────────
   app.post("/api/modules/:id/notes", uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
 
-      let text = "";
+      let text          = "";
       let cloudinaryUrl = "";
-      let cloudinaryId = "";
+      let cloudinaryId  = "";
 
       if (hasCloudinary && file.buffer) {
+        // Extract text first
         text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-        const ext = path.extname(file.originalname).toLowerCase();
+        // Write tmp file for upload
+        const ext     = path.extname(file.originalname).toLowerCase();
         const tmpPath = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
         fs.writeFileSync(tmpPath, file.buffer);
-        // Only pass the filename (no folder prefix) to avoid doubled paths
+        // Bare filename only — Cloudinary prepends the folder automatically
         const filename = `${req.params.id}-${Date.now()}`;
         const url = await uploadToCloudinary(tmpPath, "learnit/notes", filename);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
         cloudinaryUrl = url ?? "";
-        cloudinaryId = `learnit/notes/${filename}`;
+        cloudinaryId  = `learnit/notes/${filename}`;
       } else {
         text = await extractText(file.path, file.mimetype);
       }
 
-      const localFilename = file.filename ?? file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const localFilename = file.filename ??
+        file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
       const result = await run(
-        "INSERT INTO notes (student_id,module_id,filename,original_name,file_path,content_text,file_type,cloudinary_url) VALUES (NULL,$1,$2,$3,$4,$5,$6,$7) RETURNING id",
-        [req.params.id, localFilename, file.originalname, cloudinaryUrl || (file.path ?? ""), text, file.mimetype, cloudinaryUrl]
+        `INSERT INTO notes
+           (student_id, module_id, filename, original_name, file_path,
+            content_text, file_type, cloudinary_url)
+         VALUES (NULL,$1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [
+          req.params.id, localFilename, file.originalname,
+          cloudinaryUrl || (file.path ?? ""),
+          text, file.mimetype, cloudinaryUrl,
+        ]
       );
       const noteId = result.lastInsertId;
 
+      // Embed and store chunks
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
@@ -544,14 +674,17 @@ async function startServer() {
               [noteId, i, sanitizeText(chunks[i]), JSON.stringify(embeddings[i] ?? [])]
             );
           }
-        } catch (_e) { console.error("Embedding error:", _e); }
+          console.log(`[notes] embedded ${chunks.length} chunks for note ${noteId}`);
+        } catch (embErr) {
+          console.error("[notes] embedding error:", embErr);
+        }
       }
 
       res.json({
         id: noteId,
-        original_name: file.originalname,
-        chunk_count: chunks.length,
-        text_length: text.length,
+        original_name:  file.originalname,
+        chunk_count:    chunks.length,
+        text_length:    text.length,
         cloudinary_url: cloudinaryUrl || null,
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -559,7 +692,7 @@ async function startServer() {
 
   app.get("/api/modules/:id/notes", async (req, res) => {
     try {
-      const notes = await query(`
+      res.json(await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
                n.cloudinary_url,
                m.name as module_name, c.name as course_name,
@@ -569,26 +702,23 @@ async function startServer() {
         JOIN courses c ON m.course_id = c.id
         WHERE n.module_id = $1 AND n.student_id IS NULL
         ORDER BY n.uploaded_at DESC
-      `, [req.params.id]);
-      res.json(notes);
+      `, [req.params.id]));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.delete("/api/notes/:id", async (req, res) => {
     try {
-      const note = await queryOne("SELECT file_path, cloudinary_url FROM notes WHERE id=$1", [req.params.id]);
+      const note = await queryOne(
+        "SELECT file_path, cloudinary_url FROM notes WHERE id=$1",
+        [req.params.id]
+      );
       if (note?.cloudinary_url) {
-        try {
-          const urlParts = note.cloudinary_url.split("/");
-          const publicIdWithExt = urlParts.slice(-3).join("/");
-          const publicId = publicIdWithExt.replace(/\.[^/.]+$/, "");
-          await deleteFromCloudinary(publicId);
-        } catch (_) {}
+        await deleteFromCloudinary(publicIdFromUrl(note.cloudinary_url));
       } else if (note?.file_path && fs.existsSync(note.file_path)) {
         fs.unlinkSync(note.file_path);
       }
       await run("DELETE FROM note_chunks WHERE note_id=$1", [req.params.id]);
-      await run("DELETE FROM notes WHERE id=$1", [req.params.id]);
+      await run("DELETE FROM notes WHERE id=$1",            [req.params.id]);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -612,6 +742,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Student routes ─────────────────────────────────────────────────────
   app.get("/api/student/:id/courses", async (req, res) => {
     try {
       res.json(await query(`
@@ -656,7 +787,7 @@ async function startServer() {
   app.get("/api/students/:id/analytics", async (req, res) => {
     try {
       const studentId = req.params.id;
-      const student = await queryOne("SELECT name FROM users WHERE id=$1", [studentId]);
+      const student   = await queryOne("SELECT name FROM users WHERE id=$1", [studentId]);
       if (!student) return res.status(404).json({ error: "Student not found" });
       const enrolledCourses = await query(`
         SELECT c.id, c.code as course_code, c.name as course_name
@@ -677,7 +808,7 @@ async function startServer() {
           ORDER BY s.submitted_at ASC
         `, [studentId, course.id]);
         const avg = grades.length > 0
-          ? grades.reduce((sum: number, g: any) => sum + g.grade, 0) / grades.length
+          ? grades.reduce((s: number, g: any) => s + g.grade, 0) / grades.length
           : null;
         const lateRow = await queryOne(`
           SELECT COUNT(*) as count FROM submissions s
@@ -687,12 +818,12 @@ async function startServer() {
             AND a.due_date IS NOT NULL AND s.submitted_at::date > a.due_date::date
         `, [studentId, course.id]);
         return {
-          course_code: course.course_code,
-          course_name: course.course_name,
-          assignments_total: parseInt(totalRow?.count) || 0,
+          course_code:           course.course_code,
+          course_name:           course.course_name,
+          assignments_total:     parseInt(totalRow?.count) || 0,
           assignments_submitted: grades.length,
-          avg_grade: avg != null ? Math.round(avg * 10) / 10 : null,
-          late: parseInt(lateRow?.count) || 0,
+          avg_grade:             avg != null ? Math.round(avg * 10) / 10 : null,
+          late:                  parseInt(lateRow?.count) || 0,
           grades,
         };
       }));
@@ -706,17 +837,20 @@ async function startServer() {
         JOIN enrollments e ON m.course_id = e.course_id
         WHERE e.student_id=$1 AND a.status='active'
       `, [studentId]);
-      const totalSubmittedRow = await queryOne("SELECT COUNT(*) as count FROM submissions WHERE student_id=$1", [studentId]);
+      const totalSubmittedRow = await queryOne(
+        "SELECT COUNT(*) as count FROM submissions WHERE student_id=$1", [studentId]
+      );
       res.json({
-        student_name: student.name,
+        student_name:    student.name,
         overall_avg,
         total_submitted: parseInt(totalSubmittedRow?.count) || 0,
-        total_pending: Math.max(0, (parseInt(totalAssignmentsRow?.count) || 0) - (parseInt(totalSubmittedRow?.count) || 0)),
+        total_pending:   Math.max(0, (parseInt(totalAssignmentsRow?.count) || 0) - (parseInt(totalSubmittedRow?.count) || 0)),
         courses,
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Admin ──────────────────────────────────────────────────────────────
   app.get("/api/admin/users", async (_req, res) => {
     try {
       res.json(await query("SELECT id,name,email,role,active,year,major,gpa FROM users ORDER BY role,name"));
@@ -759,7 +893,7 @@ async function startServer() {
   app.delete("/api/admin/courses/:id", async (req, res) => {
     try {
       await run("DELETE FROM enrollments WHERE course_id=$1", [req.params.id]);
-      await run("DELETE FROM courses WHERE id=$1", [req.params.id]);
+      await run("DELETE FROM courses WHERE id=$1",            [req.params.id]);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -774,10 +908,10 @@ async function startServer() {
         queryOne("SELECT COUNT(*) as count FROM submissions"),
       ]);
       res.json({
-        activeUsers: parseInt(activeUsers?.count) || 0,
-        totalCourses: parseInt(totalCourses?.count) || 0,
-        averageGrade: Math.round(parseFloat(avgGrade?.avg) || 0),
-        totalNotes: parseInt(totalNotes?.count) || 0,
+        activeUsers:      parseInt(activeUsers?.count)   || 0,
+        totalCourses:     parseInt(totalCourses?.count)  || 0,
+        averageGrade:     Math.round(parseFloat(avgGrade?.avg) || 0),
+        totalNotes:       parseInt(totalNotes?.count)    || 0,
         totalSubmissions: parseInt(totalSubmissions?.count) || 0,
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -792,7 +926,10 @@ async function startServer() {
   app.post("/api/admin/settings", async (req, res) => {
     try {
       const { key, value } = req.body;
-      await run("INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2", [key, value]);
+      await run(
+        "INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2",
+        [key, value]
+      );
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -829,7 +966,8 @@ async function startServer() {
   app.post("/api/admin/bulk-enroll", async (req, res) => {
     try {
       const { course_id, emails } = req.body as { course_id: number; emails: string[] };
-      if (!course_id || !Array.isArray(emails)) return res.status(400).json({ error: "course_id and emails[] required" });
+      if (!course_id || !Array.isArray(emails))
+        return res.status(400).json({ error: "course_id and emails[] required" });
       const results: any[] = [];
       const client = await pool.connect();
       try {
@@ -840,10 +978,16 @@ async function startServer() {
           let user = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
           if (!user) {
             const name = trimmed.split("@")[0].replace(/[._]/g, " ");
-            const r = await client.query("INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name", [name, trimmed]);
+            const r = await client.query(
+              "INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name",
+              [name, trimmed]
+            );
             user = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
           }
-          const r = await client.query("INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id", [course_id, user.id]);
+          const r = await client.query(
+            "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
+            [course_id, user.id]
+          );
           results.push({ email: trimmed, student_id: user.id, enrolled: r.rows.length > 0 });
         }
         await client.query("COMMIT");
@@ -853,6 +997,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Instructor ─────────────────────────────────────────────────────────
   app.get("/api/instructor/:id/courses", async (req, res) => {
     try {
       res.json(await query(`
@@ -868,9 +1013,15 @@ async function startServer() {
     try {
       const [enrollmentCount, avgGrade] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM enrollments WHERE course_id=$1", [req.params.id]),
-        queryOne("SELECT AVG(s.grade) as avg FROM submissions s JOIN assignments a ON s.assignment_id=a.id JOIN modules m ON a.module_id=m.id WHERE m.course_id=$1 AND s.grade IS NOT NULL", [req.params.id]),
+        queryOne(
+          "SELECT AVG(s.grade) as avg FROM submissions s JOIN assignments a ON s.assignment_id=a.id JOIN modules m ON a.module_id=m.id WHERE m.course_id=$1 AND s.grade IS NOT NULL",
+          [req.params.id]
+        ),
       ]);
-      res.json({ enrollments: parseInt(enrollmentCount?.count) || 0, averageGrade: Math.round(parseFloat(avgGrade?.avg) || 0) });
+      res.json({
+        enrollments:  parseInt(enrollmentCount?.count) || 0,
+        averageGrade: Math.round(parseFloat(avgGrade?.avg) || 0),
+      });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -885,19 +1036,16 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── AI ───────────────────────────────────────────────────────────────────
+  // ── AI ─────────────────────────────────────────────────────────────────
   app.post("/api/ai/grade", async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
       const raw = await nimChat([
         { role: "system", content: 'You are a GRADING ASSISTANT. Respond ONLY with valid JSON. Shape: {"score":<int 0-100>,"feedback":"<2-3 sentences>","strengths":["..."],"improvements":["..."]}' },
-        { role: "user", content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent?.slice(0, 3000)}` },
+        { role: "user",   content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent?.slice(0, 3000)}` },
       ], { temperature: 0.3 });
-      try {
-        res.json(JSON.parse(raw.replace(/```json|```/g, "").trim()));
-      } catch (_e) {
-        res.json({ score: 75, feedback: raw, strengths: ["Reviewed"], improvements: ["See feedback"] });
-      }
+      try { res.json(JSON.parse(raw.replace(/```json|```/g, "").trim())); }
+      catch (_e) { res.json({ score: 75, feedback: raw, strengths: ["Reviewed"], improvements: ["See feedback"] }); }
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -906,7 +1054,7 @@ async function startServer() {
       const { submission_id, rubric, module_id } = req.body;
       if (!submission_id) return res.status(400).json({ error: "submission_id required" });
       const submission = await queryOne("SELECT * FROM submissions WHERE id=$1", [submission_id]);
-      const files = await query("SELECT * FROM submission_files WHERE submission_id=$1", [submission_id]);
+      const files      = await query("SELECT * FROM submission_files WHERE submission_id=$1", [submission_id]);
       let fullText = submission?.content ?? "";
       for (const file of files) {
         if (file.file_path && fs.existsSync(file.file_path)) {
@@ -918,15 +1066,19 @@ async function startServer() {
       let notesContext = "";
       if (module_id) {
         const relevantChunks = await retrieveChunks(module_id, fullText.slice(0, 500), 4);
-        if (relevantChunks.length > 0) notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
+        if (relevantChunks.length > 0)
+          notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
       }
       const fallbackRubricRow = submission
-        ? await queryOne("SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)", [submission_id])
+        ? await queryOne(
+            "SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)",
+            [submission_id]
+          )
         : null;
       const effectiveRubric = rubric || fallbackRubricRow?.rubric || "Grade on overall quality, correctness, and clarity.";
       const raw = await nimChat([
-        { role: "system", content: 'You are an expert university GRADING ASSISTANT. Respond ONLY with valid JSON — no markdown fences, no extra text. Shape: {"score":<int 0-100>,"feedback":"<3-4 sentences>","strengths":["...","..."],"improvements":["...","..."],"rubric_breakdown":[{"criterion":"...","score":<int>,"comment":"..."}]}' },
-        { role: "user", content: `RUBRIC:\n${effectiveRubric}${notesContext}\n\nSTUDENT SUBMISSION (${files.length} file(s) + text):\n${fullText.slice(0, 4000)}` },
+        { role: "system", content: 'You are an expert university GRADING ASSISTANT. Respond ONLY with valid JSON — no markdown fences. Shape: {"score":<int 0-100>,"feedback":"<3-4 sentences>","strengths":["...","..."],"improvements":["...","..."],"rubric_breakdown":[{"criterion":"...","score":<int>,"comment":"..."}]}' },
+        { role: "user",   content: `RUBRIC:\n${effectiveRubric}${notesContext}\n\nSTUDENT SUBMISSION (${files.length} file(s) + text):\n${fullText.slice(0, 4000)}` },
       ], { temperature: 0.3, maxTokens: 1200 });
       let result: any;
       try { result = JSON.parse(raw.replace(/```json|```/g, "").trim()); }
@@ -948,11 +1100,21 @@ async function startServer() {
           const chunks = await retrieveChunks(moduleId, question, 5);
           if (chunks.length > 0) notesContext = chunks.join("\n\n---\n");
         } catch (embErr: any) {
-          console.error("RAG retrieval failed, answering without context:", embErr.message);
+          console.error("[chat] RAG retrieval failed:", embErr.message);
         }
       }
       const answer = await nimChat([
-        { role: "system", content: `You are a NOTES ASSISTANT for the module "${moduleTitle ?? "General"}". Answer ONLY from the course notes below. If the answer is not in the notes, say so honestly.\n\n--- COURSE NOTES ---\n${notesContext}\n--- END NOTES ---` },
+        {
+          role: "system",
+          content:
+            `You are a helpful STUDY ASSISTANT for the module "${moduleTitle ?? "General"}".
+` +
+            `Answer questions based on the course notes below.
+` +
+            `If the answer is not covered in the notes, say so honestly but offer general guidance.
+` +
+            `\n--- COURSE NOTES ---\n${notesContext}\n--- END NOTES ---`,
+        },
         ...history.slice(-6),
         { role: "user", content: question },
       ], { temperature: 0.4, maxTokens: 800 });
@@ -968,18 +1130,23 @@ async function startServer() {
       const { analytics } = req.body;
       if (!analytics) return res.status(400).json({ error: "analytics payload required" });
       const courseBreakdown = (analytics.courses ?? []).map((c: any) =>
-        `${c.course_code} ${c.course_name}: avg ${c.avg_grade != null ? c.avg_grade + "%" : "no grades"}, ${c.assignments_submitted}/${c.assignments_total} submitted, ${c.late ?? 0} late`
+        `${c.course_code} ${c.course_name}: avg ${
+          c.avg_grade != null ? c.avg_grade + "%" : "no grades"
+        }, ${c.assignments_submitted}/${c.assignments_total} submitted, ${c.late ?? 0} late`
       ).join("\n");
-      const submissionRate = analytics.total_submitted + analytics.total_pending > 0
-        ? Math.round((analytics.total_submitted / (analytics.total_submitted + analytics.total_pending)) * 100) : 0;
+      const submissionRate =
+        analytics.total_submitted + analytics.total_pending > 0
+          ? Math.round((analytics.total_submitted / (analytics.total_submitted + analytics.total_pending)) * 100)
+          : 0;
       const summary = await nimChat([
         { role: "system", content: "You are an academic advisor AI. Write a concise 3-4 sentence personalised academic summary. Be encouraging but honest. Plain text, no bullet points." },
-        { role: "user", content: `Student: ${analytics.student_name}\nOverall: ${analytics.overall_avg ?? "N/A"}%\nSubmission rate: ${submissionRate}%\nPending: ${analytics.total_pending}\n\n${courseBreakdown}` },
+        { role: "user",   content: `Student: ${analytics.student_name}\nOverall: ${analytics.overall_avg ?? "N/A"}%\nSubmission rate: ${submissionRate}%\nPending: ${analytics.total_pending}\n\n${courseBreakdown}` },
       ], { temperature: 0.4, maxTokens: 350 });
       res.json({ summary });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Static (production) ────────────────────────────────────────────────
   if (isProduction) {
     const DIST_DIR = path.join(PROJECT_ROOT, "dist");
     app.use(express.static(DIST_DIR));
