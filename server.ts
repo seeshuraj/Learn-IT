@@ -8,7 +8,6 @@ import { createRequire } from "module";
 import fs from "fs";
 import dns from "dns";
 
-// Force IPv4 DNS resolution (required on Render / hosts that resolve to IPv6)
 dns.setDefaultResultOrder("ipv4first");
 
 dotenv.config();
@@ -24,7 +23,6 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
 
-// ─── PostgreSQL pool ──────────────────────────────────────────────────────
 if (!process.env.DATABASE_URL) {
   console.error("ERROR: DATABASE_URL environment variable is not set.");
   process.exit(1);
@@ -58,7 +56,6 @@ function sanitizeText(text: string): string {
     .replace(/\uFFFD/g, "");
 }
 
-// ─── Upload directories ────────────────────────────────────────────────────
 const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
 const NOTES_DIR = path.join(UPLOADS_DIR, "notes");
 const SUBMISSIONS_DIR = path.join(UPLOADS_DIR, "submissions");
@@ -119,40 +116,58 @@ function cosineSim(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
+// Shared fetch helper with timeout
+async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 25000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function nimChat(
   messages: { role: string; content: string }[],
   opts: { temperature?: number; maxTokens?: number } = {}
 ): Promise<string> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) return "[Mock AI] Set NVIDIA_API_KEY in .env to enable real AI responses.";
-  const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: "mistralai/mistral-large-3-675b-instruct-2512",
-      messages,
-      temperature: opts.temperature ?? 0.4,
-      max_tokens: opts.maxTokens ?? 1024,
-    }),
-  });
+  const res = await fetchWithTimeout(
+    "https://integrate.api.nvidia.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "mistralai/mistral-nemo-12b-instruct",
+        messages,
+        temperature: opts.temperature ?? 0.4,
+        max_tokens: opts.maxTokens ?? 1024,
+      }),
+    }
+  );
   if (!res.ok) throw new Error(`NVIDIA NIM ${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-async function nimEmbed(texts: string[]): Promise<number[][]> {
+// input_type: 'passage' for indexing chunks, 'query' for retrieval questions
+async function nimEmbed(texts: string[], inputType: "passage" | "query" = "passage"): Promise<number[][]> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
-  const res = await fetch("https://integrate.api.nvidia.com/v1/embeddings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: "nvidia/nv-embedqa-e5-v5",
-      input: texts,
-      input_type: "passage",
-      truncate: "END",
-    }),
-  });
+  const res = await fetchWithTimeout(
+    "https://integrate.api.nvidia.com/v1/embeddings",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "nvidia/nv-embedqa-e5-v5",
+        input: texts,
+        input_type: inputType,
+        truncate: "END",
+      }),
+    }
+  );
   if (!res.ok) throw new Error(`NVIDIA Embed ${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
@@ -167,7 +182,8 @@ async function retrieveChunks(moduleId: string | number, queryText: string, topK
     [moduleId]
   );
   if (!chunks.length) return [];
-  const [queryEmbed] = await nimEmbed([queryText]);
+  // Use input_type='query' for the retrieval question — critical for nv-embedqa-e5-v5
+  const [queryEmbed] = await nimEmbed([queryText], "query");
   const scored = chunks.map((c: any) => {
     const emb: number[] = JSON.parse(c.embedding ?? "[]");
     return { text: c.chunk_text, score: cosineSim(queryEmbed, emb) };
@@ -197,7 +213,6 @@ async function startServer() {
   app.use(express.json());
   app.use("/uploads", express.static(UPLOADS_DIR));
 
-  // ─── Health ───────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
     try {
       await pool.query("SELECT 1");
@@ -207,7 +222,6 @@ async function startServer() {
     }
   });
 
-  // ─── AUTH ─────────────────────────────────────────────────────────────────
   app.post("/api/login", async (req, res) => {
     try {
       const { email } = req.body;
@@ -217,7 +231,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── COURSES ──────────────────────────────────────────────────────────────
   app.get("/api/courses", async (_req, res) => {
     try {
       const rows = await query(`
@@ -265,7 +278,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── ASSIGNMENTS ──────────────────────────────────────────────────────────
   app.get("/api/modules/:id/assignments", async (req, res) => {
     try {
       const status = (req.query.status as string) || "active";
@@ -303,7 +315,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── SUBMISSIONS ──────────────────────────────────────────────────────────
   app.post("/api/submissions", async (req, res) => {
     try {
       const { assignment_id, student_id, content } = req.body;
@@ -373,12 +384,10 @@ async function startServer() {
   });
 
   // ─── NOTES ────────────────────────────────────────────────────────────────
-  // POST: only instructors upload notes — student_id is NULL for instructor notes
   app.post("/api/modules/:id/notes", uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
-      // student_id is NULL for instructor uploads; ignore any passed value
       const text = await extractText(file.path, file.mimetype);
       const result = await run(
         "INSERT INTO notes (student_id,module_id,filename,original_name,file_path,content_text,file_type) VALUES (NULL,$1,$2,$3,$4,$5,$6) RETURNING id",
@@ -388,7 +397,8 @@ async function startServer() {
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
-          const embeddings = await nimEmbed(chunks);
+          // Use input_type='passage' for indexing
+          const embeddings = await nimEmbed(chunks, "passage");
           for (let i = 0; i < chunks.length; i++) {
             await run(
               "INSERT INTO note_chunks (note_id,chunk_index,chunk_text,embedding) VALUES ($1,$2,$3,$4)",
@@ -401,7 +411,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // GET all instructor notes for a module (used by students to view notes)
   app.get("/api/modules/:id/notes", async (req, res) => {
     try {
       const notes = await query(`
@@ -428,7 +437,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // GET notes visible to a student = instructor notes for all their enrolled modules
   app.get("/api/students/:id/notes", async (req, res) => {
     try {
       res.json(await query(`
@@ -447,7 +455,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── STUDENT ──────────────────────────────────────────────────────────────
   app.get("/api/student/:id/courses", async (req, res) => {
     try {
       res.json(await query(`
@@ -489,19 +496,16 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── STUDENT ANALYTICS ────────────────────────────────────────────────────
   app.get("/api/students/:id/analytics", async (req, res) => {
     try {
       const studentId = req.params.id;
       const student = await queryOne("SELECT name FROM users WHERE id=$1", [studentId]);
       if (!student) return res.status(404).json({ error: "Student not found" });
-
       const enrolledCourses = await query(`
         SELECT c.id, c.code as course_code, c.name as course_name
         FROM enrollments e JOIN courses c ON e.course_id = c.id
         WHERE e.student_id=$1 AND c.archived=0
       `, [studentId]);
-
       const courses = await Promise.all(enrolledCourses.map(async (course: any) => {
         const totalRow = await queryOne(
           "SELECT COUNT(*) as count FROM assignments a JOIN modules m ON a.module_id=m.id WHERE m.course_id=$1 AND a.status='active'",
@@ -535,7 +539,6 @@ async function startServer() {
           grades,
         };
       }));
-
       const allGrades = courses.flatMap((c: any) => c.grades.map((g: any) => g.grade));
       const overall_avg = allGrades.length > 0
         ? Math.round((allGrades.reduce((a: number, b: number) => a + b, 0) / allGrades.length) * 10) / 10
@@ -547,7 +550,6 @@ async function startServer() {
         WHERE e.student_id=$1 AND a.status='active'
       `, [studentId]);
       const totalSubmittedRow = await queryOne("SELECT COUNT(*) as count FROM submissions WHERE student_id=$1", [studentId]);
-
       res.json({
         student_name: student.name,
         overall_avg,
@@ -558,7 +560,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── ADMIN ────────────────────────────────────────────────────────────────
   app.get("/api/admin/users", async (_req, res) => {
     try {
       res.json(await query("SELECT id,name,email,role,active,year,major,gpa FROM users ORDER BY role,name"));
@@ -695,7 +696,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── INSTRUCTOR ───────────────────────────────────────────────────────────
   app.get("/api/instructor/:id/courses", async (req, res) => {
     try {
       res.json(await query(`
@@ -728,12 +728,12 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── AI ENDPOINTS ─────────────────────────────────────────────────────────
+  // ─── AI ───────────────────────────────────────────────────────────────────
   app.post("/api/ai/grade", async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
       const raw = await nimChat([
-        { role: "system", content: "You are a GRADING ASSISTANT. Respond ONLY with valid JSON. Shape: {\"score\":<int 0-100>,\"feedback\":\"<2-3 sentences>\",\"strengths\":[\"...\"],\"improvements\":[\"...\"]}" },
+        { role: "system", content: 'You are a GRADING ASSISTANT. Respond ONLY with valid JSON. Shape: {"score":<int 0-100>,"feedback":"<2-3 sentences>","strengths":["..."],"improvements":["..."]}' },
         { role: "user", content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent?.slice(0, 3000)}` },
       ], { temperature: 0.3 });
       try {
@@ -766,7 +766,7 @@ async function startServer() {
         : null;
       const effectiveRubric = rubric || fallbackRubricRow?.rubric || "Grade on overall quality, correctness, and clarity.";
       const raw = await nimChat([
-        { role: "system", content: "You are an expert university GRADING ASSISTANT. Respond ONLY with valid JSON — no markdown fences, no extra text. Shape: {\"score\":<int 0-100>,\"feedback\":\"<3-4 sentences>\",\"strengths\":[\"...\",\"...\"],\"improvements\":[\"...\",\"...\"],\"rubric_breakdown\":[{\"criterion\":\"...\",\"score\":<int>,\"comment\":\"...\"}]}" },
+        { role: "system", content: 'You are an expert university GRADING ASSISTANT. Respond ONLY with valid JSON — no markdown fences, no extra text. Shape: {"score":<int 0-100>,"feedback":"<3-4 sentences>","strengths":["...","..."],"improvements":["...","..."],"rubric_breakdown":[{"criterion":"...","score":<int>,"comment":"..."}]}' },
         { role: "user", content: `RUBRIC:\n${effectiveRubric}${notesContext}\n\nSTUDENT SUBMISSION (${files.length} file(s) + text):\n${fullText.slice(0, 4000)}` },
       ], { temperature: 0.3, maxTokens: 1200 });
       let result: any;
@@ -783,10 +783,15 @@ async function startServer() {
   app.post("/api/ai/chat", async (req, res) => {
     try {
       const { question, moduleTitle, moduleId, history = [] } = req.body;
-      let notesContext = "No notes uploaded for this module yet.";
+      let notesContext = "No notes have been uploaded for this module yet.";
       if (moduleId) {
-        const chunks = await retrieveChunks(moduleId, question, 5);
-        if (chunks.length > 0) notesContext = chunks.join("\n\n---\n");
+        try {
+          const chunks = await retrieveChunks(moduleId, question, 5);
+          if (chunks.length > 0) notesContext = chunks.join("\n\n---\n");
+        } catch (embErr: any) {
+          console.error("RAG retrieval failed, answering without context:", embErr.message);
+          // Fall through — answer without notes context rather than 500ing
+        }
       }
       const answer = await nimChat([
         { role: "system", content: `You are a NOTES ASSISTANT for the module "${moduleTitle ?? "General"}". Answer ONLY from the course notes below. If the answer is not in the notes, say so honestly.\n\n--- COURSE NOTES ---\n${notesContext}\n--- END NOTES ---` },
@@ -814,7 +819,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ─── Production static ─────────────────────────────────────────────────────
   if (isProduction) {
     const DIST_DIR = path.join(PROJECT_ROOT, "dist");
     app.use(express.static(DIST_DIR));
