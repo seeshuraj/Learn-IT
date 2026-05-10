@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 interface Note {
   id: number;
   original_name: string;
+  filename: string;
   file_type: string;
   uploaded_at: string;
   module_name: string;
@@ -46,7 +47,6 @@ export default function NotesPage({ user }: Props) {
   async function loadData() {
     setLoading(true);
     try {
-      // Load enrolled modules for module sidebar
       const coursesRes = await fetch(`${BASE}/api/student/${user.id}/courses`, { credentials: 'include' });
       const courses = await coursesRes.json();
       const allModules: Module[] = [];
@@ -60,11 +60,11 @@ export default function NotesPage({ user }: Props) {
       setModules(allModules);
       if (allModules.length > 0) setSelectedModule(prev => prev ?? allModules[0].id);
 
-      // Students see instructor-uploaded notes for their enrolled modules
+      // Fetch instructor-uploaded notes visible to this student
       const notesRes = await fetch(`${BASE}/api/students/${user.id}/notes`, { credentials: 'include' });
       const notesData = await notesRes.json();
       setNotes(Array.isArray(notesData) ? notesData : []);
-    } catch (e) {
+    } catch {
       setError('Could not load notes.');
     } finally {
       setLoading(false);
@@ -173,7 +173,18 @@ export default function NotesPage({ user }: Props) {
                           ✓ Embedded
                         </span>
                       )}
-                      {/* Only instructors/admins can delete notes */}
+                      {/* Download link */}
+                      <a
+                        href={`${BASE}/uploads/notes/${note.filename}`}
+                        download={note.original_name}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
+                        title="Download file"
+                      >
+                        ↓ Download
+                      </a>
+                      {/* Only instructors/admins can delete */}
                       {isInstructor && (
                         <button
                           onClick={async () => {

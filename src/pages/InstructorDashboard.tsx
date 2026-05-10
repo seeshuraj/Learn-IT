@@ -78,7 +78,6 @@ function CreateAssignmentModal({
     if (!dueDate) return setError('Due date is required.');
     setSaving(true); setError('');
     try {
-      // If a PDF brief is attached, upload it as a material first
       let briefUrl = '';
       if (briefFile) {
         const form = new FormData();
@@ -116,7 +115,6 @@ function CreateAssignmentModal({
     }
   }
 
-  // Tomorrow as min date
   const minDate = new Date();
   minDate.setDate(minDate.getDate() + 1);
   const minDateStr = minDate.toISOString().split('T')[0];
@@ -136,7 +134,6 @@ function CreateAssignmentModal({
           </button>
         </div>
         <form onSubmit={handleSubmit} className="px-7 py-6 space-y-4 max-h-[80vh] overflow-y-auto">
-          {/* Course */}
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Course</label>
             <select
@@ -149,8 +146,6 @@ function CreateAssignmentModal({
               {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
-
-          {/* Module */}
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Module</label>
             <select
@@ -164,8 +159,6 @@ function CreateAssignmentModal({
               {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </div>
-
-          {/* Title */}
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Assignment Title</label>
             <input
@@ -177,8 +170,6 @@ function CreateAssignmentModal({
               required
             />
           </div>
-
-          {/* Description */}
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Description / Instructions</label>
             <textarea
@@ -186,11 +177,9 @@ function CreateAssignmentModal({
               onChange={e => setDescription(e.target.value)}
               rows={4}
               className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Describe what students need to do. Markdown supported."
+              placeholder="Describe what students need to do."
             />
           </div>
-
-          {/* Due date + Max points */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Due Date</label>
@@ -215,8 +204,6 @@ function CreateAssignmentModal({
               />
             </div>
           </div>
-
-          {/* Optional PDF brief upload */}
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Assignment Brief PDF <span className="font-normal text-slate-400">(optional)</span></label>
             <div
@@ -237,7 +224,7 @@ function CreateAssignmentModal({
               ) : (
                 <>
                   <Upload className="w-5 h-5 text-slate-400 mx-auto mb-1" />
-                  <p className="text-xs text-slate-500">Click to upload PDF brief (students will see a download link)</p>
+                  <p className="text-xs text-slate-500">Click to upload PDF brief</p>
                 </>
               )}
               <input
@@ -249,11 +236,9 @@ function CreateAssignmentModal({
               />
             </div>
           </div>
-
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">{error}</div>
           )}
-
           <div className="flex gap-3 pt-2">
             <button
               type="button"
@@ -277,7 +262,7 @@ function CreateAssignmentModal({
   );
 }
 
-// ─── Upload Notes Modal (for instructor to upload module materials) ────────
+// ─── Upload Notes Modal ────────────────────────────────────────────────────
 function UploadNotesModal({
   courses,
   onClose,
@@ -309,8 +294,7 @@ function UploadNotesModal({
     setUploading(true); setError(''); setProgress('Uploading & embedding…');
     const formData = new FormData();
     formData.append('file', file);
-    // Upload as instructor note (no student_id needed — use 0 or omit)
-    formData.append('student_id', '0');
+    // No student_id — instructor notes are stored with student_id = NULL
     try {
       const res = await fetch(`${BASE}/api/modules/${moduleId}/notes`, {
         method: 'POST', body: formData, credentials: 'include',
@@ -388,10 +372,8 @@ function UploadNotesModal({
               <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
             </div>
           </div>
-
           {progress && <p className="text-sm text-teal-700 font-medium">{progress}</p>}
           {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">{error}</div>}
-
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition">Cancel</button>
             <button
@@ -525,7 +507,6 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
           <p className="text-slate-500 mt-1">Manage your courses, grade submissions, and monitor student progress.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {/* Quick action buttons */}
           <button
             onClick={() => setShowUploadNotes(true)}
             className="flex items-center gap-2 px-4 py-2 bg-teal-50 border border-teal-200 text-teal-700 rounded-2xl text-sm font-bold hover:bg-teal-100 transition"
@@ -554,7 +535,6 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
         </div>
       </div>
 
-      {/* KPI Row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
           { label: "Pending Grading", value: submissions.length, sub: "Action required", icon: Clock, color: "indigo" },
@@ -576,7 +556,6 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
         ))}
       </div>
 
-      {/* Submissions Tab */}
       {activeTab === "submissions" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 space-y-4">
@@ -763,7 +742,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                     <Star className="w-12 h-12 text-slate-300" />
                   </div>
                   <h3 className="text-lg font-bold text-slate-900 mb-2">Select a submission to grade</h3>
-                  <p className="text-sm text-slate-500 max-w-xs">Choose a student&apos;s work from the list on the left to start grading.</p>
+                  <p className="text-sm text-slate-500 max-w-xs">Choose a student's work from the list on the left to start grading.</p>
                   <div className="flex gap-3 mt-6">
                     <button
                       onClick={() => setShowCreateAssignment(true)}
@@ -785,7 +764,6 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
         </div>
       )}
 
-      {/* Students Tab */}
       {activeTab === "students" && (
         <div className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-8 border-b border-slate-50 flex items-center justify-between">
@@ -836,7 +814,6 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
         </div>
       )}
 
-      {/* Analytics Tab */}
       {activeTab === "analytics" && (
         <div className="space-y-8">
           <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-6 rounded-[28px] border border-green-100">

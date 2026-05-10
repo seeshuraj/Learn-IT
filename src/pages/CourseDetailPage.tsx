@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Module, Course, User } from "../types";
-import { 
-  BookOpen, FileText, PlayCircle, MessageSquare, 
+import {
+  BookOpen, FileText, PlayCircle, MessageSquare,
   ChevronRight, ArrowLeft, Download, Bot
 } from "lucide-react";
 import { ChatBot } from "../components/ChatBot";
@@ -12,6 +12,8 @@ import { Toaster, toast } from "sonner";
 interface CourseDetailPageProps {
   user: User;
 }
+
+const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
 
 export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
   const { id } = useParams();
@@ -23,32 +25,43 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
   const [isAddingModule, setIsAddingModule] = useState(false);
   const [newModuleName, setNewModuleName] = useState("");
 
-  const isInstructor = user.role === 'instructor' && course.instructor_id === user.id;
+  // Safe: only evaluate after course is loaded
+  const isInstructor = course != null && user.role === 'instructor' && course.instructor_id === user.id;
 
   useEffect(() => {
-    fetch("/api/courses").then(res => res.json()).then(courses => {
-      const found = courses.find((c: Course) => c.id === Number(id));
-      setCourse(found);
-    });
+    fetch(`${BASE}/api/courses`, { credentials: 'include' })
+      .then(res => res.json())
+      .then(courses => {
+        const found = (Array.isArray(courses) ? courses : []).find((c: Course) => c.id === Number(id));
+        setCourse(found ?? null);
+      })
+      .catch(() => {});
     refreshModules();
   }, [id]);
 
   useEffect(() => {
     if (selectedModule) {
-      fetch(`/api/modules/${selectedModule.id}/materials`).then(res => res.json()).then(setMaterials);
+      fetch(`${BASE}/api/modules/${selectedModule.id}/materials`, { credentials: 'include' })
+        .then(res => res.json())
+        .then(data => setMaterials(Array.isArray(data) ? data : []))
+        .catch(() => setMaterials([]));
     }
   }, [selectedModule]);
 
   const refreshModules = () => {
-    fetch(`/api/courses/${id}/modules`).then(res => res.json()).then(setModules);
+    fetch(`${BASE}/api/courses/${id}/modules`, { credentials: 'include' })
+      .then(res => res.json())
+      .then(data => setModules(Array.isArray(data) ? data : []))
+      .catch(() => {});
   };
 
   const handleAddModule = async () => {
     if (!newModuleName.trim()) return;
     try {
-      const response = await fetch(`/api/courses/${id}/modules`, {
+      const response = await fetch(`${BASE}/api/courses/${id}/modules`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: 'include',
         body: JSON.stringify({ name: newModuleName, content: "" }),
       });
       if (response.ok) {
@@ -57,28 +70,8 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
         setIsAddingModule(false);
         refreshModules();
       }
-    } catch (e) {
+    } catch {
       toast.error("Failed to add module");
-    }
-  };
-
-  const handleUploadNote = async (moduleId: number) => {
-    const title = prompt("Enter note title:");
-    if (!title) return;
-    try {
-      const response = await fetch(`/api/modules/${moduleId}/materials`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, type: 'pdf', size: '1.2 MB' }),
-      });
-      if (response.ok) {
-        toast.success("Note uploaded!");
-        if (selectedModule?.id === moduleId) {
-          fetch(`/api/modules/${moduleId}/materials`).then(res => res.json()).then(setMaterials);
-        }
-      }
-    } catch (e) {
-      toast.error("Failed to upload note");
     }
   };
 
@@ -87,22 +80,27 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
     if (!title) return;
     const description = prompt("Enter assignment description:");
     const due_date = prompt("Enter due date (YYYY-MM-DD):", "2026-05-01");
-    
     try {
-      const response = await fetch(`/api/modules/${moduleId}/assignments`, {
+      const response = await fetch(`${BASE}/api/modules/${moduleId}/assignments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: 'include',
         body: JSON.stringify({ title, description, due_date }),
       });
       if (response.ok) {
         toast.success("Assignment created!");
       }
-    } catch (e) {
+    } catch {
       toast.error("Failed to create assignment");
     }
   };
 
-  if (!course) return null;
+  // Show a loading state while course data loads
+  if (!course) return (
+    <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="animate-spin rounded-full h-8 w-8 border-2 border-indigo-600 border-t-transparent" />
+    </div>
+  );
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -124,7 +122,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
             <button className="px-6 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-all">
               Course Syllabus
             </button>
-            <button 
+            <button
               onClick={() => setShowChat(!showChat)}
               className="px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
             >
@@ -140,7 +138,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-slate-900">Course Modules</h2>
             {isInstructor && (
-              <button 
+              <button
                 onClick={() => setIsAddingModule(true)}
                 className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all"
               >
@@ -152,8 +150,8 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
           {isAddingModule && (
             <div className="bg-white p-6 rounded-3xl border border-indigo-200 shadow-sm animate-in fade-in slide-in-from-top-2">
               <h3 className="text-sm font-bold text-slate-900 mb-4">New Module</h3>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 value={newModuleName}
                 onChange={(e) => setNewModuleName(e.target.value)}
                 placeholder="Module Name (e.g., Module 3: Advanced SQL)"
@@ -167,13 +165,13 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
           )}
 
           {modules.map((module, index) => (
-            <div 
+            <div
               key={module.id}
               className={`bg-white rounded-3xl border transition-all overflow-hidden ${
                 selectedModule?.id === module.id ? "border-indigo-500 shadow-xl shadow-indigo-600/5" : "border-slate-100 shadow-sm"
               }`}
             >
-              <button 
+              <button
                 onClick={() => setSelectedModule(selectedModule?.id === module.id ? null : module)}
                 className="w-full flex items-center justify-between p-6 text-left"
               >
@@ -193,7 +191,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
 
               <AnimatePresence>
                 {selectedModule?.id === module.id && (
-                  <motion.div 
+                  <motion.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: "auto", opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
@@ -202,13 +200,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                     <div className="p-6 space-y-4">
                       {isInstructor && (
                         <div className="flex gap-2 mb-4">
-                          <button 
-                            onClick={() => handleUploadNote(module.id)}
-                            className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-bold text-slate-600 hover:border-indigo-200 transition-all flex items-center gap-2"
-                          >
-                            <Download className="w-3 h-3" /> Upload Note
-                          </button>
-                          <button 
+                          <button
                             onClick={() => handleAddAssignment(module.id)}
                             className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-bold text-slate-600 hover:border-indigo-200 transition-all flex items-center gap-2"
                           >
@@ -216,7 +208,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                           </button>
                         </div>
                       )}
-                      
+
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         {materials.map((mat) => (
                           <div key={mat.id} className="bg-white p-4 rounded-2xl border border-slate-100 flex items-center justify-between group cursor-pointer hover:border-indigo-200 transition-all">
@@ -241,7 +233,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                           <Bot className="w-5 h-5 text-indigo-600" />
                           <p className="text-sm font-medium text-indigo-900">Need help with this module?</p>
                         </div>
-                        <button 
+                        <button
                           onClick={() => setShowChat(true)}
                           className="text-xs font-bold text-indigo-600 hover:text-indigo-700"
                         >
@@ -261,11 +253,11 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
             <h3 className="font-bold text-slate-900 mb-4">Instructor</h3>
             <div className="flex items-center gap-4 mb-6">
               <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center font-bold">
-                {course.instructor_name.split(" ").map(n => n[0]).join("")}
+                {course.instructor_name?.split(" ").map((n: string) => n[0]).join("") ?? '?'}
               </div>
               <div>
                 <p className="text-sm font-bold text-slate-900">{course.instructor_name}</p>
-                <p className="text-xs text-slate-500">Professor of AI</p>
+                <p className="text-xs text-slate-500">Professor</p>
               </div>
             </div>
             <button className="w-full py-3 bg-slate-100 text-slate-600 rounded-xl text-sm font-bold hover:bg-slate-200 transition-colors flex items-center justify-center gap-2">
@@ -300,9 +292,9 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
 
       {showChat && (
         <div className="fixed bottom-8 right-8 z-50">
-          <ChatBot 
-            moduleId={selectedModule?.id || modules[0]?.id || 1} 
-            moduleName={selectedModule?.name || modules[0]?.name || "Course"} 
+          <ChatBot
+            moduleId={selectedModule?.id || modules[0]?.id || 1}
+            moduleName={selectedModule?.name || modules[0]?.name || "Course"}
             moduleContent={selectedModule?.content || modules[0]?.content || ""}
             onClose={() => setShowChat(false)}
           />
