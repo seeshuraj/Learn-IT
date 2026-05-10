@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChatBot } from '../components/ChatBot';
 
 interface Note {
   id: number;
@@ -60,7 +61,6 @@ export default function NotesPage({ user }: Props) {
       setModules(allModules);
       if (allModules.length > 0) setSelectedModule(prev => prev ?? allModules[0].id);
 
-      // Fetch instructor-uploaded notes visible to this student
       const notesRes = await fetch(`${BASE}/api/students/${user.id}/notes`, { credentials: 'include' });
       const notesData = await notesRes.json();
       setNotes(Array.isArray(notesData) ? notesData : []);
@@ -173,7 +173,6 @@ export default function NotesPage({ user }: Props) {
                           ✓ Embedded
                         </span>
                       )}
-                      {/* Download link */}
                       <a
                         href={`${BASE}/uploads/notes/${note.filename}`}
                         download={note.original_name}
@@ -184,7 +183,6 @@ export default function NotesPage({ user }: Props) {
                       >
                         ↓ Download
                       </a>
-                      {/* Only instructors/admins can delete */}
                       {isInstructor && (
                         <button
                           onClick={async () => {
@@ -206,6 +204,12 @@ export default function NotesPage({ user }: Props) {
           </div>
         </div>
       </div>
+
+      {/* ChatBot floats bottom-right, context = currently selected module */}
+      <ChatBot
+        moduleId={currentModule?.id}
+        moduleTitle={currentModule ? `${currentModule.name} · ${currentModule.course_name}` : 'Course Assistant'}
+      />
     </div>
   );
 }
