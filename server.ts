@@ -68,12 +68,14 @@ function sanitizeText(text: string): string {
     .replace(/\uFFFD/g, "");
 }
 
-async function uploadToCloudinary(localPath: string, folder: string, publicId: string): Promise<string | null> {
+// uploadToCloudinary: `folder` is the Cloudinary folder, `filename` is ONLY
+// the filename portion (no folder prefix) to avoid doubled paths.
+async function uploadToCloudinary(localPath: string, folder: string, filename: string): Promise<string | null> {
   if (!hasCloudinary) return null;
   try {
     const result = await cloudinary.uploader.upload(localPath, {
       folder,
-      public_id: publicId,
+      public_id: filename,   // just the filename — Cloudinary prepends `folder` automatically
       resource_type: "raw",
       overwrite: true,
     });
@@ -285,8 +287,6 @@ async function startServer() {
   });
 
   // ─── PDF PROXY ────────────────────────────────────────────────────────────
-  // Fetches the Cloudinary raw file server-side and streams it with correct
-  // Content-Type so the browser iframe can render it without CORS issues.
   app.get("/api/notes/:id/proxy", async (req, res) => {
     try {
       const note = await queryOne(
@@ -296,13 +296,11 @@ async function startServer() {
       if (!note) return res.status(404).json({ error: "Note not found" });
 
       if (note.cloudinary_url) {
-        // Stream from Cloudinary
         const upstream = await fetch(note.cloudinary_url);
         if (!upstream.ok) return res.status(502).json({ error: "Could not fetch from Cloudinary" });
         const contentType = note.file_type || upstream.headers.get("content-type") || "application/octet-stream";
         res.setHeader("Content-Type", contentType);
         res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`); 
-        // Stream the body
         const reader = (upstream.body as any);
         if (reader && typeof reader.pipe === "function") {
           reader.pipe(res);
@@ -311,7 +309,6 @@ async function startServer() {
           res.send(buf);
         }
       } else if (note.file_path && fs.existsSync(note.file_path)) {
-        // Local disk fallback
         res.setHeader("Content-Type", note.file_type || "application/octet-stream");
         res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`); 
         res.sendFile(path.resolve(note.file_path));
@@ -451,11 +448,12 @@ async function startServer() {
           const ext = path.extname(file.originalname).toLowerCase();
           const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
           fs.writeFileSync(tmpPath, file.buffer);
-          const publicId = `learnit/submissions/${submissionId}-${Date.now()}`;
-          const url = await uploadToCloudinary(tmpPath, "learnit/submissions", `${submissionId}-${Date.now()}`);
+          // Only pass the filename (no folder prefix) to avoid doubled paths
+          const filename = `${submissionId}-${Date.now()}`;
+          const url = await uploadToCloudinary(tmpPath, "learnit/submissions", filename);
           try { fs.unlinkSync(tmpPath); } catch (_) {}
           fileUrl = url ?? "";
-          cloudinaryId = publicId;
+          cloudinaryId = `learnit/submissions/${filename}`;
         } else if (file.path) {
           fileUrl = `/uploads/submissions/${file.filename}`;
         }
@@ -519,11 +517,12 @@ async function startServer() {
         const ext = path.extname(file.originalname).toLowerCase();
         const tmpPath = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
         fs.writeFileSync(tmpPath, file.buffer);
-        const publicId = `learnit/notes/${req.params.id}-${Date.now()}`;
-        const url = await uploadToCloudinary(tmpPath, "learnit/notes", publicId);
+        // Only pass the filename (no folder prefix) to avoid doubled paths
+        const filename = `${req.params.id}-${Date.now()}`;
+        const url = await uploadToCloudinary(tmpPath, "learnit/notes", filename);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
         cloudinaryUrl = url ?? "";
-        cloudinaryId = publicId;
+        cloudinaryId = `learnit/notes/${filename}`;
       } else {
         text = await extractText(file.path, file.mimetype);
       }
