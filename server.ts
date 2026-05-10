@@ -126,8 +126,8 @@ async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = 2500
   }
 }
 
-// NIM_CHAT_MODEL: meta/llama-3.1-8b-instruct is the most reliably free endpoint on integrate.api.nvidia.com
-const NIM_CHAT_MODEL = "meta/llama-3.1-8b-instruct";
+// Stable free NIM chat endpoint — mistral-7b-instruct-v0.3
+const NIM_CHAT_MODEL = "mistralai/mistral-7b-instruct-v0.3";
 
 async function nimChat(
   messages: { role: string; content: string }[],
