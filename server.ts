@@ -118,13 +118,15 @@ async function deleteFromCloudinary(publicId: string): Promise<void> {
 /**
  * Generate a short-lived signed download URL for a Cloudinary raw resource.
  * Splits public_id into (base, format) so the API resolves the file correctly.
+ *
+ * IMPORTANT: public_id MUST include the file extension (e.g. "folder/file.pdf")
+ * so that lastIndexOf('.') finds a real extension, not -1.
  */
 function signedDownloadUrl(publicId: string, expiresInSec = 120): string {
-  // For raw resources the public_id includes the extension (e.g. "folder/file.pdf").
-  // private_download_url wants the extension passed separately as `format`.
   const lastDot = publicId.lastIndexOf(".");
   const base   = lastDot !== -1 ? publicId.slice(0, lastDot) : publicId;
   const format = lastDot !== -1 ? publicId.slice(lastDot + 1) : "";
+  console.log(`[signedDownloadUrl] base=${base}  format=${format}`);
   return cloudinary.utils.private_download_url(base, format, {
     resource_type: "raw",
     expires_at: Math.floor(Date.now() / 1000) + expiresInSec,
@@ -559,7 +561,8 @@ async function startServer() {
           const ext     = path.extname(file.originalname).toLowerCase();
           const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
           fs.writeFileSync(tmpPath, file.buffer);
-          const filename = `${submissionId}-${Date.now()}`;
+          // Include extension in filename so Cloudinary public_id has a dot → signedDownloadUrl works
+          const filename = `${submissionId}-${Date.now()}${ext}`;
           const url = await uploadToCloudinary(tmpPath, "learnit/submissions", filename);
           try { fs.unlinkSync(tmpPath); } catch (_) {}
           fileUrl      = url ?? "";
@@ -633,7 +636,8 @@ async function startServer() {
         const ext     = path.extname(file.originalname).toLowerCase();
         const tmpPath = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
         fs.writeFileSync(tmpPath, file.buffer);
-        const filename = `${req.params.id}-${Date.now()}`;
+        // Include extension in filename so Cloudinary public_id has a dot → signedDownloadUrl works
+        const filename = `${req.params.id}-${Date.now()}${ext}`;
         const url = await uploadToCloudinary(tmpPath, "learnit/notes", filename);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
         cloudinaryUrl = url ?? "";
