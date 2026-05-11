@@ -4,11 +4,12 @@ import {
   Users, BookOpen, Clock, CheckCircle2,
   AlertCircle, TrendingUp, Brain,
   Search, BarChart3, Star, Loader2, Sparkles,
-  ThumbsUp, RefreshCw, Plus, X, Upload
+  ThumbsUp, RefreshCw, Plus, X, Upload, Trash2
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { getGradingSuggestion, GradingSuggestion, getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
+import { api } from "../services/api";
 
 interface InstructorDashboardProps { user: User; }
 
@@ -294,7 +295,6 @@ function UploadNotesModal({
     setUploading(true); setError(''); setProgress('Uploading & embedding…');
     const formData = new FormData();
     formData.append('file', file);
-    // No student_id — instructor notes are stored with student_id = NULL
     try {
       const res = await fetch(`${BASE}/api/modules/${moduleId}/notes`, {
         method: 'POST', body: formData, credentials: 'include',
@@ -391,6 +391,185 @@ function UploadNotesModal({
   );
 }
 
+// ─── Manage Tab ────────────────────────────────────────────────────────────
+function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
+  const [courseId, setCourseId] = useState<number | ''>('');
+  const [moduleId, setModuleId] = useState<number | ''>('');
+  const [modules, setModules] = useState<Module[]>([]);
+  const [notes, setNotes] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [deletingNoteId, setDeletingNoteId] = useState<number | null>(null);
+  const [deletingAssignmentId, setDeletingAssignmentId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!courseId) { setModules([]); setModuleId(''); setNotes([]); setAssignments([]); return; }
+    fetch(`${BASE}/api/courses/${courseId}/modules`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => { setModules(Array.isArray(data) ? data : []); setModuleId(''); setNotes([]); setAssignments([]); })
+      .catch(() => setModules([]));
+  }, [courseId]);
+
+  useEffect(() => {
+    if (!moduleId) { setNotes([]); setAssignments([]); return; }
+    setLoading(true);
+    Promise.all([
+      api.getModuleNotes(moduleId as number),
+      api.getModuleAssignments(moduleId as number),
+    ]).then(([n, a]) => {
+      setNotes(Array.isArray(n) ? n : []);
+      setAssignments(Array.isArray(a) ? a : []);
+    }).catch(() => {
+      setNotes([]); setAssignments([]);
+    }).finally(() => setLoading(false));
+  }, [moduleId]);
+
+  async function handleDeleteNote(noteId: number, fileName: string) {
+    if (!window.confirm(`Delete note "${fileName}"? This is permanent.`)) return;
+    setDeletingNoteId(noteId);
+    try {
+      await api.deleteNote(noteId);
+      setNotes(prev => prev.filter(n => n.id !== noteId));
+      toast.success('Note deleted.');
+    } catch (e: any) {
+      toast.error(e.message ?? 'Failed to delete note.');
+    } finally {
+      setDeletingNoteId(null);
+    }
+  }
+
+  async function handleDeleteAssignment(assignmentId: number, title: string) {
+    if (!window.confirm(`Delete assignment "${title}"? Students will lose access.`)) return;
+    setDeletingAssignmentId(assignmentId);
+    try {
+      await api.deleteAssignment(assignmentId);
+      setAssignments(prev => prev.filter(a => a.id !== assignmentId));
+      toast.success('Assignment deleted.');
+    } catch (e: any) {
+      toast.error(e.message ?? 'Failed to delete assignment.');
+    } finally {
+      setDeletingAssignmentId(null);
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Course + Module selectors */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 flex flex-col sm:flex-row gap-4">
+        <div className="flex-1">
+          <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Course</label>
+          <select
+            value={courseId}
+            onChange={e => setCourseId(Number(e.target.value))}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="">Select a course…</option>
+            {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="flex-1">
+          <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Module</label>
+          <select
+            value={moduleId}
+            onChange={e => setModuleId(Number(e.target.value))}
+            disabled={modules.length === 0}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+          >
+            <option value="">{modules.length === 0 ? 'Select a course first…' : 'Select a module…'}</option>
+            {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-3 text-slate-500 text-sm">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading module content…
+        </div>
+      )}
+
+      {!loading && moduleId !== '' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Notes */}
+          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-teal-600" /> Notes
+              </h3>
+              <span className="text-xs bg-teal-100 text-teal-700 font-bold px-2 py-0.5 rounded-full">{notes.length}</span>
+            </div>
+            <div className="divide-y divide-slate-50">
+              {notes.length === 0 ? (
+                <div className="px-6 py-8 text-center text-sm text-slate-400">No notes uploaded for this module.</div>
+              ) : notes.map(note => (
+                <div key={note.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-800 truncate">{note.file_name ?? note.title ?? `Note #${note.id}`}</p>
+                    {note.created_at && (
+                      <p className="text-xs text-slate-400 mt-0.5">{new Date(note.created_at).toLocaleDateString()}</p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleDeleteNote(note.id, note.file_name ?? note.title ?? `Note #${note.id}`)}
+                    disabled={deletingNoteId === note.id}
+                    className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40"
+                    title="Delete note"
+                  >
+                    {deletingNoteId === note.id
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <Trash2 className="w-4 h-4" />}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Assignments */}
+          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-indigo-600" /> Assignments
+              </h3>
+              <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{assignments.length}</span>
+            </div>
+            <div className="divide-y divide-slate-50">
+              {assignments.length === 0 ? (
+                <div className="px-6 py-8 text-center text-sm text-slate-400">No assignments for this module.</div>
+              ) : assignments.map(assignment => (
+                <div key={assignment.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-800 truncate">{assignment.title}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Due {assignment.due_date ? new Date(assignment.due_date).toLocaleDateString() : 'N/A'}
+                      {assignment.max_points ? ` · ${assignment.max_points} pts` : ''}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteAssignment(assignment.id, assignment.title)}
+                    disabled={deletingAssignmentId === assignment.id}
+                    className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40"
+                    title="Delete assignment"
+                  >
+                    {deletingAssignmentId === assignment.id
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <Trash2 className="w-4 h-4" />}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!loading && moduleId === '' && courseId !== '' && (
+        <div className="text-center text-sm text-slate-400 py-8">Select a module to manage its notes and assignments.</div>
+      )}
+      {!loading && courseId === '' && (
+        <div className="text-center text-sm text-slate-400 py-8">Select a course to get started.</div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Dashboard ────────────────────────────────────────────────────────
 export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
@@ -401,7 +580,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
   const [aiSuggestion, setAiSuggestion] = useState<GradingSuggestion | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [activeTab, setActiveTab] = useState<"submissions" | "students" | "analytics">("submissions");
+  const [activeTab, setActiveTab] = useState<"submissions" | "students" | "analytics" | "manage">("submissions");
   const [classSummary, setClassSummary] = useState("");
   const [classSummaryLoading, setClassSummaryLoading] = useState(false);
   const [showCreateAssignment, setShowCreateAssignment] = useState(false);
@@ -520,7 +699,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
             <Plus className="w-4 h-4" /> Create Assignment
           </button>
           <div className="flex bg-white p-1 rounded-2xl border border-slate-100 shadow-sm">
-            {(["submissions", "students", "analytics"] as const).map((tab) => (
+            {(["submissions", "students", "analytics", "manage"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -897,6 +1076,10 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
             </div>
           </div>
         </div>
+      )}
+
+      {activeTab === "manage" && (
+        <ManageTab courses={courses} user={user} />
       )}
     </div>
   );

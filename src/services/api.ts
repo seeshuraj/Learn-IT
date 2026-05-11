@@ -35,6 +35,8 @@ export const api = {
   getModuleAssignments: (moduleId: number) => request<any[]>(`/api/modules/${moduleId}/assignments`),
   createAssignment: (moduleId: number, data: any) =>
     request<any>(`/api/modules/${moduleId}/assignments`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteAssignment: (assignmentId: number) =>
+    request<any>(`/api/assignments/${assignmentId}`, { method: 'DELETE' }),
 
   // Submissions
   submitAssignment: (assignmentId: number, studentId: number, content: string) =>
