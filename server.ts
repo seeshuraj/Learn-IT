@@ -72,14 +72,8 @@ function sanitizeText(t: string) {
 // ── Cloudinary helpers ────────────────────────────────────────────────────
 
 /**
- * Upload a file to Cloudinary as a public raw resource.
- * The returned secure_url is permanent and directly accessible —
- * no signing or proxy fetch is needed to serve it.
- *
- * @param localPath  Absolute path to the temp file on disk
- * @param folder     Cloudinary folder  (e.g. "learnit/notes")
- * @param filename   Full filename WITH extension (e.g. "1-1234567890.pdf")
- *                   This becomes the public_id stored by Cloudinary.
+ * Upload a file to Cloudinary as a raw resource.
+ * Returns the secure_url stored by Cloudinary.
  */
 async function uploadToCloudinary(
   localPath: string,
@@ -103,8 +97,7 @@ async function uploadToCloudinary(
 }
 
 /**
- * Extract the public_id from a Cloudinary secure_url.
- * For raw resources the public_id INCLUDES the file extension.
+ * Extract the public_id (WITH extension) from a Cloudinary secure_url.
  * e.g. "https://res.cloudinary.com/<cloud>/raw/upload/v123/learnit/notes/1-xxx.pdf"
  *   →  "learnit/notes/1-xxx.pdf"
  */
@@ -121,6 +114,42 @@ async function deleteFromCloudinary(publicId: string): Promise<void> {
   } catch (e) {
     console.error("[Cloudinary] delete error:", e);
   }
+}
+
+/**
+ * Fetch a raw Cloudinary resource SERVER-SIDE using Basic auth
+ * (api_key:api_secret). This bypasses any CDN-level access restrictions
+ * on the account and works regardless of "strict" / "secure delivery" settings.
+ *
+ * Strategy: use the Cloudinary Admin API resource-download endpoint:
+ *   https://api.cloudinary.com/v1_1/<cloud>/raw/download?public_id=<id>
+ * with Basic auth header.
+ */
+async function fetchCloudinaryRaw(publicId: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const cloud  = process.env.CLOUDINARY_CLOUD_NAME!;
+  const key    = process.env.CLOUDINARY_API_KEY!;
+  const secret = process.env.CLOUDINARY_API_SECRET!;
+
+  // Build a signed download URL via the SDK (handles timestamp + signature)
+  const ts  = Math.floor(Date.now() / 1000);
+  const sig = cloudinary.utils.api_sign_request(
+    { public_id: publicId, timestamp: ts },
+    secret
+  );
+  const downloadUrl =
+    `https://api.cloudinary.com/v1_1/${cloud}/raw/download` +
+    `?public_id=${encodeURIComponent(publicId)}&timestamp=${ts}&api_key=${key}&signature=${sig}`;
+
+  console.log(`[fetchCloudinaryRaw] downloading: ${downloadUrl}`);
+  const res = await fetchWithTimeout(downloadUrl, {}, 30000);
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(`[fetchCloudinaryRaw] ${res.status}:`, body);
+    return null;
+  }
+  const ct  = res.headers.get("content-type") ?? "application/octet-stream";
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { buffer: buf, contentType: ct };
 }
 
 // ── File system dirs ──────────────────────────────────────────────────────
@@ -352,6 +381,8 @@ async function startServer() {
   });
 
   // ── FILE PROXY ─────────────────────────────────────────────────────────
+  // Fetches from Cloudinary server-side using signed API auth, then pipes
+  // bytes to the client. This bypasses CDN-level access restrictions.
   app.get("/api/notes/:id/proxy", async (req, res) => {
     try {
       const note = await queryOne(
@@ -360,18 +391,24 @@ async function startServer() {
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
 
+      const contentType = note.file_type || "application/octet-stream";
+      const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
+
       if (note.cloudinary_url && hasCloudinary) {
-        // Raw uploads on Cloudinary are PUBLIC (delivery_type=upload).
-        // The secure_url returned at upload time is permanent and directly
-        // accessible from the CDN — just redirect the browser to it.
-        console.log(`[proxy] redirecting to Cloudinary CDN: ${note.cloudinary_url}`);
-        return res.redirect(302, note.cloudinary_url);
+        const publicId = publicIdFromUrl(note.cloudinary_url);
+        console.log(`[proxy] fetching from Cloudinary: public_id=${publicId}`);
+        const result = await fetchCloudinaryRaw(publicId);
+        if (!result) {
+          return res.status(502).json({ error: "Failed to fetch from Cloudinary" });
+        }
+        res.setHeader("Content-Type",        contentType);
+        res.setHeader("Content-Disposition", disposition);
+        res.setHeader("Content-Length",      result.buffer.length);
+        return res.send(result.buffer);
       }
 
       // Local disk fallback
       if (note.file_path && fs.existsSync(note.file_path)) {
-        const contentType = note.file_type || "application/octet-stream";
-        const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
         res.setHeader("Content-Type",        contentType);
         res.setHeader("Content-Disposition", disposition);
         return res.sendFile(path.resolve(note.file_path));
