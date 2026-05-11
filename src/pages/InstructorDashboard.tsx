@@ -1,19 +1,20 @@
 import React, { useEffect, useState, useRef } from "react";
 import { User, Submission, Course } from "../types";
-import {
-  Users, BookOpen, Clock, CheckCircle2,
-  AlertCircle, TrendingUp, Brain,
-  Search, BarChart3, Star, Loader2, Sparkles,
-  ThumbsUp, RefreshCw, Plus, X, Upload, Trash2
-} from "lucide-react";
+import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { getGradingSuggestion, GradingSuggestion, getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
 import { api } from "../services/api";
 
-interface InstructorDashboardProps { user: User; }
+interface InstructorDashboardProps {
+  user: User;
+}
 
-interface Module { id: number; name: string; course_id: number; }
+interface Module {
+  id: number;
+  name: string;
+  course_id: number;
+}
 
 const CLASS_DATA: ClassOverviewData = {
   courseName: "Computer Science — All Courses",
@@ -33,7 +34,7 @@ function BoldText({ text }: { text: string }) {
     <>
       {parts.map((p, i) =>
         p.startsWith("**") && p.endsWith("**") ? (
-          <strong key={i} className="font-bold text-green-900">{p.slice(2, -2)}</strong>
+          <strong key={i}>{p.slice(2, -2)}</strong>
         ) : (
           <span key={i}>{p}</span>
         )
@@ -88,12 +89,8 @@ function CreateAssignmentModal({
         const matRes = await fetch(`${BASE}/api/modules/${moduleId}/materials`, {
           method: 'POST', body: form, credentials: 'include',
         });
-        if (matRes.ok) {
-          const mat = await matRes.json();
-          briefUrl = mat.url ?? mat.file_url ?? '';
-        }
+        if (matRes.ok) { const mat = await matRes.json(); briefUrl = mat.url ?? mat.file_url ?? ''; }
       }
-
       const res = await fetch(`${BASE}/api/modules/${moduleId}/assignments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,101 +123,63 @@ function CreateAssignmentModal({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white rounded-[28px] shadow-2xl w-full max-w-lg overflow-hidden"
+        className="bg-white rounded-[28px] shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto"
       >
         <div className="flex items-center justify-between px-7 py-5 border-b border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">Create Assignment</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition">
-            <X className="w-5 h-5" />
-          </button>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition"><X className="w-5 h-5" /></button>
         </div>
-        <form onSubmit={handleSubmit} className="px-7 py-6 space-y-4 max-h-[80vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="px-7 py-6 space-y-4">
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Course</label>
-            <select
-              value={courseId}
-              onChange={e => setCourseId(Number(e.target.value))}
-              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              required
-            >
+            <select value={courseId} onChange={e => setCourseId(Number(e.target.value))}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
               <option value="">Select a course…</option>
               {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Module</label>
-            <select
-              value={moduleId}
-              onChange={e => setModuleId(Number(e.target.value))}
+            <select value={moduleId} onChange={e => setModuleId(Number(e.target.value))}
               disabled={modules.length === 0}
-              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-              required
-            >
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" required>
               <option value="">{modules.length === 0 ? 'Select a course first…' : 'Select a module…'}</option>
               {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Assignment Title</label>
-            <input
-              type="text"
-              value={title}
-              onChange={e => setTitle(e.target.value)}
+            <input type="text" value={title} onChange={e => setTitle(e.target.value)}
               className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="e.g. Week 3 — Binary Trees"
-              required
-            />
+              placeholder="e.g. Week 3 — Binary Trees" required />
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Description / Instructions</label>
-            <textarea
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              rows={4}
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={4}
               className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Describe what students need to do."
-            />
+              placeholder="Describe what students need to do." />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Due Date</label>
-              <input
-                type="date"
-                value={dueDate}
-                min={minDateStr}
-                onChange={e => setDueDate(e.target.value)}
-                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                required
-              />
+              <input type="date" value={dueDate} min={minDateStr} onChange={e => setDueDate(e.target.value)}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" required />
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Max Points</label>
-              <input
-                type="number"
-                value={maxPoints}
-                min={1}
-                max={1000}
-                onChange={e => setMaxPoints(Number(e.target.value))}
-                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+              <input type="number" value={maxPoints} min={1} max={1000} onChange={e => setMaxPoints(Number(e.target.value))}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             </div>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Assignment Brief PDF <span className="font-normal text-slate-400">(optional)</span></label>
-            <div
-              className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:border-indigo-300 transition cursor-pointer"
-              onClick={() => fileRef.current?.click()}
-            >
+            <div className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:border-indigo-300 transition cursor-pointer"
+              onClick={() => fileRef.current?.click()}>
               {briefFile ? (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm text-slate-700 truncate">📄 {briefFile.name}</span>
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); setBriefFile(null); if (fileRef.current) fileRef.current.value = ''; }}
-                    className="text-slate-400 hover:text-red-500 transition shrink-0"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  <button type="button" onClick={e => { e.stopPropagation(); setBriefFile(null); if (fileRef.current) fileRef.current.value = ''; }}
+                    className="text-slate-400 hover:text-red-500 transition shrink-0"><X className="w-4 h-4" /></button>
                 </div>
               ) : (
                 <>
@@ -228,31 +187,15 @@ function CreateAssignmentModal({
                   <p className="text-xs text-slate-500">Click to upload PDF brief</p>
                 </>
               )}
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".pdf"
-                className="hidden"
-                onChange={e => setBriefFile(e.target.files?.[0] ?? null)}
-              />
+              <input ref={fileRef} type="file" accept=".pdf" className="hidden" onChange={e => setBriefFile(e.target.files?.[0] ?? null)} />
             </div>
           </div>
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">{error}</div>
-          )}
+          {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">{error}</div>}
           <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex-1 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
-            >
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition">Cancel</button>
+            <button type="submit" disabled={saving}
+              className="flex-1 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition disabled:opacity-50 flex items-center justify-center gap-2">
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
               {saving ? 'Creating…' : 'Create Assignment'}
             </button>
@@ -326,41 +269,30 @@ function UploadNotesModal({
         <form onSubmit={handleUpload} className="px-7 py-6 space-y-4">
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Course</label>
-            <select
-              value={courseId}
-              onChange={e => setCourseId(Number(e.target.value))}
-              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-              required
-            >
+            <select value={courseId} onChange={e => setCourseId(Number(e.target.value))}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" required>
               <option value="">Select a course…</option>
               {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Module</label>
-            <select
-              value={moduleId}
-              onChange={e => setModuleId(Number(e.target.value))}
+            <select value={moduleId} onChange={e => setModuleId(Number(e.target.value))}
               disabled={modules.length === 0}
-              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50"
-              required
-            >
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50" required>
               <option value="">{modules.length === 0 ? 'Select a course first…' : 'Select a module…'}</option>
               {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">File (PDF, DOCX, TXT)</label>
-            <div
-              className="border-2 border-dashed border-slate-200 rounded-xl p-5 text-center hover:border-teal-300 transition cursor-pointer"
-              onClick={() => fileRef.current?.click()}
-            >
+            <div className="border-2 border-dashed border-slate-200 rounded-xl p-5 text-center hover:border-teal-300 transition cursor-pointer"
+              onClick={() => fileRef.current?.click()}>
               {file ? (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm text-slate-700 truncate">📄 {file.name}</span>
-                  <button type="button" onClick={e => { e.stopPropagation(); setFile(null); }} className="text-slate-400 hover:text-red-500">
-                    <X className="w-4 h-4" />
-                  </button>
+                  <button type="button" onClick={e => { e.stopPropagation(); setFile(null); }}
+                    className="text-slate-400 hover:text-red-500"><X className="w-4 h-4" /></button>
                 </div>
               ) : (
                 <>
@@ -369,18 +301,17 @@ function UploadNotesModal({
                   <p className="text-xs text-slate-400 mt-0.5">PDF, DOCX, TXT · max 20MB</p>
                 </>
               )}
-              <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
+              <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt" className="hidden"
+                onChange={e => setFile(e.target.files?.[0] ?? null)} />
             </div>
           </div>
           {progress && <p className="text-sm text-teal-700 font-medium">{progress}</p>}
           {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">{error}</div>}
           <div className="flex gap-3 pt-2">
-            <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition">Cancel</button>
-            <button
-              type="submit"
-              disabled={uploading || !file || !moduleId}
-              className="flex-1 px-4 py-2.5 bg-teal-700 text-white rounded-xl text-sm font-bold hover:bg-teal-800 transition disabled:opacity-50 flex items-center justify-center gap-2"
-            >
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition">Cancel</button>
+            <button type="submit" disabled={uploading || !file || !moduleId}
+              className="flex-1 px-4 py-2.5 bg-teal-700 text-white rounded-xl text-sm font-bold hover:bg-teal-800 transition disabled:opacity-50 flex items-center justify-center gap-2">
               {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
               {uploading ? 'Uploading…' : 'Upload Notes'}
             </button>
@@ -403,7 +334,10 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
   const [deletingAssignmentId, setDeletingAssignmentId] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!courseId) { setModules([]); setModuleId(''); setNotes([]); setAssignments([]); return; }
+    if (!courseId) {
+      setModules([]); setModuleId(''); setNotes([]); setAssignments([]);
+      return;
+    }
     fetch(`${BASE}/api/courses/${courseId}/modules`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { setModules(Array.isArray(data) ? data : []); setModuleId(''); setNotes([]); setAssignments([]); })
@@ -458,23 +392,17 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 flex flex-col sm:flex-row gap-4">
         <div className="flex-1">
           <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Course</label>
-          <select
-            value={courseId}
-            onChange={e => setCourseId(Number(e.target.value))}
-            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
+          <select value={courseId} onChange={e => setCourseId(Number(e.target.value))}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
             <option value="">Select a course…</option>
             {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
         <div className="flex-1">
           <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Module</label>
-          <select
-            value={moduleId}
-            onChange={e => setModuleId(Number(e.target.value))}
+          <select value={moduleId} onChange={e => setModuleId(Number(e.target.value))}
             disabled={modules.length === 0}
-            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-          >
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50">
             <option value="">{modules.length === 0 ? 'Select a course first…' : 'Select a module…'}</option>
             {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
@@ -500,26 +428,33 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
             <div className="divide-y divide-slate-50">
               {notes.length === 0 ? (
                 <div className="px-6 py-8 text-center text-sm text-slate-400">No notes uploaded for this module.</div>
-              ) : notes.map(note => (
-                <div key={note.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-800 truncate">{note.file_name ?? note.title ?? `Note #${note.id}`}</p>
-                    {note.created_at && (
-                      <p className="text-xs text-slate-400 mt-0.5">{new Date(note.created_at).toLocaleDateString()}</p>
-                    )}
+              ) : notes.map(note => {
+                // API returns: original_name, uploaded_at, chunk_count, cloudinary_url
+                const displayName = note.original_name ?? note.filename ?? `Note #${note.id}`;
+                const uploadedAt = note.uploaded_at ?? note.created_at;
+                return (
+                  <div key={note.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-800 truncate">📄 {displayName}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {uploadedAt ? new Date(uploadedAt).toLocaleDateString() : ''}
+                        {note.chunk_count ? ` · ${note.chunk_count} chunks` : ''}
+                        {note.cloudinary_url ? ' · ☁ Cloud' : ' · 💾 Local'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteNote(note.id, displayName)}
+                      disabled={deletingNoteId === note.id}
+                      className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40"
+                      title="Delete note"
+                    >
+                      {deletingNoteId === note.id
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Trash2 className="w-4 h-4" />}
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleDeleteNote(note.id, note.file_name ?? note.title ?? `Note #${note.id}`)}
-                    disabled={deletingNoteId === note.id}
-                    className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40"
-                    title="Delete note"
-                  >
-                    {deletingNoteId === note.id
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <Trash2 className="w-4 h-4" />}
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -599,8 +534,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
 
   const handleAiGrade = async () => {
     if (!selectedSubmission) return;
-    setIsAiLoading(true);
-    setAiSuggestion(null);
+    setIsAiLoading(true); setAiSuggestion(null);
     try {
       const rubric = "Assess understanding of core concepts, clarity of explanation, use of examples, and conclusion quality.";
       const suggestion = await getGradingSuggestion(selectedSubmission.content, rubric);
@@ -644,8 +578,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
   };
 
   const fetchClassSummary = async () => {
-    setClassSummaryLoading(true);
-    setClassSummary("");
+    setClassSummaryLoading(true); setClassSummary("");
     try {
       const summary = await getClassOverviewSummary(CLASS_DATA);
       setClassSummary(summary);
@@ -663,20 +596,12 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
   return (
     <div className="max-w-7xl mx-auto space-y-8">
       <Toaster position="top-right" />
-
       <AnimatePresence>
         {showCreateAssignment && (
-          <CreateAssignmentModal
-            courses={courses}
-            onClose={() => setShowCreateAssignment(false)}
-            onCreated={loadSubmissions}
-          />
+          <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={loadSubmissions} />
         )}
         {showUploadNotes && (
-          <UploadNotesModal
-            courses={courses}
-            onClose={() => setShowUploadNotes(false)}
-          />
+          <UploadNotesModal courses={courses} onClose={() => setShowUploadNotes(false)} />
         )}
       </AnimatePresence>
 
@@ -686,27 +611,20 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
           <p className="text-slate-500 mt-1">Manage your courses, grade submissions, and monitor student progress.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => setShowUploadNotes(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-teal-50 border border-teal-200 text-teal-700 rounded-2xl text-sm font-bold hover:bg-teal-100 transition"
-          >
+          <button onClick={() => setShowUploadNotes(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-teal-50 border border-teal-200 text-teal-700 rounded-2xl text-sm font-bold hover:bg-teal-100 transition">
             <Upload className="w-4 h-4" /> Upload Notes
           </button>
-          <button
-            onClick={() => setShowCreateAssignment(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-2xl text-sm font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-600/20"
-          >
+          <button onClick={() => setShowCreateAssignment(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-2xl text-sm font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-600/20">
             <Plus className="w-4 h-4" /> Create Assignment
           </button>
           <div className="flex bg-white p-1 rounded-2xl border border-slate-100 shadow-sm">
             {(["submissions", "students", "analytics", "manage"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
+              <button key={tab} onClick={() => setActiveTab(tab)}
                 className={`px-4 py-2 rounded-xl text-xs font-bold transition-all capitalize ${
                   activeTab === tab ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-500 hover:bg-slate-50"
-                }`}
-              >
+                }`}>
                 {tab}
               </button>
             ))}
@@ -744,15 +662,12 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
             </div>
             <div className="space-y-3">
               {submissions.map(sub => (
-                <button
-                  key={sub.id}
-                  onClick={() => { setSelectedSubmission(sub); setGrade(0); setFeedback(""); setAiSuggestion(null); }}
+                <button key={sub.id} onClick={() => { setSelectedSubmission(sub); setGrade(0); setFeedback(""); setAiSuggestion(null); }}
                   className={`w-full text-left p-6 rounded-3xl border transition-all ${
                     selectedSubmission?.id === sub.id
                       ? "bg-white border-indigo-500 shadow-xl shadow-indigo-600/5 ring-1 ring-indigo-500"
                       : "bg-white border-slate-100 shadow-sm hover:border-indigo-200"
-                  }`}
-                >
+                  }`}>
                   <div className="flex justify-between items-start mb-4">
                     <div className="w-10 h-10 bg-slate-100 text-slate-500 rounded-xl flex items-center justify-center font-bold text-xs">
                       {sub.student_name.split(" ").map((n: string) => n[0]).join("")}
@@ -776,47 +691,32 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
           <div className="lg:col-span-2">
             <AnimatePresence mode="wait">
               {selectedSubmission ? (
-                <motion.div
-                  key={selectedSubmission.id}
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden"
-                >
+                <motion.div key={selectedSubmission.id}
+                  initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                  className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
                   <div className="p-8 border-b border-slate-50 bg-slate-50/50 flex items-center justify-between">
                     <div>
                       <h3 className="text-2xl font-bold text-slate-900">{selectedSubmission.student_name}</h3>
                       <p className="text-sm text-slate-500">{selectedSubmission.assignment_title}</p>
                     </div>
-                    <button
-                      onClick={handleAiGrade}
-                      disabled={isAiLoading}
-                      className="px-5 py-2.5 bg-green-700 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-green-800 transition-all shadow-lg shadow-green-700/20 disabled:opacity-50"
-                    >
+                    <button onClick={handleAiGrade} disabled={isAiLoading}
+                      className="px-5 py-2.5 bg-green-700 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-green-800 transition-all shadow-lg shadow-green-700/20 disabled:opacity-50">
                       {isAiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
                       AI Grade
                     </button>
                   </div>
-
                   <div className="p-8 space-y-6">
                     <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
                       <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Submission</h4>
                       <p className="text-slate-700 leading-relaxed whitespace-pre-wrap text-sm">{selectedSubmission.content}</p>
                     </div>
-
                     <AnimatePresence>
                       {aiSuggestion && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100 overflow-hidden"
-                        >
+                        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+                          className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100 overflow-hidden">
                           <div className="p-5 border-b border-green-100 flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <div className="bg-green-700 p-1.5 rounded-lg">
-                                <Brain className="w-3.5 h-3.5 text-white" />
-                              </div>
+                              <div className="bg-green-700 p-1.5 rounded-lg"><Brain className="w-3.5 h-3.5 text-white" /></div>
                               <span className="text-sm font-bold text-green-900">AI Grading Suggestion</span>
                               <div className="flex items-center gap-1 bg-white/60 px-2 py-0.5 rounded-full border border-green-100">
                                 <Sparkles className="w-3 h-3 text-green-600" />
@@ -824,16 +724,12 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                               </div>
                             </div>
                             <div className="flex gap-2">
-                              <button
-                                onClick={handleAcceptAiGrade}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-700 text-white rounded-xl text-xs font-bold hover:bg-green-800 transition-all"
-                              >
+                              <button onClick={handleAcceptAiGrade}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-700 text-white rounded-xl text-xs font-bold hover:bg-green-800 transition-all">
                                 <ThumbsUp className="w-3 h-3" /> Accept
                               </button>
-                              <button
-                                onClick={handleAiGrade}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-50 transition-all"
-                              >
+                              <button onClick={handleAiGrade}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-50 transition-all">
                                 <RefreshCw className="w-3 h-3" /> Re-run
                               </button>
                             </div>
@@ -874,42 +770,28 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                         </motion.div>
                       )}
                     </AnimatePresence>
-
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                       <div className="md:col-span-1">
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Grade (0–100)</label>
                         <div className="relative">
-                          <input
-                            type="number"
-                            value={grade}
-                            onChange={(e) => setGrade(Number(e.target.value))}
+                          <input type="number" value={grade} onChange={(e) => setGrade(Number(e.target.value))}
                             className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-2xl font-bold text-indigo-600 focus:ring-2 focus:ring-indigo-500 text-center"
-                            min="0" max="100"
-                          />
+                            min="0" max="100" />
                           <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">/100</span>
                         </div>
                       </div>
                       <div className="md:col-span-3">
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Feedback</label>
-                        <textarea
-                          value={feedback}
-                          onChange={(e) => setFeedback(e.target.value)}
-                          rows={4}
+                        <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={4}
                           className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 transition-all resize-none"
-                          placeholder="Provide constructive feedback…"
-                        />
+                          placeholder="Provide constructive feedback…" />
                       </div>
                     </div>
-
                     <div className="flex justify-end gap-4">
-                      <button onClick={() => { setSelectedSubmission(null); setAiSuggestion(null); }} className="px-8 py-3 text-sm font-bold text-slate-500 hover:text-slate-700">
-                        Skip for Now
-                      </button>
-                      <button
-                        onClick={submitGrade}
-                        disabled={isSubmitting}
-                        className="px-10 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50"
-                      >
+                      <button onClick={() => { setSelectedSubmission(null); setAiSuggestion(null); }}
+                        className="px-8 py-3 text-sm font-bold text-slate-500 hover:text-slate-700">Skip for Now</button>
+                      <button onClick={submitGrade} disabled={isSubmitting}
+                        className="px-10 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50">
                         {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : (<>Publish Grade <CheckCircle2 className="w-4 h-4" /></>)}
                       </button>
                     </div>
@@ -923,16 +805,12 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                   <h3 className="text-lg font-bold text-slate-900 mb-2">Select a submission to grade</h3>
                   <p className="text-sm text-slate-500 max-w-xs">Choose a student's work from the list on the left to start grading.</p>
                   <div className="flex gap-3 mt-6">
-                    <button
-                      onClick={() => setShowCreateAssignment(true)}
-                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition"
-                    >
+                    <button onClick={() => setShowCreateAssignment(true)}
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition">
                       <Plus className="w-4 h-4" /> New Assignment
                     </button>
-                    <button
-                      onClick={() => setShowUploadNotes(true)}
-                      className="flex items-center gap-2 px-4 py-2 bg-teal-50 border border-teal-200 text-teal-700 rounded-xl text-sm font-bold hover:bg-teal-100 transition"
-                    >
+                    <button onClick={() => setShowUploadNotes(true)}
+                      className="flex items-center gap-2 px-4 py-2 bg-teal-50 border border-teal-200 text-teal-700 rounded-xl text-sm font-bold hover:bg-teal-100 transition">
                       <Upload className="w-4 h-4" /> Upload Notes
                     </button>
                   </div>
@@ -949,7 +827,8 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
             <h3 className="text-xl font-bold text-slate-900">Student Monitoring</h3>
             <div className="relative max-w-xs w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input type="text" placeholder="Search students…" className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
+              <input type="text" placeholder="Search students…"
+                className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -997,82 +876,65 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
         <div className="space-y-8">
           <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-6 rounded-[28px] border border-green-100">
             <div className="flex items-center gap-2 mb-4">
-              <div className="bg-green-700 p-2 rounded-xl">
-                <Brain className="w-4 h-4 text-white" />
-              </div>
+              <div className="bg-green-700 p-2 rounded-xl"><Brain className="w-4 h-4 text-white" /></div>
               <h3 className="text-sm font-bold text-green-900">AI Class Overview</h3>
               <div className="flex items-center gap-1 bg-white/60 px-2.5 py-1 rounded-full border border-green-100 ml-2">
                 <Sparkles className="w-3 h-3 text-green-600" />
                 <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">NVIDIA NIM</span>
               </div>
-              <button
-                onClick={fetchClassSummary}
-                disabled={classSummaryLoading}
-                className="ml-auto text-xs font-bold text-green-700 hover:text-green-900 disabled:opacity-40 flex items-center gap-1"
-              >
-                <RefreshCw className="w-3 h-3" /> Refresh
-              </button>
             </div>
-            <AnimatePresence mode="wait">
-              {classSummaryLoading ? (
-                <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-3 py-2">
-                  <Loader2 className="w-5 h-5 text-green-600 animate-spin" />
-                  <span className="text-sm text-green-700">Analysing your class…</span>
-                </motion.div>
-              ) : (
-                <motion.p key="summary" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-green-900 leading-relaxed">
-                  {classSummary ? <BoldText text={classSummary} /> : "Click Refresh to generate the class overview."}
-                </motion.p>
-              )}
-            </AnimatePresence>
+            {classSummaryLoading ? (
+              <div className="flex items-center gap-3 text-green-800 text-sm">
+                <Loader2 className="w-4 h-4 animate-spin" /> Generating AI class summary…
+              </div>
+            ) : classSummary ? (
+              <p className="text-sm text-green-900 leading-relaxed">
+                <BoldText text={classSummary} />
+              </p>
+            ) : (
+              <button onClick={fetchClassSummary}
+                className="text-sm text-green-700 font-bold hover:underline">Generate summary</button>
+            )}
           </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
-                <BarChart3 className="w-5 h-5 text-indigo-600" /> Grade Distribution
-              </h3>
-              <div className="space-y-4">
-                {CLASS_DATA.students.map((s, i) => {
-                  const color = s.average >= 85 ? "bg-emerald-500" : s.average >= 70 ? "bg-indigo-500" : "bg-red-400";
-                  return (
-                    <div key={i}>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-sm font-medium text-slate-700">{s.name}</span>
-                        <span className="text-sm font-bold text-slate-700 tabular-nums">{s.average}%</span>
-                      </div>
-                      <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                        <motion.div
-                          className={`h-full ${color} rounded-full`}
-                          initial={{ width: 0 }}
-                          animate={{ width: `${s.average}%` }}
-                          transition={{ duration: 0.6, ease: "easeOut", delay: i * 0.1 }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[
+              { label: "Class Average", value: `${CLASS_DATA.classAverage}%`, icon: TrendingUp, color: "emerald" },
+              { label: "On Track", value: CLASS_DATA.students.filter(s => s.status === "On Track").length, icon: CheckCircle2, color: "indigo" },
+              { label: "At Risk", value: CLASS_DATA.students.filter(s => s.status === "At Risk").length, icon: AlertCircle, color: "red" },
+            ].map((kpi, i) => (
+              <div key={i} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className={`bg-${kpi.color}-100 p-2.5 rounded-xl`}>
+                    <kpi.icon className={`w-5 h-5 text-${kpi.color}-600`} />
+                  </div>
+                  <p className="text-sm text-slate-500 font-medium">{kpi.label}</p>
+                </div>
+                <p className="text-3xl font-bold text-slate-900">{kpi.value}</p>
               </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-[28px] border border-slate-100 shadow-sm overflow-hidden">
+            <div className="px-8 py-5 border-b border-slate-50">
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-indigo-500" /> Performance Breakdown
+              </h3>
             </div>
-            <div className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-indigo-600" /> At-Risk Breakdown
-              </h3>
-              <div className="space-y-4">
-                {CLASS_DATA.students
-                  .filter(s => s.status !== "On Track")
-                  .map((s, i) => (
-                    <div key={i} className="flex items-center justify-between p-4 bg-red-50 rounded-2xl border border-red-100">
-                      <div>
-                        <p className="text-sm font-bold text-slate-900">{s.name}</p>
-                        <p className="text-xs text-slate-500">Average: {s.average}% · Missed: {s.missed}</p>
-                      </div>
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                        s.status === "At Risk" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-                      }`}>{s.status}</span>
+            <div className="divide-y divide-slate-50">
+              {CLASS_DATA.students.map((s, i) => {
+                const color = s.status === "On Track" ? "emerald" : s.status === "At Risk" ? "red" : "amber";
+                return (
+                  <div key={i} className="px-8 py-4 flex items-center gap-6">
+                    <div className="w-32 shrink-0">
+                      <p className="text-sm font-bold text-slate-900 truncate">{s.name}</p>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider text-${color}-600`}>{s.status}</span>
                     </div>
-                  ))}
-              </div>
+                    <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                      <div className={`bg-${color}-500 h-2 rounded-full transition-all`} style={{ width: `${s.average}%` }} />
+                    </div>
+                    <span className="text-sm font-bold text-slate-700 tabular-nums w-12 text-right">{s.average}%</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
