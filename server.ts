@@ -71,10 +71,6 @@ function sanitizeText(t: string) {
 
 // ── Cloudinary helpers ────────────────────────────────────────────────────
 
-/**
- * Upload a file to Cloudinary as a raw resource.
- * Returns the secure_url stored by Cloudinary.
- */
 async function uploadToCloudinary(
   localPath: string,
   folder: string,
@@ -117,39 +113,51 @@ async function deleteFromCloudinary(publicId: string): Promise<void> {
 }
 
 /**
- * Fetch a raw Cloudinary resource SERVER-SIDE using Basic auth
- * (api_key:api_secret). This bypasses any CDN-level access restrictions
- * on the account and works regardless of "strict" / "secure delivery" settings.
+ * Fetch a Cloudinary raw resource SERVER-SIDE by generating a signed
+ * delivery URL (sign_url:true) and fetching it from Node.
  *
- * Strategy: use the Cloudinary Admin API resource-download endpoint:
- *   https://api.cloudinary.com/v1_1/<cloud>/raw/download?public_id=<id>
- * with Basic auth header.
+ * Why not the Admin /raw/download endpoint?
+ *   → It returns 404 for raw resources whose public_id includes a file
+ *     extension, because Cloudinary strips extensions internally on that
+ *     endpoint. Signed delivery URLs do not have this limitation.
+ *
+ * Why not redirect the browser to the secure_url directly?
+ *   → Accounts with strict access / secure delivery reject unsigned
+ *     browser requests with 401.
+ *
+ * Signed delivery URLs are time-limited (1 hour) and work for all
+ * account types including free plans.
  */
-async function fetchCloudinaryRaw(publicId: string): Promise<{ buffer: Buffer; contentType: string } | null> {
-  const cloud  = process.env.CLOUDINARY_CLOUD_NAME!;
-  const key    = process.env.CLOUDINARY_API_KEY!;
-  const secret = process.env.CLOUDINARY_API_SECRET!;
+async function fetchCloudinaryRaw(
+  publicId: string
+): Promise<{ buffer: Buffer; contentType: string } | null> {
+  try {
+    // Generate a signed URL valid for 3600 seconds
+    const signedUrl = cloudinary.url(publicId, {
+      resource_type: "raw",
+      type:          "upload",
+      sign_url:      true,
+      secure:        true,
+      expires_at:    Math.floor(Date.now() / 1000) + 3600,
+    });
 
-  // Build a signed download URL via the SDK (handles timestamp + signature)
-  const ts  = Math.floor(Date.now() / 1000);
-  const sig = cloudinary.utils.api_sign_request(
-    { public_id: publicId, timestamp: ts },
-    secret
-  );
-  const downloadUrl =
-    `https://api.cloudinary.com/v1_1/${cloud}/raw/download` +
-    `?public_id=${encodeURIComponent(publicId)}&timestamp=${ts}&api_key=${key}&signature=${sig}`;
+    console.log(`[fetchCloudinaryRaw] signed URL → ${signedUrl}`);
+    const res = await fetchWithTimeout(signedUrl, {}, 30000);
 
-  console.log(`[fetchCloudinaryRaw] downloading: ${downloadUrl}`);
-  const res = await fetchWithTimeout(downloadUrl, {}, 30000);
-  if (!res.ok) {
-    const body = await res.text();
-    console.error(`[fetchCloudinaryRaw] ${res.status}:`, body);
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`[fetchCloudinaryRaw] ${res.status}:`, body);
+      return null;
+    }
+
+    const ct  = res.headers.get("content-type") ?? "application/octet-stream";
+    const buf = Buffer.from(await res.arrayBuffer());
+    console.log(`[fetchCloudinaryRaw] fetched ${buf.length} bytes, content-type=${ct}`);
+    return { buffer: buf, contentType: ct };
+  } catch (e) {
+    console.error("[fetchCloudinaryRaw] error:", e);
     return null;
   }
-  const ct  = res.headers.get("content-type") ?? "application/octet-stream";
-  const buf = Buffer.from(await res.arrayBuffer());
-  return { buffer: buf, contentType: ct };
 }
 
 // ── File system dirs ──────────────────────────────────────────────────────
@@ -381,8 +389,8 @@ async function startServer() {
   });
 
   // ── FILE PROXY ─────────────────────────────────────────────────────────
-  // Fetches from Cloudinary server-side using signed API auth, then pipes
-  // bytes to the client. This bypasses CDN-level access restrictions.
+  // Generates a signed Cloudinary delivery URL and fetches server-side,
+  // then pipes bytes to the client. Browser never touches Cloudinary directly.
   app.get("/api/notes/:id/proxy", async (req, res) => {
     try {
       const note = await queryOne(
