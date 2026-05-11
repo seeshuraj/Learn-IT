@@ -72,37 +72,29 @@ function sanitizeText(t: string) {
 // ── Cloudinary helpers ────────────────────────────────────────────────────
 
 /**
- * Upload a local file to Cloudinary as a raw resource.
- *
- * KEY RULE for raw resources:
- *   Pass public_id WITHOUT the file extension and supply the extension
- *   separately as `format`. Cloudinary then stores the resource under
- *   the base public_id (e.g. "learnit/notes/1-1234567890") and appends
- *   the format internally.  The secure_url it returns will contain the
- *   full filename (base + "." + format) in the path, but the canonical
- *   public_id used for signing/deletion is the BASE only.
+ * Upload a file to Cloudinary as a public raw resource.
+ * The returned secure_url is permanent and directly accessible —
+ * no signing or proxy fetch is needed to serve it.
  *
  * @param localPath  Absolute path to the temp file on disk
- * @param folder     Cloudinary folder (e.g. "learnit/notes")
- * @param baseName   Filename WITHOUT extension (e.g. "1-1234567890")
- * @param ext        Extension WITHOUT leading dot (e.g. "pdf")
+ * @param folder     Cloudinary folder  (e.g. "learnit/notes")
+ * @param filename   Full filename WITH extension (e.g. "1-1234567890.pdf")
+ *                   This becomes the public_id stored by Cloudinary.
  */
 async function uploadToCloudinary(
   localPath: string,
   folder: string,
-  baseName: string,
-  ext: string
+  filename: string
 ): Promise<string | null> {
   if (!hasCloudinary) return null;
   try {
     const result = await cloudinary.uploader.upload(localPath, {
       folder,
-      public_id: baseName,   // NO extension here
-      format:    ext,        // extension passed separately
+      public_id:     filename,
       resource_type: "raw",
-      overwrite: true,
+      overwrite:     true,
     });
-    console.log(`[Cloudinary] uploaded → ${result.public_id} (format=${ext})  url=${result.secure_url}`);
+    console.log(`[Cloudinary] uploaded → public_id=${result.public_id}  url=${result.secure_url}`);
     return result.secure_url;
   } catch (e) {
     console.error("[Cloudinary] upload error:", e);
@@ -111,54 +103,24 @@ async function uploadToCloudinary(
 }
 
 /**
- * Extract the BASE public_id (no extension) from a Cloudinary secure_url.
- *
- * Cloudinary raw secure_urls look like:
- *   https://res.cloudinary.com/<cloud>/raw/upload/v<ver>/<folder>/<base>.<ext>
- *
- * The canonical public_id stored by Cloudinary is "<folder>/<base>" — no ext.
- * We strip the extension here so every downstream call (sign, delete) uses
- * the correct key.
+ * Extract the public_id from a Cloudinary secure_url.
+ * For raw resources the public_id INCLUDES the file extension.
+ * e.g. "https://res.cloudinary.com/<cloud>/raw/upload/v123/learnit/notes/1-xxx.pdf"
+ *   →  "learnit/notes/1-xxx.pdf"
  */
 function publicIdFromUrl(url: string): string {
   const m = url.match(/\/upload\/(?:v\d+\/)?(.+)$/);
-  if (!m) return "";
-  const full = m[1];                    // e.g. "learnit/notes/1-1234567890.pdf"
-  const dot  = full.lastIndexOf(".");
-  return dot !== -1 ? full.slice(0, dot) : full;  // strip extension
+  return m ? m[1] : "";
 }
 
 async function deleteFromCloudinary(publicId: string): Promise<void> {
   if (!hasCloudinary || !publicId) return;
   try {
-    // publicId here is already the base (no extension) thanks to publicIdFromUrl
     await cloudinary.uploader.destroy(publicId, { resource_type: "raw" });
     console.log(`[Cloudinary] deleted ${publicId}`);
   } catch (e) {
     console.error("[Cloudinary] delete error:", e);
   }
-}
-
-/**
- * Generate a short-lived signed download URL for a Cloudinary raw resource.
- *
- * Uses private_download_url(base, format) — which is correct because:
- *  - base   = public_id WITHOUT extension (matches what Cloudinary stored)
- *  - format = file extension tells Cloudinary which format to serve
- *
- * This is the intended Cloudinary SDK API for raw signed downloads.
- *
- * @param publicId    Base public_id WITHOUT extension (e.g. "learnit/notes/1-xxx")
- * @param format      File extension without dot (e.g. "pdf")
- * @param expiresInSec  TTL in seconds (default 120)
- */
-function signedDownloadUrl(publicId: string, format: string, expiresInSec = 120): string {
-  const url = cloudinary.utils.private_download_url(publicId, format, {
-    resource_type: "raw",
-    expires_at: Math.floor(Date.now() / 1000) + expiresInSec,
-  });
-  console.log(`[signedDownloadUrl] public_id=${publicId}  format=${format}  url=${url}`);
-  return url;
 }
 
 // ── File system dirs ──────────────────────────────────────────────────────
@@ -389,7 +351,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── PDF PROXY ─────────────────────────────────────────────────────────
+  // ── FILE PROXY ─────────────────────────────────────────────────────────
   app.get("/api/notes/:id/proxy", async (req, res) => {
     try {
       const note = await queryOne(
@@ -398,35 +360,18 @@ async function startServer() {
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
 
-      const contentType = note.file_type || "application/octet-stream";
-      const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
-
       if (note.cloudinary_url && hasCloudinary) {
-        // publicIdFromUrl strips the extension → base public_id only
-        const pubId  = publicIdFromUrl(note.cloudinary_url);
-        // derive format from the stored URL extension
-        const urlExt = note.cloudinary_url.split(".").pop()?.toLowerCase() ?? "pdf";
-        const signedUrl = signedDownloadUrl(pubId, urlExt, 120);
-        console.log(`[proxy] public_id=${pubId}  format=${urlExt}`);
-
-        const upstream = await fetchWithTimeout(signedUrl, {}, 30000);
-        if (!upstream.ok) {
-          const body = await upstream.text();
-          console.error(`[proxy] Cloudinary ${upstream.status}:`, body);
-          return res.status(502).json({
-            error: `Cloudinary returned ${upstream.status}`,
-            detail: body.slice(0, 300),
-          });
-        }
-
-        res.setHeader("Content-Type",        contentType);
-        res.setHeader("Content-Disposition", disposition);
-        const buf = Buffer.from(await upstream.arrayBuffer());
-        return res.send(buf);
+        // Raw uploads on Cloudinary are PUBLIC (delivery_type=upload).
+        // The secure_url returned at upload time is permanent and directly
+        // accessible from the CDN — just redirect the browser to it.
+        console.log(`[proxy] redirecting to Cloudinary CDN: ${note.cloudinary_url}`);
+        return res.redirect(302, note.cloudinary_url);
       }
 
       // Local disk fallback
       if (note.file_path && fs.existsSync(note.file_path)) {
+        const contentType = note.file_type || "application/octet-stream";
+        const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
         res.setHeader("Content-Type",        contentType);
         res.setHeader("Content-Disposition", disposition);
         return res.sendFile(path.resolve(note.file_path));
@@ -585,12 +530,11 @@ async function startServer() {
       for (const file of files) {
         let fileUrl = "";
         if (hasCloudinary && file.buffer) {
-          const extWithDot = path.extname(file.originalname).toLowerCase(); // e.g. ".pdf"
-          const ext        = extWithDot.replace(".", "");                   // e.g. "pdf"
-          const baseName   = `${submissionId}-${Date.now()}`;               // NO extension
-          const tmpPath    = path.join(UPLOADS_DIR, `tmp-${Date.now()}${extWithDot}`);
+          const ext      = path.extname(file.originalname).toLowerCase();
+          const filename = `${submissionId}-${Date.now()}${ext}`;
+          const tmpPath  = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
           fs.writeFileSync(tmpPath, file.buffer);
-          const url = await uploadToCloudinary(tmpPath, "learnit/submissions", baseName, ext);
+          const url = await uploadToCloudinary(tmpPath, "learnit/submissions", filename);
           try { fs.unlinkSync(tmpPath); } catch (_) {}
           fileUrl = url ?? "";
         } else if (file.path) {
@@ -658,12 +602,11 @@ async function startServer() {
 
       if (hasCloudinary && file.buffer) {
         text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-        const extWithDot = path.extname(file.originalname).toLowerCase(); // e.g. ".pdf"
-        const ext        = extWithDot.replace(".", "");                   // e.g. "pdf"
-        const baseName   = `${req.params.id}-${Date.now()}`;              // NO extension
-        const tmpPath    = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${extWithDot}`);
+        const ext      = path.extname(file.originalname).toLowerCase();
+        const filename = `${req.params.id}-${Date.now()}${ext}`;
+        const tmpPath  = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
         fs.writeFileSync(tmpPath, file.buffer);
-        const url = await uploadToCloudinary(tmpPath, "learnit/notes", baseName, ext);
+        const url = await uploadToCloudinary(tmpPath, "learnit/notes", filename);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
         cloudinaryUrl = url ?? "";
       } else {
