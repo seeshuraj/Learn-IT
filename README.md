@@ -1,6 +1,6 @@
 # LearnIT
 
-Production-grade AI learning platform for students, instructors, and academic institutions.
+AI learning platform for students, instructors, and academic institutions.
 
 LearnIT is not a notes viewer with a chatbot attached. It is a full academic intelligence system that combines course content, note retrieval, assessment analysis, personalized study roadmaps, and operational reporting into one platform. The product must be built and maintained as a secure, scalable, production system for real users, real coursework, and sustained concurrent usage.
 
