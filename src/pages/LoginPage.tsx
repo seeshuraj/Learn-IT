@@ -23,12 +23,19 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setError('');
     setLoading(true);
     try {
+      const normalizedEmail = email.trim().toLowerCase();
+
       // 1. Authenticate with Supabase Auth → stores access token in sessionStorage.
-      await supabaseSignIn(email.trim().toLowerCase(), password);
+      const { session } = await supabaseSignIn(normalizedEmail, password);
+      console.log('SUPABASE_SESSION', session?.access_token?.slice(0, 20), !!session);
+
+      if (!session?.access_token) {
+        throw new Error('Supabase session was not established. Check VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY env vars.');
+      }
 
       // 2. Fetch the legacy user record from our Express API.
-      //    requireAuth on /api/login will validate the Supabase token we just got.
-      const user = await api.login(email.trim().toLowerCase());
+      //    requireAuth on protected routes will validate the Supabase token we just got.
+      const user = await api.login(normalizedEmail);
       onLogin(user);
     } catch (err: any) {
       setError(err.message ?? 'Invalid credentials');

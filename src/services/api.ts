@@ -17,6 +17,7 @@ const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
 /** Returns { Authorization: 'Bearer <token>' } or {} if not signed in. */
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await getAccessToken();
+  console.log('AUTH_TOKEN_PRESENT', !!token, token?.slice(0, 20));
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
