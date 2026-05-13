@@ -1,39 +1,58 @@
 /**
- * validate.ts — Zod request validation middleware (P1-4 / P1-6)
+ * validate.ts — Zod request validation middleware (P1-6)
  *
  * Usage:
- *   import { validate } from './validate';
- *   import { z } from 'zod';
- *
- *   const schema = z.object({ body: z.object({ title: z.string().min(1) }) });
- *   app.post('/api/...', requireAuth, validate(schema), handler);
+ *   import { validateBody, validateParams } from './validate.js';
+ *   app.post('/api/...', requireAuth, validateBody(mySchema), handler);
  */
-
 import { Request, Response, NextFunction } from 'express';
 import { ZodSchema, ZodError } from 'zod';
 
-type ValidationTarget = {
-  body?:   ZodSchema;
-  query?:  ZodSchema;
-  params?: ZodSchema;
-};
+function formatError(err: ZodError) {
+  return {
+    error:  'Validation error',
+    issues: err.errors.map(e => ({
+      path:    e.path.join('.'),
+      message: e.message,
+    })),
+  };
+}
 
-export function validate(schemas: ValidationTarget) {
+/** Validate + coerce req.body against schema. Returns 400 on failure. */
+export function validateBody(schema: ZodSchema) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    try {
-      if (schemas.body)   req.body   = schemas.body.parse(req.body);
-      if (schemas.query)  req.query  = schemas.query.parse(req.query) as any;
-      if (schemas.params) req.params = schemas.params.parse(req.params) as any;
-      next();
-    } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({
-          error:  'Validation error',
-          issues: err.errors.map(e => ({ path: e.path.join('.'), message: e.message })),
-        });
-        return;
-      }
-      next(err);
+    const result = schema.safeParse(req.body);
+    if (!result.success) {
+      res.status(400).json(formatError(result.error));
+      return;
     }
+    req.body = result.data;
+    next();
+  };
+}
+
+/** Validate + coerce req.params against schema. Returns 400 on failure. */
+export function validateParams(schema: ZodSchema) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const result = schema.safeParse(req.params);
+    if (!result.success) {
+      res.status(400).json(formatError(result.error));
+      return;
+    }
+    req.params = result.data as Record<string, string>;
+    next();
+  };
+}
+
+/** Validate + coerce req.query against schema. Returns 400 on failure. */
+export function validateQuery(schema: ZodSchema) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const result = schema.safeParse(req.query);
+    if (!result.success) {
+      res.status(400).json(formatError(result.error));
+      return;
+    }
+    req.query = result.data as Record<string, string>;
+    next();
   };
 }

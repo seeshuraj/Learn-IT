@@ -17,33 +17,47 @@ import {
 } from "./src/server/middleware/auth.js";
 import { attachRequestId } from "./src/server/middleware/requestId.js";
 import { requestLogger } from "./src/server/middleware/logger.js";
+import { validateBody, validateParams } from "./src/server/middleware/validate.js";
+import {
+  assignmentCreateSchema,
+  assignmentUpdateSchema,
+  instructorAssignmentCreateSchema,
+  submissionCreateSchema,
+  gradeSchema,
+  adminUserCreateSchema,
+  adminUserUpdateSchema,
+  courseCreateSchema,
+  enrollmentCreateSchema,
+  bulkEnrollSchema,
+  settingsSchema,
+  moduleCreateSchema,
+  gradePdfSchema,
+  routeParamId,
+} from "./src/server/validation/schemas.js";
+import { validateEnv } from "./src/server/config/env.js";
+
+dotenv.config();
+validateEnv();
 
 dns.setDefaultResultOrder("ipv4first");
-dotenv.config();
 
 // ── Supabase Storage (P1-5) ───────────────────────────────────────────────
 const SUPABASE_URL            = process.env.SUPABASE_URL ?? "";
 const SUPABASE_SERVICE_ROLE   = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const NOTES_BUCKET            = "learnit-notes";
 const SUBMISSIONS_BUCKET      = "learnit-submissions";
-const SIGNED_URL_TTL          = 3600; // seconds
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-  console.warn("[Storage] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing — file storage disabled");
-}
+const SIGNED_URL_TTL          = 3600;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-/** Upload a buffer to Supabase Storage. Returns the object path or null on failure. */
 async function uploadToStorage(
   bucket: string,
   objectPath: string,
   buffer: Buffer,
   mimetype: string
 ): Promise<string | null> {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return null;
   const { error } = await supabaseAdmin.storage
     .from(bucket)
     .upload(objectPath, buffer, { contentType: mimetype, upsert: true });
@@ -55,13 +69,12 @@ async function uploadToStorage(
   return objectPath;
 }
 
-/** Generate a short-lived signed URL for a stored object. */
 async function getSignedUrl(
   bucket: string,
   objectPath: string,
   ttl = SIGNED_URL_TTL
 ): Promise<string | null> {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !objectPath) return null;
+  if (!objectPath) return null;
   const { data, error } = await supabaseAdmin.storage
     .from(bucket)
     .createSignedUrl(objectPath, ttl);
@@ -72,12 +85,11 @@ async function getSignedUrl(
   return data.signedUrl;
 }
 
-/** Download a stored object as a Buffer. */
 async function downloadFromStorage(
   bucket: string,
   objectPath: string
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !objectPath) return null;
+  if (!objectPath) return null;
   const { data, error } = await supabaseAdmin.storage.from(bucket).download(objectPath);
   if (error || !data) {
     console.error(`[Storage] download error (${bucket}/${objectPath}):`, error?.message);
@@ -87,9 +99,8 @@ async function downloadFromStorage(
   return { buffer: buf, contentType: data.type || "application/octet-stream" };
 }
 
-/** Delete a stored object. */
 async function deleteFromStorage(bucket: string, objectPath: string): Promise<void> {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !objectPath) return;
+  if (!objectPath) return;
   const { error } = await supabaseAdmin.storage.from(bucket).remove([objectPath]);
   if (error) console.error(`[Storage] delete error (${bucket}/${objectPath}):`, error.message);
   else console.log(`[Storage] deleted ${bucket}/${objectPath}`);
@@ -104,11 +115,6 @@ const __filename  = fileURLToPath(import.meta.url);
 const __dirname   = path.dirname(__filename);
 const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
-
-if (!process.env.DATABASE_URL) {
-  console.error("ERROR: DATABASE_URL environment variable is not set.");
-  process.exit(1);
-}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -140,16 +146,12 @@ function sanitizeText(t: string) {
     .replace(/\uFFFD/g, "");
 }
 
-// ── File system dirs (temp only — not permanent storage) ─────────────────
 const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// ── Multer — always memory storage (we stream straight to Supabase) ───────
 const memStorage = multer.memoryStorage();
 const uploadNote       = multer({ storage: memStorage, limits: { fileSize: 20 * 1024 * 1024 } });
 const uploadSubmission = multer({ storage: memStorage, limits: { fileSize: 50 * 1024 * 1024 } });
-
-// ── Text extraction ───────────────────────────────────────────────────────
 
 async function extractTextFromBuffer(
   buffer: Buffer,
@@ -187,8 +189,6 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
     return "";
   }
 }
-
-// ── RAG helpers ───────────────────────────────────────────────────────────
 
 function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
   const words  = text.split(/\s+/).filter(Boolean);
@@ -233,8 +233,6 @@ async function retrieveChunks(
   return scored.slice(0, topK).map(s => s.text);
 }
 
-// ── Network helpers ───────────────────────────────────────────────────────
-
 async function fetchWithTimeout(
   url: string,
   opts: RequestInit,
@@ -248,8 +246,6 @@ async function fetchWithTimeout(
     clearTimeout(timer);
   }
 }
-
-// ── NVIDIA NIM ────────────────────────────────────────────────────────────
 
 const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
 
@@ -309,8 +305,6 @@ async function nimEmbed(
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }
 
-// ── Express app ───────────────────────────────────────────────────────────
-
 async function startServer() {
   const app = express();
 
@@ -348,11 +342,10 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── Auth (P1-4) ── requireAuth: user resolved from JWT, never from body ──
+  // ── Auth (P1-4) ───────────────────────────────────────────────────────
   app.post("/api/login", requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
-      // Resolve from the verified JWT identity — never trust req.body fields
       const user = await queryOne(
         "SELECT id,name,email,role,active,year,major,gpa FROM users WHERE id=$1 AND active=1",
         [authReq.auth.legacyUserId]
@@ -362,7 +355,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── File proxy (P1-5) — serve via Supabase signed URL ─────────────────
+  // ── File proxy (P1-5) ─────────────────────────────────────────────────
   app.get("/api/notes/:id/proxy", requireAuth, async (req, res) => {
     try {
       const note = await queryOne(
@@ -370,7 +363,6 @@ async function startServer() {
         [req.params.id]
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
-
       if (note.storage_path) {
         const result = await downloadFromStorage(NOTES_BUCKET, note.storage_path);
         if (!result) return res.status(502).json({ error: "Failed to fetch from storage" });
@@ -380,7 +372,6 @@ async function startServer() {
         res.setHeader("Content-Length",      result.buffer.length);
         return res.send(result.buffer);
       }
-
       res.status(404).json({ error: "File not found" });
     } catch (e: any) {
       console.error("[proxy] error:", e.message);
@@ -409,20 +400,25 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/courses/:id/modules", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
-    try {
-      const { name, content } = req.body;
-      const last = await queryOne(
-        "SELECT MAX(display_order) as maxorder FROM modules WHERE course_id = $1",
-        [req.params.id]
-      );
-      const result = await run(
-        "INSERT INTO modules (course_id, name, content, display_order) VALUES ($1,$2,$3,$4) RETURNING id",
-        [req.params.id, name, content, (parseInt(last?.maxorder) || 0) + 1]
-      );
-      res.json({ id: result.lastInsertId });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/courses/:id/modules",
+    requireAuth, requireRole("instructor", "admin"),
+    validateBody(moduleCreateSchema),
+    async (req, res) => {
+      try {
+        const { name, content } = req.body;
+        const last = await queryOne(
+          "SELECT MAX(display_order) as maxorder FROM modules WHERE course_id = $1",
+          [req.params.id]
+        );
+        const result = await run(
+          "INSERT INTO modules (course_id, name, content, display_order) VALUES ($1,$2,$3,$4) RETURNING id",
+          [req.params.id, name, content, (parseInt(last?.maxorder) || 0) + 1]
+        );
+        res.json({ id: result.lastInsertId });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   // ── Materials ──────────────────────────────────────────────────────────
   app.get("/api/modules/:id/materials", requireAuth, async (req, res) => {
@@ -453,28 +449,37 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/modules/:id/assignments", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
-    try {
-      const { title, description, due_date, max_points = 100, rubric = "", status = "active" } = req.body;
-      if (!title || !due_date) return res.status(400).json({ error: "title and due_date required" });
-      const result = await run(
-        "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
-        [req.params.id, title, description, due_date, max_points, rubric, status]
-      );
-      res.json({ id: result.lastInsertId });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/modules/:id/assignments",
+    requireAuth, requireRole("instructor", "admin"),
+    validateBody(assignmentCreateSchema),
+    async (req, res) => {
+      try {
+        const { title, description, due_date, max_points, rubric, status } = req.body;
+        const result = await run(
+          "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+          [req.params.id, title, description, due_date, max_points, rubric, status]
+        );
+        res.json({ id: result.lastInsertId });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
-  app.put("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
-    try {
-      const { title, description, due_date, max_points, rubric, status } = req.body;
-      await run(
-        "UPDATE assignments SET title=$1,description=$2,due_date=$3,max_points=$4,rubric=$5,status=$6 WHERE id=$7",
-        [title, description, due_date, max_points, rubric, status, req.params.id]
-      );
-      res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.put(
+    "/api/assignments/:id",
+    requireAuth, requireRole("instructor", "admin"),
+    validateBody(assignmentUpdateSchema),
+    async (req, res) => {
+      try {
+        const { title, description, due_date, max_points, rubric, status } = req.body;
+        await run(
+          "UPDATE assignments SET title=$1,description=$2,due_date=$3,max_points=$4,rubric=$5,status=$6 WHERE id=$7",
+          [title, description, due_date, max_points, rubric, status, req.params.id]
+        );
+        res.json({ success: true });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   app.delete("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
@@ -484,23 +489,27 @@ async function startServer() {
   });
 
   // ── Submissions ────────────────────────────────────────────────────────
-  app.post("/api/submissions", requireAuth, requireRole("student"), async (req, res) => {
-    try {
-      const { assignment_id, content } = req.body;
-      const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
-      if (!assignment_id) return res.status(400).json({ error: "assignment_id required" });
-      const existing = await queryOne(
-        "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
-        [assignment_id, student_id]
-      );
-      if (existing) return res.status(409).json({ error: "Already submitted" });
-      const result = await run(
-        "INSERT INTO submissions (assignment_id,student_id,content) VALUES ($1,$2,$3) RETURNING id",
-        [assignment_id, student_id, sanitizeText(content ?? "")]
-      );
-      res.json({ id: result.lastInsertId });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/submissions",
+    requireAuth, requireRole("student"),
+    validateBody(submissionCreateSchema),
+    async (req, res) => {
+      try {
+        const { assignment_id, content } = req.body;
+        const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
+        const existing = await queryOne(
+          "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
+          [assignment_id, student_id]
+        );
+        if (existing) return res.status(409).json({ error: "Already submitted" });
+        const result = await run(
+          "INSERT INTO submissions (assignment_id,student_id,content) VALUES ($1,$2,$3) RETURNING id",
+          [assignment_id, student_id, sanitizeText(content ?? "")]
+        );
+        res.json({ id: result.lastInsertId });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadSubmission.array("files", 5), async (req: any, res) => {
     try {
@@ -568,47 +577,38 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/submissions/:id/grade", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
-    try {
-      const { grade, feedback } = req.body;
-      await run(
-        "UPDATE submissions SET grade=$1,feedback=$2 WHERE id=$3",
-        [grade, feedback, req.params.id]
-      );
-      res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/submissions/:id/grade",
+    requireAuth, requireRole("instructor", "admin"),
+    validateBody(gradeSchema),
+    async (req, res) => {
+      try {
+        const { grade, feedback } = req.body;
+        await run(
+          "UPDATE submissions SET grade=$1,feedback=$2 WHERE id=$3",
+          [grade, feedback, req.params.id]
+        );
+        res.json({ success: true });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
-  // ── Notes (P1-5) — upload to Supabase Storage ─────────────────────────
+  // ── Notes (P1-5) ──────────────────────────────────────────────────────
   app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
-
       const text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-
       const ext        = path.extname(file.originalname).toLowerCase();
       const objectPath = `module/${req.params.id}/${Date.now()}${ext}`;
-      const storedPath = await uploadToStorage(
-        NOTES_BUCKET, objectPath, file.buffer, file.mimetype
-      );
-
+      const storedPath = await uploadToStorage(NOTES_BUCKET, objectPath, file.buffer, file.mimetype);
       const result = await run(
         `INSERT INTO notes
-           (student_id, module_id, filename, original_name, storage_path,
-            content_text, file_type)
+           (student_id, module_id, filename, original_name, storage_path, content_text, file_type)
          VALUES (NULL,$1,$2,$3,$4,$5,$6) RETURNING id`,
-        [
-          req.params.id,
-          file.originalname,
-          file.originalname,
-          storedPath ?? "",
-          text,
-          file.mimetype,
-        ]
+        [req.params.id, file.originalname, file.originalname, storedPath ?? "", text, file.mimetype]
       );
       const noteId = result.lastInsertId;
-
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
@@ -624,7 +624,6 @@ async function startServer() {
           console.error("[notes] embedding error:", embErr);
         }
       }
-
       res.json({
         id: noteId,
         original_name: file.originalname,
@@ -648,12 +647,8 @@ async function startServer() {
         WHERE n.module_id = $1 AND n.student_id IS NULL
         ORDER BY n.uploaded_at DESC
       `, [req.params.id]);
-
-      // Attach a fresh signed URL for each note
       const withUrls = await Promise.all(notes.map(async (n: any) => {
-        const signedUrl = n.storage_path
-          ? await getSignedUrl(NOTES_BUCKET, n.storage_path)
-          : null;
+        const signedUrl = n.storage_path ? await getSignedUrl(NOTES_BUCKET, n.storage_path) : null;
         return { ...n, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
       }));
       res.json(withUrls);
@@ -662,13 +657,8 @@ async function startServer() {
 
   app.delete("/api/notes/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
-      const note = await queryOne(
-        "SELECT storage_path FROM notes WHERE id=$1",
-        [req.params.id]
-      );
-      if (note?.storage_path) {
-        await deleteFromStorage(NOTES_BUCKET, note.storage_path);
-      }
+      const note = await queryOne("SELECT storage_path FROM notes WHERE id=$1", [req.params.id]);
+      if (note?.storage_path) await deleteFromStorage(NOTES_BUCKET, note.storage_path);
       await run("DELETE FROM note_chunks WHERE note_id=$1", [req.params.id]);
       await run("DELETE FROM notes WHERE id=$1",            [req.params.id]);
       res.json({ success: true });
@@ -691,11 +681,8 @@ async function startServer() {
           AND c.archived = 0
         ORDER BY n.uploaded_at DESC
       `, [req.params.id]);
-
       const withUrls = await Promise.all(notes.map(async (n: any) => {
-        const signedUrl = n.storage_path
-          ? await getSignedUrl(NOTES_BUCKET, n.storage_path)
-          : null;
+        const signedUrl = n.storage_path ? await getSignedUrl(NOTES_BUCKET, n.storage_path) : null;
         return { ...n, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
       }));
       res.json(withUrls);
@@ -817,38 +804,53 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
-    try {
-      const { name, email, role, major, year } = req.body;
-      const result = await run(
-        "INSERT INTO users (name,email,role,major,year) VALUES ($1,$2,$3,$4,$5) RETURNING id",
-        [name, email, role, major, year]
-      );
-      res.json({ id: result.lastInsertId });
-    } catch (_e) { res.status(400).json({ error: "Email already exists" }); }
-  });
+  app.post(
+    "/api/admin/users",
+    requireAuth, requireRole("admin"),
+    validateBody(adminUserCreateSchema),
+    async (req, res) => {
+      try {
+        const { name, email, role, major, year } = req.body;
+        const result = await run(
+          "INSERT INTO users (name,email,role,major,year) VALUES ($1,$2,$3,$4,$5) RETURNING id",
+          [name, email, role, major, year]
+        );
+        res.json({ id: result.lastInsertId });
+      } catch (_e) { res.status(400).json({ error: "Email already exists" }); }
+    }
+  );
 
-  app.put("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
-    try {
-      const { name, email, role, active, major, year } = req.body;
-      await run(
-        "UPDATE users SET name=$1,email=$2,role=$3,active=$4,major=$5,year=$6 WHERE id=$7",
-        [name, email, role, active, major, year, req.params.id]
-      );
-      res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.put(
+    "/api/admin/users/:id",
+    requireAuth, requireRole("admin"),
+    validateBody(adminUserUpdateSchema),
+    async (req, res) => {
+      try {
+        const { name, email, role, active, major, year } = req.body;
+        await run(
+          "UPDATE users SET name=$1,email=$2,role=$3,active=$4,major=$5,year=$6 WHERE id=$7",
+          [name, email, role, active, major, year, req.params.id]
+        );
+        res.json({ success: true });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
-  app.post("/api/admin/courses", requireAuth, requireRole("admin"), async (req, res) => {
-    try {
-      const { code, name, instructor_id } = req.body;
-      const result = await run(
-        "INSERT INTO courses (code,name,instructor_id) VALUES ($1,$2,$3) RETURNING id",
-        [code, name, instructor_id]
-      );
-      res.json({ id: result.lastInsertId });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/admin/courses",
+    requireAuth, requireRole("admin"),
+    validateBody(courseCreateSchema),
+    async (req, res) => {
+      try {
+        const { code, name, instructor_id } = req.body;
+        const result = await run(
+          "INSERT INTO courses (code,name,instructor_id) VALUES ($1,$2,$3) RETURNING id",
+          [code, name, instructor_id]
+        );
+        res.json({ id: result.lastInsertId });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   app.delete("/api/admin/courses/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
@@ -883,16 +885,21 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/settings", requireAuth, requireRole("admin"), async (req, res) => {
-    try {
-      const { key, value } = req.body;
-      await run(
-        "INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2",
-        [key, value]
-      );
-      res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/admin/settings",
+    requireAuth, requireRole("admin"),
+    validateBody(settingsSchema),
+    async (req, res) => {
+      try {
+        const { key, value } = req.body;
+        await run(
+          "INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2",
+          [key, value]
+        );
+        res.json({ success: true });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   app.get("/api/admin/enrollments/:courseId", requireAuth, requireRole("admin"), async (req, res) => {
     try {
@@ -904,17 +911,22 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/enrollments", requireAuth, requireRole("admin"), async (req, res) => {
-    try {
-      const { course_id, student_id } = req.body;
-      const result = await run(
-        "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
-        [course_id, student_id]
-      );
-      if (!result.lastInsertId) return res.status(409).json({ error: "Already enrolled" });
-      res.json({ id: result.lastInsertId });
-    } catch (e: any) { res.status(400).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/admin/enrollments",
+    requireAuth, requireRole("admin"),
+    validateBody(enrollmentCreateSchema),
+    async (req, res) => {
+      try {
+        const { course_id, student_id } = req.body;
+        const result = await run(
+          "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
+          [course_id, student_id]
+        );
+        if (!result.lastInsertId) return res.status(409).json({ error: "Already enrolled" });
+        res.json({ id: result.lastInsertId });
+      } catch (e: any) { res.status(400).json({ error: e.message }); }
+    }
+  );
 
   app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
@@ -923,39 +935,42 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/bulk-enroll", requireAuth, requireRole("admin"), async (req, res) => {
-    try {
-      const { course_id, emails } = req.body as { course_id: number; emails: string[] };
-      if (!course_id || !Array.isArray(emails))
-        return res.status(400).json({ error: "course_id and emails[] required" });
-      const results: any[] = [];
-      const client = await pool.connect();
+  app.post(
+    "/api/admin/bulk-enroll",
+    requireAuth, requireRole("admin"),
+    validateBody(bulkEnrollSchema),
+    async (req, res) => {
       try {
-        await client.query("BEGIN");
-        for (const email of emails) {
-          const trimmed = email.trim().toLowerCase();
-          if (!trimmed) continue;
-          let user = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
-          if (!user) {
-            const name = trimmed.split("@")[0].replace(/[._]/g, " ");
+        const { course_id, emails } = req.body as { course_id: number; emails: string[] };
+        const results: any[] = [];
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          for (const email of emails) {
+            const trimmed = email.trim().toLowerCase();
+            if (!trimmed) continue;
+            let user = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
+            if (!user) {
+              const name = trimmed.split("@")[0].replace(/[._]/g, " ");
+              const r = await client.query(
+                "INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name",
+                [name, trimmed]
+              );
+              user = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
+            }
             const r = await client.query(
-              "INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name",
-              [name, trimmed]
+              "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
+              [course_id, user.id]
             );
-            user = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
+            results.push({ email: trimmed, student_id: user.id, enrolled: r.rows.length > 0 });
           }
-          const r = await client.query(
-            "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
-            [course_id, user.id]
-          );
-          results.push({ email: trimmed, student_id: user.id, enrolled: r.rows.length > 0 });
-        }
-        await client.query("COMMIT");
-      } catch (e) { await client.query("ROLLBACK"); throw e; }
-      finally { client.release(); }
-      res.json({ results });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+          await client.query("COMMIT");
+        } catch (e) { await client.query("ROLLBACK"); throw e; }
+        finally { client.release(); }
+        res.json({ results });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   // ── Instructor ─────────────────────────────────────────────────────────
   app.get("/api/instructor/:id/courses", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
@@ -985,16 +1000,21 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/instructor/assignments", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
-    try {
-      const { module_id, title, description, due_date, max_points = 100, rubric = "", status = "active" } = req.body;
-      const result = await run(
-        "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
-        [module_id, title, description, due_date, max_points, rubric, status]
-      );
-      res.json({ id: result.lastInsertId });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+  app.post(
+    "/api/instructor/assignments",
+    requireAuth, requireRole("instructor", "admin"),
+    validateBody(instructorAssignmentCreateSchema),
+    async (req, res) => {
+      try {
+        const { module_id, title, description, due_date, max_points, rubric, status } = req.body;
+        const result = await run(
+          "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+          [module_id, title, description, due_date, max_points, rubric, status]
+        );
+        res.json({ id: result.lastInsertId });
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   // ── AI ─────────────────────────────────────────────────────────────────
   app.post("/api/ai/grade", requireAuth, async (req, res) => {
@@ -1009,57 +1029,61 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/ai/grade-pdf", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
-    try {
-      const { submission_id, rubric, module_id } = req.body;
-      if (!submission_id) return res.status(400).json({ error: "submission_id required" });
-      const submission = await queryOne("SELECT * FROM submissions WHERE id=$1", [submission_id]);
-      const files      = await query("SELECT * FROM submission_files WHERE submission_id=$1", [submission_id]);
-      let fullText = submission?.content ?? "";
-      for (const file of files) {
-        if (file.storage_path) {
-          const dl = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
-          if (dl) {
-            const ext     = path.extname(file.original_name ?? "").toLowerCase();
-            const tmpPath = path.join(UPLOADS_DIR, `tmp-grade-${Date.now()}${ext}`);
-            fs.writeFileSync(tmpPath, dl.buffer);
-            try {
-              const extracted = await extractText(tmpPath, file.file_type);
-              if (extracted) fullText += "\n\n" + extracted;
-            } finally {
-              try { fs.unlinkSync(tmpPath); } catch (_) {}
+  app.post(
+    "/api/ai/grade-pdf",
+    requireAuth, requireRole("instructor", "admin"),
+    validateBody(gradePdfSchema),
+    async (req, res) => {
+      try {
+        const { submission_id, rubric, module_id } = req.body;
+        const submission = await queryOne("SELECT * FROM submissions WHERE id=$1", [submission_id]);
+        const files      = await query("SELECT * FROM submission_files WHERE submission_id=$1", [submission_id]);
+        let fullText = submission?.content ?? "";
+        for (const file of files) {
+          if (file.storage_path) {
+            const dl = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
+            if (dl) {
+              const ext     = path.extname(file.original_name ?? "").toLowerCase();
+              const tmpPath = path.join(UPLOADS_DIR, `tmp-grade-${Date.now()}${ext}`);
+              fs.writeFileSync(tmpPath, dl.buffer);
+              try {
+                const extracted = await extractText(tmpPath, file.file_type);
+                if (extracted) fullText += "\n\n" + extracted;
+              } finally {
+                try { fs.unlinkSync(tmpPath); } catch (_) {}
+              }
             }
           }
         }
-      }
-      if (!fullText.trim()) return res.status(400).json({ error: "No readable content found in submission" });
-      let notesContext = "";
-      if (module_id) {
-        const relevantChunks = await retrieveChunks(module_id, fullText.slice(0, 500), 4);
-        if (relevantChunks.length > 0)
-          notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
-      }
-      const fallbackRubricRow = submission
-        ? await queryOne(
-            "SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)",
-            [submission_id]
-          )
-        : null;
-      const effectiveRubric = rubric || fallbackRubricRow?.rubric || "Grade on overall quality, correctness, and clarity.";
-      const raw = await nimChat([
-        { role: "system", content: 'You are an expert university GRADING ASSISTANT. Respond ONLY with valid JSON — no markdown fences. Shape: {"score":<int 0-100>,"feedback":"<3-4 sentences>","strengths":["...","..."],"improvements":["...","..."],"rubric_breakdown":[{"criterion":"...","score":<int>,"comment":"..."}]}' },
-        { role: "user",   content: `RUBRIC:\n${effectiveRubric}${notesContext}\n\nSTUDENT SUBMISSION (${files.length} file(s) + text):\n${fullText.slice(0, 4000)}` },
-      ], { temperature: 0.3, maxTokens: 1200 });
-      let result: any;
-      try { result = JSON.parse(raw.replace(/```json|```/g, "").trim()); }
-      catch (_e) { result = { score: 75, feedback: raw, strengths: ["Reviewed"], improvements: ["See feedback"], rubric_breakdown: [] }; }
-      await run(
-        "UPDATE submissions SET ai_score=$1,ai_feedback=$2,ai_strengths=$3,ai_improvements=$4 WHERE id=$5",
-        [result.score, result.feedback, JSON.stringify(result.strengths), JSON.stringify(result.improvements), submission_id]
-      );
-      res.json(result);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
+        if (!fullText.trim()) return res.status(400).json({ error: "No readable content found in submission" });
+        let notesContext = "";
+        if (module_id) {
+          const relevantChunks = await retrieveChunks(module_id, fullText.slice(0, 500), 4);
+          if (relevantChunks.length > 0)
+            notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
+        }
+        const fallbackRubricRow = submission
+          ? await queryOne(
+              "SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)",
+              [submission_id]
+            )
+          : null;
+        const effectiveRubric = rubric || fallbackRubricRow?.rubric || "Grade on overall quality, correctness, and clarity.";
+        const raw = await nimChat([
+          { role: "system", content: 'You are an expert university GRADING ASSISTANT. Respond ONLY with valid JSON — no markdown fences. Shape: {"score":<int 0-100>,"feedback":"<3-4 sentences>","strengths":["...","..."],"improvements":["...","..."],"rubric_breakdown":[{"criterion":"...","score":<int>,"comment":"..."}]}' },
+          { role: "user",   content: `RUBRIC:\n${effectiveRubric}${notesContext}\n\nSTUDENT SUBMISSION (${files.length} file(s) + text):\n${fullText.slice(0, 4000)}` },
+        ], { temperature: 0.3, maxTokens: 1200 });
+        let result: any;
+        try { result = JSON.parse(raw.replace(/```json|```/g, "").trim()); }
+        catch (_e) { result = { score: 75, feedback: raw, strengths: ["Reviewed"], improvements: ["See feedback"], rubric_breakdown: [] }; }
+        await run(
+          "UPDATE submissions SET ai_score=$1,ai_feedback=$2,ai_strengths=$3,ai_improvements=$4 WHERE id=$5",
+          [result.score, result.feedback, JSON.stringify(result.strengths), JSON.stringify(result.improvements), submission_id]
+        );
+        res.json(result);
+      } catch (e: any) { res.status(500).json({ error: e.message }); }
+    }
+  );
 
   app.post("/api/ai/chat", requireAuth, async (req, res) => {
     try {
