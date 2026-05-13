@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { User } from '../types';
-import { api } from '../services/api';
+import { api, supabaseSignIn } from '../services/api';
 
 const DEMO_ACCOUNTS = [
   { role: 'Admin',      email: 'admin@learnit.edu',      label: 'Admin' },
@@ -13,15 +13,21 @@ interface LoginPageProps {
 }
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [email, setEmail] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [email,    setEmail]    = useState('');
+  const [password, setPassword] = useState('');
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState('');
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
+      // 1. Authenticate with Supabase Auth → stores access token in sessionStorage.
+      await supabaseSignIn(email.trim().toLowerCase(), password);
+
+      // 2. Fetch the legacy user record from our Express API.
+      //    requireAuth on /api/login will validate the Supabase token we just got.
       const user = await api.login(email.trim().toLowerCase());
       onLogin(user);
     } catch (err: any) {
@@ -50,11 +56,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         {/* Card */}
         <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
           <h1 className="text-xl font-semibold text-slate-800 mb-1">Sign in</h1>
-          <p className="text-slate-500 text-sm mb-6">Enter your university email to continue</p>
+          <p className="text-slate-500 text-sm mb-6">Enter your university email and password to continue</p>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="email">Email address</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="email">
+                Email address
+              </label>
               <input
                 id="email"
                 type="email"
@@ -66,8 +74,25 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               />
             </div>
 
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="password">
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                required
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
+              />
+            </div>
+
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5 rounded-lg">{error}</div>
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5 rounded-lg">
+                {error}
+              </div>
             )}
 
             <button
@@ -94,7 +119,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 </button>
               ))}
             </div>
-            <p className="text-xs text-slate-400 mt-2">Click a role to pre-fill the email, then Sign in</p>
+            <p className="text-xs text-slate-400 mt-2">Click a role to pre-fill the email, then enter your password and Sign in</p>
           </div>
         </div>
 
