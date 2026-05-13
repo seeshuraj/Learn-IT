@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 import { createRequire } from "module";
 import fs from "fs";
 import dns from "dns";
-import { v2 as cloudinary } from "cloudinary";
+import { createClient } from "@supabase/supabase-js";
 import {
   requireAuth,
   requireRole,
@@ -21,19 +21,79 @@ import { requestLogger } from "./src/server/middleware/logger.js";
 dns.setDefaultResultOrder("ipv4first");
 dotenv.config();
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+// ── Supabase Storage (P1-5) ───────────────────────────────────────────────
+const SUPABASE_URL            = process.env.SUPABASE_URL ?? "";
+const SUPABASE_SERVICE_ROLE   = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+const NOTES_BUCKET            = "learnit-notes";
+const SUBMISSIONS_BUCKET      = "learnit-submissions";
+const SIGNED_URL_TTL          = 3600; // seconds
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+  console.warn("[Storage] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing — file storage disabled");
+}
+
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+  auth: { autoRefreshToken: false, persistSession: false },
 });
 
-const hasCloudinary = !!(
-  process.env.CLOUDINARY_CLOUD_NAME &&
-  process.env.CLOUDINARY_API_KEY &&
-  process.env.CLOUDINARY_API_SECRET
-);
-if (hasCloudinary) console.log("[Cloudinary] configured ✓");
-else console.warn("[Cloudinary] env vars missing — files stored locally only");
+/** Upload a buffer to Supabase Storage. Returns the object path or null on failure. */
+async function uploadToStorage(
+  bucket: string,
+  objectPath: string,
+  buffer: Buffer,
+  mimetype: string
+): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return null;
+  const { error } = await supabaseAdmin.storage
+    .from(bucket)
+    .upload(objectPath, buffer, { contentType: mimetype, upsert: true });
+  if (error) {
+    console.error(`[Storage] upload error (${bucket}/${objectPath}):`, error.message);
+    return null;
+  }
+  console.log(`[Storage] uploaded → ${bucket}/${objectPath}`);
+  return objectPath;
+}
+
+/** Generate a short-lived signed URL for a stored object. */
+async function getSignedUrl(
+  bucket: string,
+  objectPath: string,
+  ttl = SIGNED_URL_TTL
+): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !objectPath) return null;
+  const { data, error } = await supabaseAdmin.storage
+    .from(bucket)
+    .createSignedUrl(objectPath, ttl);
+  if (error) {
+    console.error(`[Storage] signed URL error (${bucket}/${objectPath}):`, error.message);
+    return null;
+  }
+  return data.signedUrl;
+}
+
+/** Download a stored object as a Buffer. */
+async function downloadFromStorage(
+  bucket: string,
+  objectPath: string
+): Promise<{ buffer: Buffer; contentType: string } | null> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !objectPath) return null;
+  const { data, error } = await supabaseAdmin.storage.from(bucket).download(objectPath);
+  if (error || !data) {
+    console.error(`[Storage] download error (${bucket}/${objectPath}):`, error?.message);
+    return null;
+  }
+  const buf = Buffer.from(await data.arrayBuffer());
+  return { buffer: buf, contentType: data.type || "application/octet-stream" };
+}
+
+/** Delete a stored object. */
+async function deleteFromStorage(bucket: string, objectPath: string): Promise<void> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE || !objectPath) return;
+  const { error } = await supabaseAdmin.storage.from(bucket).remove([objectPath]);
+  if (error) console.error(`[Storage] delete error (${bucket}/${objectPath}):`, error.message);
+  else console.log(`[Storage] deleted ${bucket}/${objectPath}`);
+}
 
 const require = createRequire(import.meta.url);
 const multer   = require("multer");
@@ -58,7 +118,6 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
-// Share the pool with the auth middleware so it can resolve user_identity_map
 setPool(pool);
 
 async function query(sql: string, params: any[] = []) {
@@ -81,103 +140,14 @@ function sanitizeText(t: string) {
     .replace(/\uFFFD/g, "");
 }
 
-// ── Cloudinary helpers ────────────────────────────────────────────────────
+// ── File system dirs (temp only — not permanent storage) ─────────────────
+const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-async function uploadToCloudinary(
-  localPath: string,
-  folder: string,
-  filename: string
-): Promise<string | null> {
-  if (!hasCloudinary) return null;
-  try {
-    const result = await cloudinary.uploader.upload(localPath, {
-      folder,
-      public_id:     filename,
-      resource_type: "raw",
-      overwrite:     true,
-    });
-    console.log(`[Cloudinary] uploaded → public_id=${result.public_id}  url=${result.secure_url}`);
-    return result.secure_url;
-  } catch (e) {
-    console.error("[Cloudinary] upload error:", e);
-    return null;
-  }
-}
-
-function publicIdFromUrl(url: string): string {
-  const m = url.match(/\/upload\/(?:v\d+\/)?(.+)$/);
-  return m ? m[1] : "";
-}
-
-async function deleteFromCloudinary(publicId: string): Promise<void> {
-  if (!hasCloudinary || !publicId) return;
-  try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: "raw" });
-    console.log(`[Cloudinary] deleted ${publicId}`);
-  } catch (e) {
-    console.error("[Cloudinary] delete error:", e);
-  }
-}
-
-async function fetchCloudinaryRaw(
-  publicId: string
-): Promise<{ buffer: Buffer; contentType: string } | null> {
-  try {
-    const signedUrl = cloudinary.url(publicId, {
-      resource_type: "raw",
-      type:          "upload",
-      sign_url:      true,
-      secure:        true,
-      expires_at:    Math.floor(Date.now() / 1000) + 3600,
-    });
-    console.log(`[fetchCloudinaryRaw] signed URL → ${signedUrl}`);
-    const res = await fetchWithTimeout(signedUrl, {}, 30000);
-    if (!res.ok) {
-      const body = await res.text();
-      console.error(`[fetchCloudinaryRaw] ${res.status}:`, body);
-      return null;
-    }
-    const ct  = res.headers.get("content-type") ?? "application/octet-stream";
-    const buf = Buffer.from(await res.arrayBuffer());
-    console.log(`[fetchCloudinaryRaw] fetched ${buf.length} bytes, content-type=${ct}`);
-    return { buffer: buf, contentType: ct };
-  } catch (e) {
-    console.error("[fetchCloudinaryRaw] error:", e);
-    return null;
-  }
-}
-
-// ── File system dirs ──────────────────────────────────────────────────────
-
-const UPLOADS_DIR     = path.join(PROJECT_ROOT, "uploads");
-const NOTES_DIR       = path.join(UPLOADS_DIR, "notes");
-const SUBMISSIONS_DIR = path.join(UPLOADS_DIR, "submissions");
-[UPLOADS_DIR, NOTES_DIR, SUBMISSIONS_DIR].forEach(d =>
-  fs.mkdirSync(d, { recursive: true })
-);
-
-// ── Multer storage ────────────────────────────────────────────────────────
-
+// ── Multer — always memory storage (we stream straight to Supabase) ───────
 const memStorage = multer.memoryStorage();
-const diskNotesStorage = multer.diskStorage({
-  destination: (_req: any, _file: any, cb: any) => cb(null, NOTES_DIR),
-  filename: (_req: any, file: any, cb: any) =>
-    cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
-});
-const diskSubmissionStorage = multer.diskStorage({
-  destination: (_req: any, _file: any, cb: any) => cb(null, SUBMISSIONS_DIR),
-  filename: (_req: any, file: any, cb: any) =>
-    cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`),
-});
-
-const uploadNote = multer({
-  storage: hasCloudinary ? memStorage : diskNotesStorage,
-  limits: { fileSize: 20 * 1024 * 1024 },
-});
-const uploadSubmission = multer({
-  storage: hasCloudinary ? memStorage : diskSubmissionStorage,
-  limits: { fileSize: 50 * 1024 * 1024 },
-});
+const uploadNote       = multer({ storage: memStorage, limits: { fileSize: 20 * 1024 * 1024 } });
+const uploadSubmission = multer({ storage: memStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 // ── Text extraction ───────────────────────────────────────────────────────
 
@@ -344,7 +314,6 @@ async function nimEmbed(
 async function startServer() {
   const app = express();
 
-  // ── Global middleware ─────────────────────────────────────────────────
   app.use(attachRequestId);
   app.use(requestLogger);
 
@@ -355,17 +324,16 @@ async function startServer() {
     const origin = req.headers.origin as string | undefined;
     const allow  = !origin || ALLOWED_RE.test(origin) ? (origin ?? "*") : "";
     if (allow) {
-      res.setHeader("Access-Control-Allow-Origin",   allow);
+      res.setHeader("Access-Control-Allow-Origin",      allow);
       res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader("Access-Control-Allow-Methods",  "GET,POST,PUT,DELETE,PATCH,OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers",  "Content-Type,Authorization,X-Requested-With");
+      res.setHeader("Access-Control-Allow-Methods",     "GET,POST,PUT,DELETE,PATCH,OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers",     "Content-Type,Authorization,X-Requested-With");
     }
     if (req.method === "OPTIONS") { res.sendStatus(204); return; }
     next();
   });
 
   app.use(express.json());
-  app.use("/uploads", express.static(UPLOADS_DIR));
 
   // ── Health (public) ───────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
@@ -373,56 +341,47 @@ async function startServer() {
       await pool.query("SELECT 1");
       res.json({
         status: "ok", db: "postgres",
-        env: process.env.NODE_ENV, cloudinary: hasCloudinary,
+        storage: !!(SUPABASE_URL && SUPABASE_SERVICE_ROLE),
+        env: process.env.NODE_ENV,
         ts: new Date().toISOString(),
       });
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── Auth (public — issues token) ──────────────────────────────────────
-  app.post("/api/login", async (req, res) => {
+  // ── Auth (P1-4) ── requireAuth: user resolved from JWT, never from body ──
+  app.post("/api/login", requireAuth, async (req, res) => {
     try {
-      const { email } = req.body;
+      const authReq = req as AuthenticatedRequest;
+      // Resolve from the verified JWT identity — never trust req.body fields
       const user = await queryOne(
-        "SELECT * FROM users WHERE email = $1 AND active = 1", [email]
+        "SELECT id,name,email,role,active,year,major,gpa FROM users WHERE id=$1 AND active=1",
+        [authReq.auth.legacyUserId]
       );
       if (user) res.json(user);
-      else res.status(401).json({ error: "Invalid credentials" });
+      else res.status(403).json({ error: "Account inactive or not found" });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── FILE PROXY (requireAuth — any authenticated user may download) ─────
+  // ── File proxy (P1-5) — serve via Supabase signed URL ─────────────────
   app.get("/api/notes/:id/proxy", requireAuth, async (req, res) => {
     try {
       const note = await queryOne(
-        "SELECT cloudinary_url, file_type, original_name, file_path FROM notes WHERE id=$1",
+        "SELECT storage_path, file_type, original_name FROM notes WHERE id=$1",
         [req.params.id]
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
 
-      const contentType = note.file_type || "application/octet-stream";
-      const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
-
-      if (note.cloudinary_url && hasCloudinary) {
-        const publicId = publicIdFromUrl(note.cloudinary_url);
-        console.log(`[proxy] fetching from Cloudinary: public_id=${publicId}`);
-        const result = await fetchCloudinaryRaw(publicId);
-        if (!result) {
-          return res.status(502).json({ error: "Failed to fetch from Cloudinary" });
-        }
-        res.setHeader("Content-Type",        contentType);
+      if (note.storage_path) {
+        const result = await downloadFromStorage(NOTES_BUCKET, note.storage_path);
+        if (!result) return res.status(502).json({ error: "Failed to fetch from storage" });
+        const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
+        res.setHeader("Content-Type",        note.file_type || result.contentType);
         res.setHeader("Content-Disposition", disposition);
         res.setHeader("Content-Length",      result.buffer.length);
         return res.send(result.buffer);
       }
 
-      if (note.file_path && fs.existsSync(note.file_path)) {
-        res.setHeader("Content-Type",        contentType);
-        res.setHeader("Content-Disposition", disposition);
-        return res.sendFile(path.resolve(note.file_path));
-      }
-
-      res.status(404).json({ error: "File not found on disk or cloud" });
+      res.status(404).json({ error: "File not found" });
     } catch (e: any) {
       console.error("[proxy] error:", e.message);
       res.status(500).json({ error: e.message });
@@ -525,13 +484,11 @@ async function startServer() {
   });
 
   // ── Submissions ────────────────────────────────────────────────────────
-  // student_id is NEVER trusted from req.body — always taken from req.auth
   app.post("/api/submissions", requireAuth, requireRole("student"), async (req, res) => {
     try {
       const { assignment_id, content } = req.body;
       const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
-      if (!assignment_id)
-        return res.status(400).json({ error: "assignment_id required" });
+      if (!assignment_id) return res.status(400).json({ error: "assignment_id required" });
       const existing = await queryOne(
         "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
         [assignment_id, student_id]
@@ -549,8 +506,7 @@ async function startServer() {
     try {
       const { assignment_id, content = "" } = req.body;
       const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
-      if (!assignment_id)
-        return res.status(400).json({ error: "assignment_id required" });
+      if (!assignment_id) return res.status(400).json({ error: "assignment_id required" });
       const existing = await queryOne(
         "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
         [assignment_id, student_id]
@@ -564,23 +520,16 @@ async function startServer() {
       const files: any[] = req.files ?? [];
       const savedFiles: any[] = [];
       for (const file of files) {
-        let fileUrl = "";
-        if (hasCloudinary && file.buffer) {
-          const ext      = path.extname(file.originalname).toLowerCase();
-          const filename = `${submissionId}-${Date.now()}${ext}`;
-          const tmpPath  = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
-          fs.writeFileSync(tmpPath, file.buffer);
-          const url = await uploadToCloudinary(tmpPath, "learnit/submissions", filename);
-          try { fs.unlinkSync(tmpPath); } catch (_) {}
-          fileUrl = url ?? "";
-        } else if (file.path) {
-          fileUrl = `/uploads/submissions/${file.filename}`;
-        }
-        await run(
-          "INSERT INTO submission_files (submission_id,filename,original_name,file_type,file_path,cloudinary_url) VALUES ($1,$2,$3,$4,$5,$6)",
-          [submissionId, file.filename ?? file.originalname, file.originalname, file.mimetype, fileUrl, fileUrl]
+        const ext        = path.extname(file.originalname).toLowerCase();
+        const objectPath = `submission/${submissionId}/${Date.now()}${ext}`;
+        const storedPath = await uploadToStorage(
+          SUBMISSIONS_BUCKET, objectPath, file.buffer, file.mimetype
         );
-        savedFiles.push({ filename: file.filename ?? file.originalname, original_name: file.originalname, url: fileUrl });
+        await run(
+          "INSERT INTO submission_files (submission_id,filename,original_name,file_type,storage_path) VALUES ($1,$2,$3,$4,$5)",
+          [submissionId, file.originalname, file.originalname, file.mimetype, storedPath ?? ""]
+        );
+        savedFiles.push({ filename: file.originalname, original_name: file.originalname, storage_path: storedPath });
       }
       res.json({ id: submissionId, files: savedFiles });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -589,13 +538,16 @@ async function startServer() {
   app.get("/api/submissions/:id/files", requireAuth, async (req, res) => {
     try {
       const files = await query(
-        "SELECT id,filename,original_name,file_type,uploaded_at,cloudinary_url FROM submission_files WHERE submission_id=$1",
+        "SELECT id,filename,original_name,file_type,uploaded_at,storage_path FROM submission_files WHERE submission_id=$1",
         [req.params.id]
       );
-      res.json(files.map((f: any) => ({
-        ...f,
-        url: f.cloudinary_url || `/uploads/submissions/${f.filename}`,
-      })));
+      const withUrls = await Promise.all(files.map(async (f: any) => {
+        const signedUrl = f.storage_path
+          ? await getSignedUrl(SUBMISSIONS_BUCKET, f.storage_path)
+          : null;
+        return { ...f, url: signedUrl ?? null };
+      }));
+      res.json(withUrls);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -627,39 +579,32 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Notes ──────────────────────────────────────────────────────────────
+  // ── Notes (P1-5) — upload to Supabase Storage ─────────────────────────
   app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
 
-      let text          = "";
-      let cloudinaryUrl = "";
+      const text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
 
-      if (hasCloudinary && file.buffer) {
-        text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-        const ext      = path.extname(file.originalname).toLowerCase();
-        const filename = `${req.params.id}-${Date.now()}${ext}`;
-        const tmpPath  = path.join(UPLOADS_DIR, `tmp-note-${Date.now()}${ext}`);
-        fs.writeFileSync(tmpPath, file.buffer);
-        const url = await uploadToCloudinary(tmpPath, "learnit/notes", filename);
-        try { fs.unlinkSync(tmpPath); } catch (_) {}
-        cloudinaryUrl = url ?? "";
-      } else {
-        text = await extractText(file.path, file.mimetype);
-      }
+      const ext        = path.extname(file.originalname).toLowerCase();
+      const objectPath = `module/${req.params.id}/${Date.now()}${ext}`;
+      const storedPath = await uploadToStorage(
+        NOTES_BUCKET, objectPath, file.buffer, file.mimetype
+      );
 
-      const localFilename = file.filename ??
-        file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
       const result = await run(
         `INSERT INTO notes
-           (student_id, module_id, filename, original_name, file_path,
-            content_text, file_type, cloudinary_url)
-         VALUES (NULL,$1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+           (student_id, module_id, filename, original_name, storage_path,
+            content_text, file_type)
+         VALUES (NULL,$1,$2,$3,$4,$5,$6) RETURNING id`,
         [
-          req.params.id, localFilename, file.originalname,
-          cloudinaryUrl || (file.path ?? ""),
-          text, file.mimetype, cloudinaryUrl,
+          req.params.id,
+          file.originalname,
+          file.originalname,
+          storedPath ?? "",
+          text,
+          file.mimetype,
         ]
       );
       const noteId = result.lastInsertId;
@@ -682,19 +627,19 @@ async function startServer() {
 
       res.json({
         id: noteId,
-        original_name:  file.originalname,
-        chunk_count:    chunks.length,
-        text_length:    text.length,
-        cloudinary_url: cloudinaryUrl || null,
+        original_name: file.originalname,
+        chunk_count:   chunks.length,
+        text_length:   text.length,
+        storage_path:  storedPath ?? null,
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.get("/api/modules/:id/notes", requireAuth, async (req, res) => {
     try {
-      res.json(await query(`
+      const notes = await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
-               n.cloudinary_url,
+               n.storage_path,
                m.name as module_name, c.name as course_name,
                (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
         FROM notes n
@@ -702,20 +647,27 @@ async function startServer() {
         JOIN courses c ON m.course_id = c.id
         WHERE n.module_id = $1 AND n.student_id IS NULL
         ORDER BY n.uploaded_at DESC
-      `, [req.params.id]));
+      `, [req.params.id]);
+
+      // Attach a fresh signed URL for each note
+      const withUrls = await Promise.all(notes.map(async (n: any) => {
+        const signedUrl = n.storage_path
+          ? await getSignedUrl(NOTES_BUCKET, n.storage_path)
+          : null;
+        return { ...n, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
+      }));
+      res.json(withUrls);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.delete("/api/notes/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const note = await queryOne(
-        "SELECT file_path, cloudinary_url FROM notes WHERE id=$1",
+        "SELECT storage_path FROM notes WHERE id=$1",
         [req.params.id]
       );
-      if (note?.cloudinary_url) {
-        await deleteFromCloudinary(publicIdFromUrl(note.cloudinary_url));
-      } else if (note?.file_path && fs.existsSync(note.file_path)) {
-        fs.unlinkSync(note.file_path);
+      if (note?.storage_path) {
+        await deleteFromStorage(NOTES_BUCKET, note.storage_path);
       }
       await run("DELETE FROM note_chunks WHERE note_id=$1", [req.params.id]);
       await run("DELETE FROM notes WHERE id=$1",            [req.params.id]);
@@ -725,9 +677,9 @@ async function startServer() {
 
   app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
-      res.json(await query(`
+      const notes = await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
-               n.cloudinary_url,
+               n.storage_path,
                m.name as module_name, c.name as course_name,
                (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
         FROM notes n
@@ -738,7 +690,15 @@ async function startServer() {
           AND n.student_id IS NULL
           AND c.archived = 0
         ORDER BY n.uploaded_at DESC
-      `, [req.params.id]));
+      `, [req.params.id]);
+
+      const withUrls = await Promise.all(notes.map(async (n: any) => {
+        const signedUrl = n.storage_path
+          ? await getSignedUrl(NOTES_BUCKET, n.storage_path)
+          : null;
+        return { ...n, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
+      }));
+      res.json(withUrls);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -908,10 +868,10 @@ async function startServer() {
         queryOne("SELECT COUNT(*) as count FROM submissions"),
       ]);
       res.json({
-        activeUsers:      parseInt(activeUsers?.count)   || 0,
-        totalCourses:     parseInt(totalCourses?.count)  || 0,
+        activeUsers:      parseInt(activeUsers?.count)      || 0,
+        totalCourses:     parseInt(totalCourses?.count)     || 0,
         averageGrade:     Math.round(parseFloat(avgGrade?.avg) || 0),
-        totalNotes:       parseInt(totalNotes?.count)    || 0,
+        totalNotes:       parseInt(totalNotes?.count)       || 0,
         totalSubmissions: parseInt(totalSubmissions?.count) || 0,
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -1057,9 +1017,19 @@ async function startServer() {
       const files      = await query("SELECT * FROM submission_files WHERE submission_id=$1", [submission_id]);
       let fullText = submission?.content ?? "";
       for (const file of files) {
-        if (file.file_path && fs.existsSync(file.file_path)) {
-          const extracted = await extractText(file.file_path, file.file_type);
-          if (extracted) fullText += "\n\n" + extracted;
+        if (file.storage_path) {
+          const dl = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
+          if (dl) {
+            const ext     = path.extname(file.original_name ?? "").toLowerCase();
+            const tmpPath = path.join(UPLOADS_DIR, `tmp-grade-${Date.now()}${ext}`);
+            fs.writeFileSync(tmpPath, dl.buffer);
+            try {
+              const extracted = await extractText(tmpPath, file.file_type);
+              if (extracted) fullText += "\n\n" + extracted;
+            } finally {
+              try { fs.unlinkSync(tmpPath); } catch (_) {}
+            }
+          }
         }
       }
       if (!fullText.trim()) return res.status(400).json({ error: "No readable content found in submission" });
@@ -1152,7 +1122,7 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT ?? 3000);
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`\nLearnIT API  →  http://localhost:${PORT}  [${process.env.NODE_ENV ?? "development"}]  (PostgreSQL)`);
+    console.log(`\nLearnIT API  →  http://localhost:${PORT}  [${process.env.NODE_ENV ?? "development"}]  (PostgreSQL + Supabase Storage)`);
     if (!isProduction) console.log(`LearnIT App  →  http://localhost:5173  (Vite dev server)\n`);
   });
 }
