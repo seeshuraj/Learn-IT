@@ -6,11 +6,15 @@
  * Supabase session. Multipart helpers do the same via `authHeaders()`.
  *
  * In dev, BASE is empty so Vite proxies :5173 → :3000.
- * In production (Vercel), set VITE_API_BASE_URL to your Render/Railway URL.
+ * In production (Vercel), VITE_API_BASE_URL is baked in at build time via
+ * .env.production. A hardcoded fallback ensures the bundle never resolves
+ * to '' and accidentally hits the Vercel SPA, which returns HTML.
  */
 import { supabase, getAccessToken } from './supabaseClient';
 
-const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
+const BASE =
+  (import.meta as any).env?.VITE_API_BASE_URL ||
+  'https://learn-it-3f5h.onrender.com'; // production fallback — never empty
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -46,11 +50,20 @@ async function request<T = any>(path: string, options?: RequestInit): Promise<T>
     },
     credentials: 'include',
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error ?? `HTTP ${res.status}`);
+
+  // Guard: if the server returned HTML (wrong host / 404 SPA fallback),
+  // throw a readable error instead of a cryptic SyntaxError.
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    const preview = await res.text();
+    throw new Error(
+      `[API] Expected JSON from ${BASE}${path} but got: ${preview.slice(0, 120)}`
+    );
   }
-  return res.json();
+
+  const data = await res.json();
+  if (!res.ok) throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
+  return data as T;
 }
 
 // ── Public API surface ───────────────────────────────────────────────────────
