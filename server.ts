@@ -8,6 +8,15 @@ import { createRequire } from "module";
 import fs from "fs";
 import dns from "dns";
 import { v2 as cloudinary } from "cloudinary";
+import {
+  requireAuth,
+  requireRole,
+  requireSelfOrAdmin,
+  setPool,
+  AuthenticatedRequest,
+} from "./src/server/middleware/auth.js";
+import { attachRequestId } from "./src/server/middleware/requestId.js";
+import { requestLogger } from "./src/server/middleware/logger.js";
 
 dns.setDefaultResultOrder("ipv4first");
 dotenv.config();
@@ -48,6 +57,9 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
+
+// Share the pool with the auth middleware so it can resolve user_identity_map
+setPool(pool);
 
 async function query(sql: string, params: any[] = []) {
   const { rows } = await pool.query(sql, params);
@@ -92,11 +104,6 @@ async function uploadToCloudinary(
   }
 }
 
-/**
- * Extract the public_id (WITH extension) from a Cloudinary secure_url.
- * e.g. "https://res.cloudinary.com/<cloud>/raw/upload/v123/learnit/notes/1-xxx.pdf"
- *   →  "learnit/notes/1-xxx.pdf"
- */
 function publicIdFromUrl(url: string): string {
   const m = url.match(/\/upload\/(?:v\d+\/)?(.+)$/);
   return m ? m[1] : "";
@@ -112,27 +119,10 @@ async function deleteFromCloudinary(publicId: string): Promise<void> {
   }
 }
 
-/**
- * Fetch a Cloudinary raw resource SERVER-SIDE by generating a signed
- * delivery URL (sign_url:true) and fetching it from Node.
- *
- * Why not the Admin /raw/download endpoint?
- *   → It returns 404 for raw resources whose public_id includes a file
- *     extension, because Cloudinary strips extensions internally on that
- *     endpoint. Signed delivery URLs do not have this limitation.
- *
- * Why not redirect the browser to the secure_url directly?
- *   → Accounts with strict access / secure delivery reject unsigned
- *     browser requests with 401.
- *
- * Signed delivery URLs are time-limited (1 hour) and work for all
- * account types including free plans.
- */
 async function fetchCloudinaryRaw(
   publicId: string
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
   try {
-    // Generate a signed URL valid for 3600 seconds
     const signedUrl = cloudinary.url(publicId, {
       resource_type: "raw",
       type:          "upload",
@@ -140,16 +130,13 @@ async function fetchCloudinaryRaw(
       secure:        true,
       expires_at:    Math.floor(Date.now() / 1000) + 3600,
     });
-
     console.log(`[fetchCloudinaryRaw] signed URL → ${signedUrl}`);
     const res = await fetchWithTimeout(signedUrl, {}, 30000);
-
     if (!res.ok) {
       const body = await res.text();
       console.error(`[fetchCloudinaryRaw] ${res.status}:`, body);
       return null;
     }
-
     const ct  = res.headers.get("content-type") ?? "application/octet-stream";
     const buf = Buffer.from(await res.arrayBuffer());
     console.log(`[fetchCloudinaryRaw] fetched ${buf.length} bytes, content-type=${ct}`);
@@ -357,6 +344,10 @@ async function nimEmbed(
 async function startServer() {
   const app = express();
 
+  // ── Global middleware ─────────────────────────────────────────────────
+  app.use(attachRequestId);
+  app.use(requestLogger);
+
   const ALLOWED_RE =
     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
 
@@ -376,7 +367,7 @@ async function startServer() {
   app.use(express.json());
   app.use("/uploads", express.static(UPLOADS_DIR));
 
-  // ── Health ────────────────────────────────────────────────────────────
+  // ── Health (public) ───────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
     try {
       await pool.query("SELECT 1");
@@ -388,10 +379,20 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── FILE PROXY ─────────────────────────────────────────────────────────
-  // Generates a signed Cloudinary delivery URL and fetches server-side,
-  // then pipes bytes to the client. Browser never touches Cloudinary directly.
-  app.get("/api/notes/:id/proxy", async (req, res) => {
+  // ── Auth (public — issues token) ──────────────────────────────────────
+  app.post("/api/login", async (req, res) => {
+    try {
+      const { email } = req.body;
+      const user = await queryOne(
+        "SELECT * FROM users WHERE email = $1 AND active = 1", [email]
+      );
+      if (user) res.json(user);
+      else res.status(401).json({ error: "Invalid credentials" });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── FILE PROXY (requireAuth — any authenticated user may download) ─────
+  app.get("/api/notes/:id/proxy", requireAuth, async (req, res) => {
     try {
       const note = await queryOne(
         "SELECT cloudinary_url, file_type, original_name, file_path FROM notes WHERE id=$1",
@@ -415,7 +416,6 @@ async function startServer() {
         return res.send(result.buffer);
       }
 
-      // Local disk fallback
       if (note.file_path && fs.existsSync(note.file_path)) {
         res.setHeader("Content-Type",        contentType);
         res.setHeader("Content-Disposition", disposition);
@@ -429,20 +429,8 @@ async function startServer() {
     }
   });
 
-  // ── Auth ───────────────────────────────────────────────────────────────
-  app.post("/api/login", async (req, res) => {
-    try {
-      const { email } = req.body;
-      const user = await queryOne(
-        "SELECT * FROM users WHERE email = $1 AND active = 1", [email]
-      );
-      if (user) res.json(user);
-      else res.status(401).json({ error: "Invalid credentials" });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  });
-
   // ── Courses ────────────────────────────────────────────────────────────
-  app.get("/api/courses", async (_req, res) => {
+  app.get("/api/courses", requireAuth, async (_req, res) => {
     try {
       res.json(await query(`
         SELECT c.*, u.name as instructor_name,
@@ -453,7 +441,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/courses/:id/modules", async (req, res) => {
+  app.get("/api/courses/:id/modules", requireAuth, async (req, res) => {
     try {
       res.json(await query(
         "SELECT * FROM modules WHERE course_id = $1 ORDER BY display_order ASC",
@@ -462,7 +450,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/courses/:id/modules", async (req, res) => {
+  app.post("/api/courses/:id/modules", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { name, content } = req.body;
       const last = await queryOne(
@@ -478,13 +466,13 @@ async function startServer() {
   });
 
   // ── Materials ──────────────────────────────────────────────────────────
-  app.get("/api/modules/:id/materials", async (req, res) => {
+  app.get("/api/modules/:id/materials", requireAuth, async (req, res) => {
     try {
       res.json(await query("SELECT * FROM materials WHERE module_id = $1", [req.params.id]));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/modules/:id/materials", async (req, res) => {
+  app.post("/api/modules/:id/materials", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { title, type, size } = req.body;
       const result = await run(
@@ -496,7 +484,7 @@ async function startServer() {
   });
 
   // ── Assignments ────────────────────────────────────────────────────────
-  app.get("/api/modules/:id/assignments", async (req, res) => {
+  app.get("/api/modules/:id/assignments", requireAuth, async (req, res) => {
     try {
       const status = (req.query.status as string) || "active";
       res.json(await query(
@@ -506,7 +494,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/modules/:id/assignments", async (req, res) => {
+  app.post("/api/modules/:id/assignments", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { title, description, due_date, max_points = 100, rubric = "", status = "active" } = req.body;
       if (!title || !due_date) return res.status(400).json({ error: "title and due_date required" });
@@ -518,7 +506,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.put("/api/assignments/:id", async (req, res) => {
+  app.put("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { title, description, due_date, max_points, rubric, status } = req.body;
       await run(
@@ -529,7 +517,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.delete("/api/assignments/:id", async (req, res) => {
+  app.delete("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       await run("UPDATE assignments SET status='archived' WHERE id=$1", [req.params.id]);
       res.json({ success: true });
@@ -537,11 +525,13 @@ async function startServer() {
   });
 
   // ── Submissions ────────────────────────────────────────────────────────
-  app.post("/api/submissions", async (req, res) => {
+  // student_id is NEVER trusted from req.body — always taken from req.auth
+  app.post("/api/submissions", requireAuth, requireRole("student"), async (req, res) => {
     try {
-      const { assignment_id, student_id, content } = req.body;
-      if (!assignment_id || !student_id)
-        return res.status(400).json({ error: "assignment_id and student_id required" });
+      const { assignment_id, content } = req.body;
+      const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
+      if (!assignment_id)
+        return res.status(400).json({ error: "assignment_id required" });
       const existing = await queryOne(
         "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
         [assignment_id, student_id]
@@ -555,11 +545,12 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/submissions/upload", uploadSubmission.array("files", 5), async (req: any, res) => {
+  app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadSubmission.array("files", 5), async (req: any, res) => {
     try {
-      const { assignment_id, student_id, content = "" } = req.body;
-      if (!assignment_id || !student_id)
-        return res.status(400).json({ error: "assignment_id and student_id required" });
+      const { assignment_id, content = "" } = req.body;
+      const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
+      if (!assignment_id)
+        return res.status(400).json({ error: "assignment_id required" });
       const existing = await queryOne(
         "SELECT id FROM submissions WHERE assignment_id=$1 AND student_id=$2",
         [assignment_id, student_id]
@@ -595,7 +586,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/submissions/:id/files", async (req, res) => {
+  app.get("/api/submissions/:id/files", requireAuth, async (req, res) => {
     try {
       const files = await query(
         "SELECT id,filename,original_name,file_type,uploaded_at,cloudinary_url FROM submission_files WHERE submission_id=$1",
@@ -608,7 +599,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/instructor/submissions", async (_req, res) => {
+  app.get("/api/instructor/submissions", requireAuth, requireRole("instructor", "admin"), async (_req, res) => {
     try {
       res.json(await query(`
         SELECT s.*, a.title as assignment_title, a.rubric, a.max_points,
@@ -625,7 +616,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/submissions/:id/grade", async (req, res) => {
+  app.post("/api/submissions/:id/grade", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { grade, feedback } = req.body;
       await run(
@@ -637,7 +628,7 @@ async function startServer() {
   });
 
   // ── Notes ──────────────────────────────────────────────────────────────
-  app.post("/api/modules/:id/notes", uploadNote.single("file"), async (req: any, res) => {
+  app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
@@ -699,7 +690,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/modules/:id/notes", async (req, res) => {
+  app.get("/api/modules/:id/notes", requireAuth, async (req, res) => {
     try {
       res.json(await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
@@ -715,7 +706,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.delete("/api/notes/:id", async (req, res) => {
+  app.delete("/api/notes/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const note = await queryOne(
         "SELECT file_path, cloudinary_url FROM notes WHERE id=$1",
@@ -732,7 +723,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/students/:id/notes", async (req, res) => {
+  app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       res.json(await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
@@ -752,7 +743,7 @@ async function startServer() {
   });
 
   // ── Student routes ─────────────────────────────────────────────────────
-  app.get("/api/student/:id/courses", async (req, res) => {
+  app.get("/api/student/:id/courses", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       res.json(await query(`
         SELECT c.*, u.name as instructor_name
@@ -763,7 +754,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/student/:id/assignments", async (req, res) => {
+  app.get("/api/student/:id/assignments", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       res.json(await query(`
         SELECT a.*, m.name as module_name, c.name as course_name,
@@ -781,7 +772,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/student/:id/stats", async (req, res) => {
+  app.get("/api/student/:id/stats", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       const user = await queryOne("SELECT * FROM users WHERE id=$1", [req.params.id]);
       const submissions = await query(`
@@ -793,7 +784,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/students/:id/analytics", async (req, res) => {
+  app.get("/api/students/:id/analytics", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       const studentId = req.params.id;
       const student   = await queryOne("SELECT name FROM users WHERE id=$1", [studentId]);
@@ -860,13 +851,13 @@ async function startServer() {
   });
 
   // ── Admin ──────────────────────────────────────────────────────────────
-  app.get("/api/admin/users", async (_req, res) => {
+  app.get("/api/admin/users", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       res.json(await query("SELECT id,name,email,role,active,year,major,gpa FROM users ORDER BY role,name"));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/users", async (req, res) => {
+  app.post("/api/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const { name, email, role, major, year } = req.body;
       const result = await run(
@@ -877,7 +868,7 @@ async function startServer() {
     } catch (_e) { res.status(400).json({ error: "Email already exists" }); }
   });
 
-  app.put("/api/admin/users/:id", async (req, res) => {
+  app.put("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const { name, email, role, active, major, year } = req.body;
       await run(
@@ -888,7 +879,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/courses", async (req, res) => {
+  app.post("/api/admin/courses", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const { code, name, instructor_id } = req.body;
       const result = await run(
@@ -899,7 +890,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.delete("/api/admin/courses/:id", async (req, res) => {
+  app.delete("/api/admin/courses/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       await run("DELETE FROM enrollments WHERE course_id=$1", [req.params.id]);
       await run("DELETE FROM courses WHERE id=$1",            [req.params.id]);
@@ -907,7 +898,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/admin/stats", async (_req, res) => {
+  app.get("/api/admin/stats", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       const [activeUsers, totalCourses, avgGrade, totalNotes, totalSubmissions] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM users WHERE active=1"),
@@ -926,13 +917,13 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/admin/settings", async (_req, res) => {
+  app.get("/api/admin/settings", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       res.json(await query("SELECT * FROM settings"));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/settings", async (req, res) => {
+  app.post("/api/admin/settings", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const { key, value } = req.body;
       await run(
@@ -943,7 +934,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/admin/enrollments/:courseId", async (req, res) => {
+  app.get("/api/admin/enrollments/:courseId", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       res.json(await query(`
         SELECT e.id,e.enrolled_at,u.id as student_id,u.name,u.email,u.year,u.major
@@ -953,7 +944,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/enrollments", async (req, res) => {
+  app.post("/api/admin/enrollments", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const { course_id, student_id } = req.body;
       const result = await run(
@@ -965,14 +956,14 @@ async function startServer() {
     } catch (e: any) { res.status(400).json({ error: e.message }); }
   });
 
-  app.delete("/api/admin/enrollments/:id", async (req, res) => {
+  app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       await run("DELETE FROM enrollments WHERE id=$1", [req.params.id]);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/admin/bulk-enroll", async (req, res) => {
+  app.post("/api/admin/bulk-enroll", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const { course_id, emails } = req.body as { course_id: number; emails: string[] };
       if (!course_id || !Array.isArray(emails))
@@ -1007,7 +998,7 @@ async function startServer() {
   });
 
   // ── Instructor ─────────────────────────────────────────────────────────
-  app.get("/api/instructor/:id/courses", async (req, res) => {
+  app.get("/api/instructor/:id/courses", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       res.json(await query(`
         SELECT c.*,
@@ -1018,7 +1009,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get("/api/instructor/courses/:id/analytics", async (req, res) => {
+  app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const [enrollmentCount, avgGrade] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM enrollments WHERE course_id=$1", [req.params.id]),
@@ -1034,7 +1025,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/instructor/assignments", async (req, res) => {
+  app.post("/api/instructor/assignments", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { module_id, title, description, due_date, max_points = 100, rubric = "", status = "active" } = req.body;
       const result = await run(
@@ -1046,7 +1037,7 @@ async function startServer() {
   });
 
   // ── AI ─────────────────────────────────────────────────────────────────
-  app.post("/api/ai/grade", async (req, res) => {
+  app.post("/api/ai/grade", requireAuth, async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
       const raw = await nimChat([
@@ -1058,7 +1049,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/ai/grade-pdf", async (req, res) => {
+  app.post("/api/ai/grade-pdf", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const { submission_id, rubric, module_id } = req.body;
       if (!submission_id) return res.status(400).json({ error: "submission_id required" });
@@ -1100,7 +1091,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/ai/chat", async (req, res) => {
+  app.post("/api/ai/chat", requireAuth, async (req, res) => {
     try {
       const { question, moduleTitle, moduleId, history = [] } = req.body;
       let notesContext = "No notes have been uploaded for this module yet.";
@@ -1131,7 +1122,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ai/analytics-summary", async (req, res) => {
+  app.post("/api/ai/analytics-summary", requireAuth, async (req, res) => {
     try {
       const { analytics } = req.body;
       if (!analytics) return res.status(400).json({ error: "analytics payload required" });
