@@ -1,125 +1,185 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-13  
-Status: Phase 1 — Foundation Hardening
+Status: Phase 1 in progress — P1-2 ✅ completed, P1-3 ✅ mostly completed
 
 ---
 
 ## Table of Contents
 
-1. [Critical Blockers](#1-critical-blockers)
-2. [Storage and File Security](#2-storage-and-file-security)
-3. [Schema and Migration Discipline](#3-schema-and-migration-discipline)
-4. [Backend Changes](#4-backend-changes)
-5. [Auth Changes](#5-auth-changes)
-6. [Query and Performance Fixes](#6-query-and-performance-fixes)
-7. [Product-Architecture Alignment](#7-product-architecture-alignment)
-8. [Immediate Next Actions](#8-immediate-next-actions)
+1. [Current Security State](#1-current-security-state)
+2. [Completed Work — P1-2 and P1-3](#2-completed-work--p1-2-and-p1-3)
+3. [Applied Migrations](#3-applied-migrations)
+4. [Remaining Work](#4-remaining-work)
+5. [Storage and File Security](#5-storage-and-file-security)
+6. [Schema and Migration Discipline](#6-schema-and-migration-discipline)
+7. [Backend Changes](#7-backend-changes)
+8. [Auth Changes](#8-auth-changes)
+9. [Query and Performance Fixes](#9-query-and-performance-fixes)
+10. [Next Execution Order](#10-next-execution-order)
 
 ---
 
-## 1. Critical Blockers
+## 1. Current Security State
 
-### 1.1 🔴 Enable RLS on all exposed public tables
+### Before P1-2 (original state)
 
-**Severity: CRITICAL — must be resolved before any production traffic**
+| Issue | Severity |
+|---|---|
+| RLS disabled on all 11 public tables | 🔴 CRITICAL |
+| `public.users.password` exposed via anon key | 🔴 CRITICAL |
+| No auth bridge between legacy integer IDs and Supabase Auth | 🔴 CRITICAL |
+| Helper functions had mutable `search_path` | 🟡 WARN |
+| Leaked password protection disabled in Auth | 🟡 WARN |
 
-The live Supabase project currently has RLS **disabled** on all 11 public tables:
+### After P1-2 + P1-3 (current state)
 
-| Table | RLS Enabled | Risk |
-|---|---|---|
-| public.users | ❌ No | Any anon key holder can read/modify all users |
-| public.courses | ❌ No | Fully exposed |
-| public.enrollments | ❌ No | Fully exposed |
-| public.modules | ❌ No | Fully exposed |
-| public.materials | ❌ No | Fully exposed |
-| public.assignments | ❌ No | Fully exposed |
-| public.submissions | ❌ No | Student work exposed to all |
-| public.submission_files | ❌ No | File references exposed |
-| public.notes | ❌ No | Course content exposed |
-| public.note_chunks | ❌ No | 65 embedded chunks exposed |
-| public.settings | ❌ No | Platform config exposed |
+| Issue | Status |
+|---|---|
+| RLS disabled on public tables | ✅ Resolved — RLS enabled, policies applied |
+| `public.users.password` exposed | ✅ Resolved — column dropped |
+| No auth bridge | ✅ Resolved — `user_identity_map` created and backfilled |
+| Mutable `search_path` on helper functions | ✅ Resolved — recreated with `SET search_path = ''` |
+| Leaked password protection disabled | 🟡 Open — manual Auth dashboard action required |
 
-**⚠️ Important — do not enable RLS without policies in place first.**  
-Enabling RLS with no policies will block all access and break the app.  
-Policies must be written and reviewed before enabling RLS on each table.
+**Supabase security advisor currently reports: 1 warning (leaked password protection).**
 
-**Remediation SQL (run only after policies are ready):**
+---
+
+## 2. Completed Work — P1-2 and P1-3
+
+### 2.1 Auth bridge (`user_identity_map`)
+
+- Created `public.user_identity_map` mapping legacy integer `users.id` to Supabase Auth UUIDs.
+- Pre-populated from `public.users` on migration.
+- All 4 existing users backfilled with Auth UUIDs.
+
+| legacy_user_id | Email | Role | Auth UUID |
+|---|---|---|---|
+| 1 | admin@learnit.edu | admin | `a1000001-0000-0000-0000-000000000001` |
+| 2 | sarah@learnit.edu | student | `a1000001-0000-0000-0000-000000000002` |
+| 3 | michael@learnit.edu | student | `a1000001-0000-0000-0000-000000000003` |
+| 4 | instructor@learnit.edu | instructor | `a1000001-0000-0000-0000-000000000004` |
+
+> ⚠️ Temporary password for all created Auth users: `ChangeMe123!`  
+> Force-reset these before any real usage.
+
+### 2.2 Helper functions (hardened)
+
+All functions recreated with `SET search_path = ''` and fully-qualified schema references:
+
+- `public.current_legacy_user_id()` — resolves caller's legacy integer user ID from `auth.uid()`
+- `public.current_user_role()` — resolves caller's role string
+- `public.is_admin()` — returns boolean
+- `public.is_instructor_for_course(p_course_id)` — returns boolean
+- `public.is_enrolled_in_course(p_course_id)` — returns boolean
+- `public.can_access_module(p_module_id)` — returns boolean (admin OR instructor OR enrolled)
+- `public.set_updated_at()` — trigger function
+
+### 2.3 Indexes added
 
 ```sql
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.courses ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.enrollments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.modules ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.assignments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.submissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.submission_files ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.notes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.note_chunks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
+idx_uim_auth_user_id               user_identity_map(auth_user_id)
+idx_uim_role                       user_identity_map(role)
+idx_courses_instructor_id          courses(instructor_id)
+idx_enrollments_student            enrollments(student_id)
+idx_enrollments_course             enrollments(course_id)
+idx_enrollments_student_course     enrollments(student_id, course_id)
+idx_modules_course_id              modules(course_id)
+idx_materials_module_id            materials(module_id)
+idx_assignments_module_id          assignments(module_id)
+idx_submissions_student_id         submissions(student_id)
+idx_submissions_assignment_id      submissions(assignment_id)
+idx_sub_files_submission_id        submission_files(submission_id)
+idx_notes_student_id               notes(student_id)
+idx_notes_module_id                notes(module_id)
+idx_note_chunks_note_id            note_chunks(note_id)
 ```
 
-Reference: https://supabase.com/docs/guides/database/postgres/row-level-security
+### 2.4 RLS enabled and policies applied
+
+RLS is now active on all 12 tables with role-scoped policies:
+
+| Table | Student | Instructor | Admin |
+|---|---|---|---|
+| `user_identity_map` | SELECT own row | — | Full |
+| `users` | SELECT/UPDATE own row | — | Full |
+| `courses` | SELECT if enrolled | SELECT/INSERT/UPDATE own | Full |
+| `enrollments` | SELECT own | SELECT/INSERT/DELETE for own courses | Full |
+| `modules` | SELECT if enrolled | Full manage own courses | Full |
+| `materials` | SELECT if enrolled | Full manage own courses | Full |
+| `assignments` | SELECT if enrolled | Full manage own courses | Full |
+| `submissions` | Own SELECT/INSERT/UPDATE | SELECT/UPDATE (grading) | Full |
+| `submission_files` | Own SELECT/INSERT/DELETE | SELECT for own course | Full |
+| `notes` | SELECT if enrolled | Full manage own courses | Full |
+| `note_chunks` | SELECT if enrolled | Full manage own courses | Full |
+| `settings` | ❌ None | ❌ None | Full |
+
+### 2.5 Sensitive column removed
+
+- `public.users.password` column dropped — Supabase Auth is now the sole credential store.
 
 ---
 
-### 1.2 Add explicit policies per role per table
+## 3. Applied Migrations
 
-We need policies covering four actors: `student`, `instructor`, `admin`, and the `backend service role`.
-
-Minimum required policy groups per table:
-
-- **users** — own row SELECT/UPDATE only; admin full access
-- **courses** — enrolled students SELECT; instructor SELECT/UPDATE for own courses; admin full
-- **enrollments** — student sees own enrollments; instructor sees enrollments for own modules; admin full
-- **modules** — enrolled students SELECT; instructor SELECT/INSERT/UPDATE for own modules; admin full
-- **materials** — enrolled students SELECT; instructor manages own; admin full
-- **assignments** — enrolled students SELECT; instructor manages for own modules; admin full
-- **submissions** — student SELECT/INSERT own; instructor SELECT for relevant module; admin full
-- **submission_files** — same scoping as submissions
-- **notes** — enrolled students SELECT; instructor manages own; admin full
-- **note_chunks** — enrolled students SELECT (scoped through notes); backend service role full
-- **settings** — admin only; no direct anon/authenticated access
-
-All policies must:
-- Use `TO authenticated` to prevent anon evaluation overhead
-- Wrap `auth.uid()` as `(select auth.uid())` for per-statement caching
-- Use `IN` or set-based subqueries instead of joins on source tables
-- Be delivered through numbered migration files, not the dashboard
+| Version | Name |
+|---|---|
+| 20260510172005 | initial_schema_and_seed |
+| 20260510182455 | drop_student_id_fk_on_notes_and_submissions |
+| 20260510184530 | 003_notes_nullable_student_id |
+| 20260510223938 | add_cloudinary_url_columns |
+| 20260513143812 | add_user_identity_map_and_indexes |
+| 20260513144008 | create_auth_users_and_backfill_identity_map |
+| 20260513144343 | enable_rls_and_add_policies |
+| 20260513144545 | drop_password_column_and_fix_function_search_paths |
 
 ---
 
-### 1.3 Move authorization to server + database
+## 4. Remaining Work
 
-Authorization must not rely on frontend logic or ad hoc route checks alone.
+### 4.1 🟡 Enable leaked password protection (manual Auth setting)
 
-Required:
-- [ ] Server-side Supabase session validation on every protected API route
-- [ ] Role resolved from database on the server, not from client-supplied claims
-- [ ] RLS enforced at the database layer as backstop
-- [ ] No route that returns sensitive data without an authenticated session check
+**Action required in Supabase dashboard — cannot be done via SQL migration.**
+
+- Go to: Authentication → Settings → Password Security
+- Enable: "Check passwords against HaveIBeenPwned"
+- Reference: https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection
+
+This will clear the only remaining Supabase security advisor warning.
+
+### 4.2 Audit backend for legacy auth assumptions
+
+- [ ] Identify any routes still reading `req.body.userId` or `req.body.role`
+- [ ] Replace with server-side `supabase.auth.getUser()` + `user_identity_map` lookup
+- [ ] Remove any remaining `public.users`-based password-check logic
+
+### 4.3 Force-reset temporary Auth passwords
+
+- All 4 Auth users were created with `ChangeMe123!`
+- Must be rotated before any real user testing or staging promotion
 
 ---
 
-## 2. Storage and File Security
+## 5. Storage and File Security
 
-### 2.1 Replace Cloudinary with Supabase Storage for protected content
+### 5.1 Replace Cloudinary with Supabase Storage for protected content
 
-The current migration history includes `add_cloudinary_url_columns`, meaning file delivery relies on Cloudinary URLs stored in the database. This is not appropriate for protected academic content (notes, submissions).
+The schema currently stores `cloudinary_url` columns in `notes` and `submission_files`. This is not appropriate for protected academic content.
 
 Problems:
 - Cloudinary public URLs are guessable or directly accessible
 - No authorization check happens at delivery time
-- Notes and submissions are student/instructor intellectual property and must be private by default
+- Notes and submissions are private intellectual property
 
 Required:
 - [ ] Create private Supabase Storage buckets: `notes`, `submissions`, `materials`
 - [ ] Store only path/key references in the database, not public delivery URLs
 - [ ] Generate signed URLs server-side only after verifying access rights
 - [ ] Or proxy file delivery through a backend endpoint that checks access before streaming
+- [ ] Drop or deprecate `cloudinary_url` columns once migrated
 
-### 2.2 Separate metadata from delivery logic
+### 5.2 Separate metadata from delivery logic
 
 - File metadata (name, size, type, uploaded_at, uploader_id) stays in the database
 - File bytes live in private storage
@@ -128,59 +188,44 @@ Required:
 
 ---
 
-## 3. Schema and Migration Discipline
+## 6. Schema and Migration Discipline
 
-### 3.1 All schema changes must go through migration files only
+### 6.1 All schema changes must go through migration files only
 
-No manual Supabase dashboard edits in staging or production.
+No manual Supabase dashboard edits in staging or production.  
+Standardise all future migrations as `YYYYMMDDHHMMSS_descriptive_name`.
 
-Current migration history:
-
-| Version | Name |
-|---|---|
-| 20260510172005 | initial_schema_and_seed |
-| 20260510182455 | drop_student_id_fk_on_notes_and_submissions |
-| 20260510184530 | 003_notes_nullable_student_id |
-| 20260510223938 | add_cloudinary_url_columns |
-
-The naming is inconsistent (`003_` prefix only on the third migration). Standardise all future migrations as `YYYYMMDDHHMMSS_descriptive_name`.
-
-### 3.2 Required next migrations
+### 6.2 Next required migrations
 
 In order:
 
-- [ ] `..._add_roles_and_user_roles_tables` — role model for student/instructor/admin
-- [ ] `..._enable_rls_and_add_policies` — RLS + policies per table
-- [ ] `..._add_policy_column_indexes` — index all policy columns
 - [ ] `..._replace_cloudinary_with_storage_paths` — migrate file ref columns
 - [ ] `..._add_audit_logs_table` — audit trail for privileged actions
 - [ ] `..._add_processing_jobs_table` — async job tracking
 - [ ] `..._add_analytics_snapshots_table` — derived performance materialisations
 - [ ] `..._add_student_roadmaps_table` — roadmap storage
 
-### 3.3 Missing access-model entities (to confirm/add)
+### 6.3 Missing access-model entities (to confirm/add)
 
-- [ ] `roles` table — student, instructor, admin definitions
-- [ ] `user_roles` table — user ↔ role mapping (with optional scope: institution/module)
-- [ ] `audit_logs` table — actor, action, target, timestamp, metadata
-- [ ] `processing_jobs` table — note/submission/report/roadmap async job state
-- [ ] `analytics_snapshots` table — precomputed per-student per-module stats
-- [ ] `student_roadmaps` table — versioned roadmap snapshots
-- [ ] `roadmap_progress` table — per-item completion tracking
+- [ ] `audit_logs` — actor, action, target, timestamp, metadata
+- [ ] `processing_jobs` — note/submission/report/roadmap async job state
+- [ ] `analytics_snapshots` — precomputed per-student per-module stats
+- [ ] `student_roadmaps` — versioned roadmap snapshots
+- [ ] `roadmap_progress` — per-item completion tracking
 
 ---
 
-## 4. Backend Changes
+## 7. Backend Changes
 
-### 4.1 Break up monolithic server.ts
+### 7.1 Break up monolithic server.ts
 
-The current `server.ts` is ~50 KB and mixes routing, business logic, auth, AI, and storage concerns. This must be refactored.
+The current `server.ts` mixes routing, business logic, auth, AI, and storage concerns.
 
 Target structure:
 
 ```
 src/server/
-  index.ts              — entry point, mounts middleware + routes
+  index.ts
   middleware/
     auth.ts             — session validation, role extraction
     validate.ts         — Zod request validation wrapper
@@ -210,156 +255,81 @@ src/server/
     reportGenerator.ts
     roadmapGenerator.ts
   lib/
-    supabase.ts         — server-side Supabase client (service role, never exposed)
-    openai.ts           — LLM client wrapper
-    queue.ts            — job queue client
+    supabase.ts         — server-side Supabase client (service role only)
+    openai.ts
+    queue.ts
     env.ts              — Zod-validated env config
 ```
 
-### 4.2 Add Zod validation on all inputs
+### 7.2 Add Zod validation on all inputs
 
 - [ ] Every route handler validates params, query, and body with a Zod schema
-- [ ] Environment config validated with Zod at boot — app must not start with missing/invalid env
-- [ ] File uploads validated: type allowlist, max size, virus scan if required
+- [ ] Environment config validated with Zod at boot
+- [ ] File uploads validated: type allowlist, max size
 
-### 4.3 Add health and readiness endpoints
+### 7.3 Add health and readiness endpoints
 
 ```
 GET /api/health   — liveness: returns 200 if process is alive
 GET /api/ready    — readiness: checks DB, storage, queue connectivity
 ```
 
-Response shape:
+### 7.4 Add structured JSON logging
 
-```json
-{
-  "status": "ok | degraded | down",
-  "checks": {
-    "database": "ok | error",
-    "storage": "ok | error",
-    "queue": "ok | error"
-  },
-  "timestamp": "ISO8601"
-}
-```
-
-### 4.4 Add structured JSON logging
-
-Every log entry must include:
-- `requestId` — UUID generated per request
-- `method`, `path`, `statusCode`, `durationMs`
-- `userId` (if authenticated)
-- `error` object with `code` + `message` (no stack traces in production logs)
-- No secrets, tokens, passwords, or PII
-
-Log levels: `debug` (local only), `info`, `warn`, `error`
+Every log entry must include: `requestId`, `method`, `path`, `statusCode`, `durationMs`, `userId`.  
+No secrets, tokens, passwords, or PII in logs.
 
 ---
 
-## 5. Auth Changes
+## 8. Auth Changes
 
-### 5.1 Server-side Supabase Auth validation
+### 8.1 Server-side Supabase Auth validation
 
-Required changes:
 - [ ] All API routes that access user data must call `supabase.auth.getUser()` server-side
-- [ ] Role resolved from `user_roles` table, not from JWT user metadata
+- [ ] Role resolved from `user_identity_map`, not from JWT metadata
 - [ ] Service role key must only exist in server environment — never in browser
-- [ ] No route trusts a role or user_id from the request body/query — always resolved from session
+- [ ] No route trusts `role` or `user_id` from request body/query
 
-### 5.2 Abuse protection
+### 8.2 Abuse protection
 
 - [ ] Rate limit: 10 login attempts per IP per 15 minutes
 - [ ] Rate limit: 30 AI chat messages per student per hour
 - [ ] Rate limit: 20 file uploads per user per day
 - [ ] Rate limit: 5 report/roadmap generations per user per hour
-- [ ] CAPTCHA on sign-up and password reset flows (hCaptcha or Cloudflare Turnstile)
-- [ ] Secure cron endpoints with `Authorization: Bearer $CRON_SECRET` header check
+- [ ] CAPTCHA on sign-up and password reset flows
 
 ---
 
-## 6. Query and Performance Fixes
+## 9. Query and Performance Fixes
 
-### 6.1 Index policy columns
+### 9.1 Always filter queries explicitly
 
-Add B-tree indexes for all columns used in RLS policies and hot query filters:
+Do not rely on RLS alone for query scoping. All backend and client queries must include natural equality filters (e.g. `.eq('student_id', userId)`) so Postgres builds efficient plans.
 
-```sql
-CREATE INDEX ON public.users (id);
-CREATE INDEX ON public.enrollments (user_id, module_id);
-CREATE INDEX ON public.notes (module_id);
-CREATE INDEX ON public.note_chunks (note_id);
-CREATE INDEX ON public.submissions (user_id);
-CREATE INDEX ON public.submissions (assignment_id);
-CREATE INDEX ON public.submission_files (submission_id);
-CREATE INDEX ON public.assignments (module_id);
-CREATE INDEX ON public.materials (module_id);
-CREATE INDEX ON public.audit_logs (user_id, created_at DESC);
-CREATE INDEX ON public.analytics_snapshots (user_id, created_at DESC);
-```
-
-### 6.2 Always filter queries explicitly
-
-Do not rely on RLS alone for query scoping. All queries from backend and client must include natural equality filters (e.g. `.eq('user_id', userId)`) to allow Postgres to build efficient query plans.
-
-### 6.3 Prepare for analytics read separation
+### 9.2 Prepare for analytics read separation
 
 - Derived aggregates must be written to `analytics_snapshots` by background jobs
 - Dashboard reads should query snapshots, not raw tables
-- Heavy report generation queries must run on a read replica (Supabase Pro+) once scale justifies
+- Heavy report queries should run on a read replica at scale
 
 ---
 
-## 7. Product-Architecture Alignment
+## 10. Next Execution Order
 
-### 7.1 README is the architecture contract
-
-The `README.md` now defines the full production architecture. All implementation must align to it.  
-No new feature should bypass:
-- Auth and authorization requirements
-- Storage security requirements
-- Migration discipline
-- Observability requirements
-- Queued async pattern for heavy AI/report work
-
-### 7.2 Phase 1 execution order
-
-| Step | Task | Depends on |
+| Step | Task | Status |
 |---|---|---|
-| 1 | Audit server.ts: map all routes, auth checks, storage calls | — |
-| 2 | Design role model: roles, user_roles, access matrix | Step 1 |
-| 3 | Write policy migration SQL for all 11 tables | Step 2 |
-| 4 | Enable RLS + apply policies via migration | Step 3 |
-| 5 | Migrate file delivery to Supabase Storage + signed URLs | Step 3 |
-| 6 | Add Zod validation + request ID middleware | — |
-| 7 | Add health endpoints | — |
-| 8 | Refactor server.ts into service modules | Steps 1–7 |
-| 9 | Add structured logging | Step 8 |
-| 10 | Environment audit: verify no secrets leak between envs | — |
+| P1-1 | Audit server.ts, map all routes and auth checks | ✅ Done |
+| P1-2 | Auth bridge, RLS, policies, indexes | ✅ Done |
+| P1-3 | Drop password column, fix search_path, leaked password protection | ✅ DB done / 🟡 Auth setting pending |
+| P1-4 | Audit and refactor backend auth middleware | 🔲 Next |
+| P1-5 | Migrate file delivery to Supabase Storage + signed URLs | 🔲 Pending |
+| P1-6 | Add Zod validation + request ID middleware | 🔲 Pending |
+| P1-7 | Add health endpoints | 🔲 Pending |
+| P1-8 | Refactor server.ts into service modules | 🔲 Pending |
+| P1-9 | Add structured logging | 🔲 Pending |
+| P1-10 | Environment audit: verify no secrets leak between envs | 🔲 Pending |
 
 ---
 
-## 8. Immediate Next Actions
-
-### Code audit required (read these files next)
-
-- [ ] `package.json` — runtime, scripts, dependencies
-- [ ] `.env.example` — env contract, check for missing/leaked vars
-- [ ] `vercel.json` — routing, caching, env separation
-- [ ] `render.yaml` — backend service config
-- [ ] `server.ts` — route map, auth checks, storage calls, AI calls
-- [ ] `src/` — auth context, storage access, API client patterns
-- [ ] `migrations/` — full SQL content of each migration
-
-### Artefacts to produce after audit
-
-- [ ] Table-by-table access matrix (who can do what)
-- [ ] Full policy migration SQL for all 11 tables
-- [ ] Backend refactor plan with file-by-file breakdown
-- [ ] Storage migration plan (Cloudinary → Supabase Storage)
-- [ ] `.env.example` update with required vars documented
-- [ ] Deployment environment contract document
-
----
-
-*This file is a living document. Update it as changes are implemented and verified.*  
-*Do not close a section as done until the corresponding migration or code change is merged and tested.*
+*This file is a living document. Update it after each completed migration or verified architecture change.*  
+*Do not close a step as done until the corresponding migration or code change is merged and tested.*
