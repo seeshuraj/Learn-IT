@@ -7,7 +7,7 @@ import {
   useNavigate,
   useLocation,
 } from "react-router-dom";
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "./services/supabaseClient";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { ChatBot } from "./components/ChatBot";
@@ -28,9 +28,9 @@ import { AdminSettings } from "./pages/AdminSettings";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import RoadmapPage from "./pages/RoadmapPage";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const API_BASE =
+  (import.meta as any).env?.VITE_API_BASE_URL ||
+  "https://learn-it-3f5h.onrender.com";
 
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {
@@ -49,7 +49,7 @@ const AppContent: React.FC = () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) { setAuthChecked(true); return; }
-      const res = await fetch("/api/auth/me", {
+      const res = await fetch(`${API_BASE}/api/auth/me`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       if (res.ok) {
@@ -86,6 +86,7 @@ const AppContent: React.FC = () => {
     setForceChange(false);
     setAuthChecked(false);
     try { sessionStorage.removeItem("learnit_user"); } catch {}
+    supabase.auth.signOut();
     navigate("/landing");
   };
 
