@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
+import { ClipboardCopy, CheckCheck } from 'lucide-react';
 
 interface Course {
   id: number;
@@ -26,6 +27,12 @@ interface User {
   role: string;
 }
 
+interface TempCredential {
+  email: string;
+  tempPassword: string;
+  name?: string;
+}
+
 export default function AdminCourseManagement() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -40,6 +47,9 @@ export default function AdminCourseManagement() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [newCourse, setNewCourse] = useState({ code: '', name: '', instructor_id: '' });
+  // Temp credentials returned from bulk enroll
+  const [tempCredentials, setTempCredentials] = useState<TempCredential[]>([]);
+  const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -65,10 +75,9 @@ export default function AdminCourseManagement() {
   async function openEnrollModal(course: Course) {
     setSelectedCourse(course);
     setShowEnrollModal(true);
-    setError('');
-    setSuccess('');
-    setBulkEmails('');
-    setEnrollStudentId('');
+    setError(''); setSuccess('');
+    setBulkEmails(''); setEnrollStudentId('');
+    setTempCredentials([]);
     await loadEnrollments(course.id);
   }
 
@@ -90,11 +99,17 @@ export default function AdminCourseManagement() {
 
   async function handleBulkEnroll() {
     if (!selectedCourse || !bulkEmails.trim()) return;
-    setEnrolling(true); setError(''); setSuccess('');
+    setEnrolling(true); setError(''); setSuccess(''); setTempCredentials([]);
     try {
       const emails = bulkEmails.split('\n').map(e => e.trim()).filter(Boolean);
       const data: any = await api.bulkEnrollStudents({ course_id: selectedCourse.id, emails });
-      setSuccess(`Enrolled ${data.enrolled} student(s).`);
+      const creds: TempCredential[] = Array.isArray(data.credentials) ? data.credentials
+        : Array.isArray(data.temp_passwords) ? data.temp_passwords
+        : [];
+      setTempCredentials(creds);
+      setSuccess(`Enrolled ${data.enrolled ?? emails.length} student(s).${
+        creds.length > 0 ? ' Temporary passwords generated — copy them now.' : ''
+      }`);
       setBulkEmails('');
       await loadEnrollments(selectedCourse.id);
       await loadData();
@@ -141,6 +156,17 @@ export default function AdminCourseManagement() {
     } catch (e: any) {
       setError(e.message);
     }
+  }
+
+  function copyAll() {
+    const text = tempCredentials.map(c => `${c.email}\t${c.tempPassword}`).join('\n');
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
+  function copySingle(email: string, pwd: string) {
+    navigator.clipboard.writeText(`${email}\t${pwd}`).catch(() => {});
+    setCopiedEmail(email);
+    setTimeout(() => setCopiedEmail(null), 2000);
   }
 
   const instructors = users.filter(u => u.role === 'instructor');
@@ -200,11 +226,63 @@ export default function AdminCourseManagement() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">Manage Enrollments — {selectedCourse.name}</h2>
-              <button onClick={() => setShowEnrollModal(false)} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">×</button>
+              <button onClick={() => { setShowEnrollModal(false); setTempCredentials([]); }} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">×</button>
             </div>
             <div className="p-6 space-y-6">
               {error && <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">{error}</div>}
               {success && <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-sm">{success}</div>}
+
+              {/* Temp credentials table */}
+              {tempCredentials.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-bold text-amber-800 uppercase tracking-wider">
+                      ⚠️ Temporary Passwords — Share with students and ask them to change on first login
+                    </p>
+                    <button
+                      onClick={copyAll}
+                      className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-amber-700 bg-amber-100 hover:bg-amber-200 rounded-lg transition-colors"
+                    >
+                      <ClipboardCopy className="w-3 h-3" /> Copy All
+                    </button>
+                  </div>
+                  <div className="rounded-xl overflow-hidden border border-amber-200">
+                    <table className="w-full text-xs">
+                      <thead className="bg-amber-100">
+                        <tr>
+                          <th className="text-left px-3 py-2 text-amber-700 font-bold">Email</th>
+                          {tempCredentials[0]?.name !== undefined && (
+                            <th className="text-left px-3 py-2 text-amber-700 font-bold">Name</th>
+                          )}
+                          <th className="text-left px-3 py-2 text-amber-700 font-bold">Temp Password</th>
+                          <th className="px-3 py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-amber-100 bg-white">
+                        {tempCredentials.map(c => (
+                          <tr key={c.email}>
+                            <td className="px-3 py-2 font-mono text-slate-700">{c.email}</td>
+                            {c.name !== undefined && <td className="px-3 py-2 text-slate-600">{c.name}</td>}
+                            <td className="px-3 py-2 font-mono font-bold text-indigo-700">{c.tempPassword}</td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                onClick={() => copySingle(c.email, c.tempPassword)}
+                                className="text-amber-600 hover:text-amber-800 transition"
+                                title="Copy row"
+                              >
+                                {copiedEmail === c.email
+                                  ? <CheckCheck className="w-3.5 h-3.5 text-emerald-500" />
+                                  : <ClipboardCopy className="w-3.5 h-3.5" />}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <h3 className="font-bold text-slate-700 mb-2">Enroll by Student ID</h3>
                 <div className="flex gap-2">
@@ -214,6 +292,7 @@ export default function AdminCourseManagement() {
               </div>
               <div>
                 <h3 className="font-bold text-slate-700 mb-2">Bulk Enroll by Email</h3>
+                <p className="text-xs text-slate-400 mb-2">New accounts are auto-created with a temporary password shown above after enrolling.</p>
                 <textarea placeholder="One email per line" value={bulkEmails} onChange={e => setBulkEmails(e.target.value)} rows={4} className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                 <button onClick={handleBulkEnroll} disabled={enrolling} className="mt-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 disabled:opacity-50">Bulk Enroll</button>
               </div>

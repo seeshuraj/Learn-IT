@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useRef } from "react";
 import { User, Submission, Course } from "../types";
-import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2 } from "lucide-react";
+import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { getGradingSuggestion, GradingSuggestion, getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
 import { api } from "../services/api";
+import InstructorRoadmapView from "./InstructorRoadmapView";
 
 interface InstructorDashboardProps {
   user: User;
@@ -17,11 +18,14 @@ interface Module {
 }
 
 interface StudentStat {
+  student_id?: number;
   name: string;
   average: number;
   missed: number;
   late: number;
   status: string;
+  course_id?: number;
+  course_name?: string;
 }
 
 function BoldText({ text }: { text: string }) {
@@ -443,49 +447,51 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [showUploadNotes, setShowUploadNotes] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
 
+  // Instructor roadmap panel state
+  const [roadmapPanel, setRoadmapPanel] = useState<{
+    studentName: string;
+    courseId: number;
+    courseName: string;
+  } | null>(null);
+
   function loadSubmissions() {
     api.getInstructorSubmissions()
       .then((d: any) => setSubmissions(Array.isArray(d) ? d : []))
       .catch(() => {});
   }
 
-  // P2-11: removed early-exit guard so this always re-fetches fresh data
   function loadStudents() {
     setStudentsLoading(true);
     Promise.all(
-      courses.map((c: Course) => api.getCourseAnalytics(c.id))
+      courses.map((c: Course) => api.getCourseAnalytics(c.id).then((r: any) => ({ ...r, _course: c })))
     ).then((results: any[]) => {
-      // P2-12: track late alongside missed
-      const map = new Map<string, { name: string; total: number; count: number; missed: number; late: number }>();
+      const map = new Map<string, { name: string; total: number; count: number; missed: number; late: number; student_id?: number; course_id?: number; course_name?: string }>();
       results.forEach((r: any) => {
         if (!Array.isArray(r?.students)) return;
         r.students.forEach((s: any) => {
           const key = String(s.student_id ?? s.name);
           const prev = map.get(key) ?? { name: s.name, total: 0, count: 0, missed: 0, late: 0 };
           map.set(key, {
-            name:   s.name,
-            total:  prev.total  + (s.avg_grade ?? 0),
-            count:  prev.count  + 1,
-            missed: prev.missed + (s.missed ?? 0),
-            late:   prev.late   + (s.late   ?? 0),
+            name:        s.name,
+            total:       prev.total  + (s.avg_grade ?? 0),
+            count:       prev.count  + 1,
+            missed:      prev.missed + (s.missed ?? 0),
+            late:        prev.late   + (s.late   ?? 0),
+            student_id:  s.student_id,
+            course_id:   r._course?.id,
+            course_name: r._course?.name,
           });
         });
       });
       const list: StudentStat[] = [];
       map.forEach(v => {
         const avg = v.count > 0 ? Math.round(v.total / v.count) : 0;
-        list.push({
-          name:    v.name,
-          average: avg,
-          missed:  v.missed,
-          late:    v.late,
-          status:  avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
-        });
+        list.push({ name: v.name, average: avg, missed: v.missed, late: v.late,
+          status: avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
+          student_id: v.student_id, course_id: v.course_id, course_name: v.course_name });
       });
       setStudents(list.sort((a, b) => b.average - a.average));
-      const allAvg = list.length > 0
-        ? Math.round(list.reduce((s, v) => s + v.average, 0) / list.length)
-        : 0;
+      const allAvg = list.length > 0 ? Math.round(list.reduce((s, v) => s + v.average, 0) / list.length) : 0;
       setClassAvg(allAvg);
     }).catch(() => {}).finally(() => setStudentsLoading(false));
   }
@@ -558,6 +564,19 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   return (
     <div className="max-w-7xl mx-auto space-y-8">
       <Toaster position="top-right" />
+
+      {/* Instructor roadmap slide-over */}
+      <AnimatePresence>
+        {roadmapPanel && (
+          <InstructorRoadmapView
+            studentName={roadmapPanel.studentName}
+            courseId={roadmapPanel.courseId}
+            courseName={roadmapPanel.courseName}
+            onClose={() => setRoadmapPanel(null)}
+          />
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showCreateAssignment && <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={loadSubmissions} />}
         {showUploadNotes && <UploadNotesModal courses={courses} onClose={() => setShowUploadNotes(false)} />}
@@ -771,16 +790,11 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       {activeTab === "students" && (
         <div className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
-          {/* P2-11: header now includes Refresh button */}
           <div className="p-8 border-b border-slate-50 flex items-center justify-between gap-4">
             <div className="flex items-center gap-4 flex-1">
               <h3 className="text-xl font-bold text-slate-900">Student Monitoring</h3>
-              <button
-                type="button"
-                onClick={loadStudents}
-                title="Refresh student data"
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-indigo-600 transition-colors"
-              >
+              <button type="button" onClick={loadStudents} title="Refresh student data"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-indigo-600 transition-colors">
                 <RefreshCw className={`w-3.5 h-3.5 ${studentsLoading ? 'animate-spin' : ''}`} />
                 <span>{studentsLoading ? 'Refreshing…' : 'Refresh'}</span>
               </button>
@@ -798,7 +812,6 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
               <table className="w-full text-left">
                 <thead>
                   <tr className="bg-slate-50/50">
-                    {/* P2-12: added Late column */}
                     {["Student", "Average", "Late", "Missed", "AI Status", ""].map((h, i) => (
                       <th key={i} className={`px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${i === 5 ? 'text-right' : ''}`}>{h}</th>
                     ))}
@@ -818,15 +831,10 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                           </div>
                         </td>
                         <td className="px-8 py-4 font-bold text-slate-700 tabular-nums">{student.average}%</td>
-                        {/* P2-12: Late badge — amber when > 0, grey when 0 */}
                         <td className="px-8 py-4">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                            student.late > 0
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-slate-100 text-slate-400'
-                          }`}>
-                            {student.late}
-                          </span>
+                            student.late > 0 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-400'
+                          }`}>{student.late}</span>
                         </td>
                         <td className="px-8 py-4 text-slate-500">{student.missed}</td>
                         <td className="px-8 py-4">
@@ -834,8 +842,22 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                             {student.status}
                           </span>
                         </td>
+                        {/* View Roadmap button */}
                         <td className="px-8 py-4 text-right">
-                          <span className="text-slate-400 text-xs">—</span>
+                          {student.course_id ? (
+                            <button
+                              onClick={() => setRoadmapPanel({
+                                studentName: student.name,
+                                courseId: student.course_id!,
+                                courseName: student.course_name ?? 'Course',
+                              })}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-colors"
+                            >
+                              <Map className="w-3.5 h-3.5" /> Roadmap
+                            </button>
+                          ) : (
+                            <span className="text-slate-400 text-xs">—</span>
+                          )}
                         </td>
                       </tr>
                     );
