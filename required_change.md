@@ -1,7 +1,7 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-14  
-Status: **Phase 1 + Phase 2 + P3-3 fully complete. P3-1, P3-2 pending.**
+Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 
 ---
 
@@ -41,6 +41,7 @@ Status: **Phase 1 + Phase 2 + P3-3 fully complete. P3-1, P3-2 pending.**
 | Bulk-enroll silent Auth failure | ✅ Resolved (P2-2) |
 | Static AI insight on DashboardPage | ✅ Resolved (P2-7) |
 | No bot protection on login | ✅ Resolved (P2-10) |
+| No audit trail on key admin/instructor actions | ✅ Resolved (P3-1) |
 | Seed users on shared temp password `ChangeMe123!` | ⏳ **Run at deployment** — `scripts/rotate-seed-passwords.ts` |
 | Orphaned `cloudinary_url` columns in DB | ⏳ **Run at deployment** — `scripts/run-migration.ts migrations/004_drop_cloudinary_url_columns.sql` |
 
@@ -78,10 +79,14 @@ Status: **Phase 1 + Phase 2 + P3-3 fully complete. P3-1, P3-2 pending.**
 | P2-9 | `GET /api/ready` — probes DB + Supabase Storage; returns 200 `{ status: "ready" }` or 503 `{ status: "unavailable", checks }` |
 | P2-10 | hCaptcha on login — `useCaptcha.ts` hook dynamically loads widget; `supabaseSignIn()` forwards `captchaToken`; disabled automatically when `VITE_HCAPTCHA_SITE_KEY` is not set |
 
-### Phase 3 (P3-3) ✅
+### Phase 3 (P3-1 + P3-3) ✅
 
 | # | What |
 |---|---|
+| P3-1 | `audit_logs` table (`migrations/005_create_audit_logs.sql`) — append-only, indexed by `created_at`, `actor_user_id`, `(resource_type, resource_id)` |
+| P3-1 | `src/server/middleware/audit.ts` — `writeAudit()` fire-and-forget writer; `setAuditPool()` called at startup |
+| P3-1 | `writeAudit` wired on: `login.success`, `login.denied`, `grade.submit`, `note.delete`, `assignment.archive`, `user.create`, `user.update`, `enrollment.bulk`, `course.create`, `course.delete`, `enrollment.create`, `enrollment.delete` |
+| P3-1 | `GET /api/admin/audit-logs` — admin-only, paginated (limit/offset), filterable by `action`, `actor_user_id`, `resource_type`, `since`, `until` |
 | P3-3 | Student `RoadmapPage.tsx` — course picker, AI generate/regenerate, milestone stepper with status cycling (pending → in_progress → completed), progress bar |
 | P3-3 | `InstructorRoadmapView.tsx` — slide-over panel on Students tab, read-only view of any student's roadmap per course, progress bar, milestone list |
 | P3-3 | `InstructorDashboard.tsx` — "Roadmap" button per student row; `StudentStat` extended with `course_id` / `course_name` |
@@ -102,6 +107,7 @@ Status: **Phase 1 + Phase 2 + P3-3 fully complete. P3-1, P3-2 pending.**
 | 20260513144008 | create_auth_users_and_backfill_identity_map |
 | 20260513144343 | enable_rls_and_add_policies |
 | 20260513144545 | drop_password_column_and_fix_function_search_paths |
+| local | 005_create_audit_logs.sql — **run against prod DB** |
 
 ---
 
@@ -113,7 +119,10 @@ Run these **once** against the production database immediately after deployment:
 # 1. Drop orphaned cloudinary_url columns (P2-5)
 npx tsx scripts/run-migration.ts migrations/004_drop_cloudinary_url_columns.sql
 
-# 2. Rotate ChangeMe123! seed passwords (P2-4)
+# 2. Create audit_logs table (P3-1)
+npx tsx scripts/run-migration.ts migrations/005_create_audit_logs.sql
+
+# 3. Rotate ChangeMe123! seed passwords (P2-4)
 npx tsx scripts/rotate-seed-passwords.ts
 ```
 
@@ -128,22 +137,6 @@ Add to **Vercel environment variables** (Production + Preview):
 
 ## 5. Remaining Work
 
-### P3-1 — Audit logs table 🟢
-
-```sql
-CREATE TABLE audit_logs (
-  id          BIGSERIAL PRIMARY KEY,
-  actor_id    INT REFERENCES users(id),
-  action      TEXT NOT NULL,
-  target_type TEXT,
-  target_id   INT,
-  payload     JSONB,
-  created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-```
-
-Write to it on: grade submission, enroll/unenroll student, create/delete course, admin user create/update.
-
 ### P3-2 — Analytics snapshots + cron 🟢
 
 Add `analytics_snapshots` table + background cron job so dashboards read pre-aggregated data instead of hitting raw tables on every load.
@@ -154,5 +147,4 @@ Add `analytics_snapshots` table + background cron job so dashboards read pre-agg
 
 | Priority | Task | Est. effort |
 |---|---|
-| 🟢 1 | P3-1: `audit_logs` table + write to it on key actions | 30 min |
-| 🟢 2 | P3-2: `analytics_snapshots` + cron aggregation job | 60 min |
+| 🟢 1 | P3-2: `analytics_snapshots` + cron aggregation job | 60 min |
