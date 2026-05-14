@@ -116,6 +116,13 @@ export const api = {
   /** Returns the backend proxy URL for a note (no auth needed here — it's just a URL string). */
   getNoteProxyUrl: (noteId: number): string => `${BASE}/api/notes/${noteId}/proxy`,
 
+  /**
+   * Fetches a short-lived signed URL (15 min) for a note from the backend.
+   * Prefer this over the proxy for large files to avoid streaming through the server.
+   */
+  getSignedNoteUrl: (noteId: number): Promise<{ url: string }> =>
+    request(`/api/notes/${noteId}/signed-url`),
+
   // Submissions
   // student_id is NOT sent — the server resolves it from req.auth (JWT).
   submitAssignment: (assignmentId: number, content: string) =>

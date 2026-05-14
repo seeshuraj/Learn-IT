@@ -137,6 +137,69 @@ async function checkStorageConnectivity(): Promise<void> {
   }
 }
 
+// ── Auth user helpers ─────────────────────────────────────────────────────
+
+/**
+ * Generate a cryptographically random temporary password.
+ * 16 chars: uppercase, lowercase, digits, symbols — satisfies most password policies.
+ */
+function generateTempPassword(): string {
+  const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*";
+  let pwd = "";
+  // Guarantee at least one uppercase, one digit, one symbol
+  pwd += "ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 24)];
+  pwd += "23456789"[Math.floor(Math.random() * 8)];
+  pwd += "!@#$%^&*"[Math.floor(Math.random() * 8)];
+  for (let i = 3; i < 16; i++) {
+    pwd += charset[Math.floor(Math.random() * charset.length)];
+  }
+  // Shuffle
+  return pwd.split("").sort(() => Math.random() - 0.5).join("");
+}
+
+/**
+ * Create a Supabase Auth user + matching user_identity_map row.
+ * Returns { authUserId, tempPassword } on success.
+ * Returns null (and logs) if the Auth user already exists — caller should handle gracefully.
+ */
+async function createAuthUserAndIdentityMapRow(
+  client: pkg.PoolClient,
+  legacyUserId: number,
+  email: string,
+  role: string
+): Promise<{ authUserId: string; tempPassword: string } | null> {
+  const tempPassword = generateTempPassword();
+
+  const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+    email,
+    password: tempPassword,
+    email_confirm: true, // skip email confirmation — admin-created accounts go straight in
+  });
+
+  if (authErr) {
+    // Auth user already exists (e.g. re-running bulk enrol) — not fatal
+    if (authErr.message.includes("already registered") || authErr.message.includes("already been registered")) {
+      console.warn(`[Auth] user already exists for ${email} — skipping Auth creation`);
+      return null;
+    }
+    console.error(`[Auth] createUser FAILED for ${email}:`, authErr.message);
+    throw new Error(`Supabase Auth createUser failed: ${authErr.message}`);
+  }
+
+  const authUserId = authData.user.id;
+
+  // Insert into user_identity_map inside the caller's transaction
+  await client.query(
+    `INSERT INTO user_identity_map (legacy_user_id, auth_user_id, role)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (legacy_user_id) DO UPDATE SET auth_user_id = EXCLUDED.auth_user_id, role = EXCLUDED.role`,
+    [legacyUserId, authUserId, role]
+  );
+
+  console.log(`[Auth] created Auth user ${authUserId} → legacy ${legacyUserId} (${email})`);
+  return { authUserId, tempPassword };
+}
+
 const require = createRequire(import.meta.url);
 const multer   = require("multer");
 const pdfParse = require("pdf-parse");
@@ -602,7 +665,6 @@ async function startServer() {
           savedFiles.push({ filename: file.originalname, original_name: file.originalname, storage_path: storedPath });
         } catch (uploadErr: any) {
           console.error(`[submissions/upload] file upload failed for ${file.originalname}:`, uploadErr.message);
-          // Continue with other files but report failure
           savedFiles.push({ filename: file.originalname, error: uploadErr.message });
         }
       }
@@ -665,13 +727,11 @@ async function startServer() {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
 
-      // Extract text from buffer directly — no temp files
       const text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
 
       const ext        = path.extname(file.originalname).toLowerCase();
       const objectPath = `module/${req.params.id}/${Date.now()}${ext}`;
 
-      // uploadToStorage throws on failure — ensures we never insert a broken note row
       const storedPath = await uploadToStorage(NOTES_BUCKET, objectPath, file.buffer, file.mimetype);
 
       const result = await run(
@@ -881,19 +941,50 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P2-2: create user in both public.users AND Supabase Auth + user_identity_map
   app.post(
     "/api/admin/users",
     requireAuth, requireRole("admin"),
     validateBody(adminUserCreateSchema),
     async (req, res) => {
+      const client = await pool.connect();
       try {
         const { name, email, role, major, year } = req.body;
-        const result = await run(
+        await client.query("BEGIN");
+
+        // 1. Insert into public.users
+        const r = await client.query(
           "INSERT INTO users (name,email,role,major,year) VALUES ($1,$2,$3,$4,$5) RETURNING id",
           [name, email, role, major, year]
         );
-        res.json({ id: result.lastInsertId });
-      } catch (_e) { res.status(400).json({ error: "Email already exists" }); }
+        const legacyUserId: number = r.rows[0].id;
+
+        // 2. Create Supabase Auth user + user_identity_map row
+        let tempPassword: string | null = null;
+        try {
+          const authResult = await createAuthUserAndIdentityMapRow(client, legacyUserId, email, role);
+          if (authResult) tempPassword = authResult.tempPassword;
+        } catch (authErr: any) {
+          // Roll back DB insert if Auth creation fails hard
+          await client.query("ROLLBACK");
+          console.error("[POST /api/admin/users] Auth creation failed:", authErr.message);
+          return res.status(500).json({ error: `User created in DB but Auth setup failed: ${authErr.message}` });
+        }
+
+        await client.query("COMMIT");
+
+        res.json({
+          id: legacyUserId,
+          // Return temp password so admin can share it with the new user.
+          // Remove from logs — never store plain-text passwords.
+          tempPassword: tempPassword ?? "(Auth user already existed — no new password set)",
+        });
+      } catch (e: any) {
+        await client.query("ROLLBACK").catch(() => {});
+        res.status(400).json({ error: "Email already exists" });
+      } finally {
+        client.release();
+      }
     }
   );
 
@@ -912,6 +1003,23 @@ async function startServer() {
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
   );
+
+  // P2-1: GET /api/admin/courses — was missing, caused 404 in AdminCourseManagement
+  app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (_req, res) => {
+    try {
+      res.json(await query(`
+        SELECT c.id, c.code, c.name, c.archived, c.created_at,
+               u.id   AS instructor_id,
+               u.name AS instructor_name,
+               (SELECT COUNT(*) FROM enrollments e WHERE e.course_id = c.id) AS enrollment_count,
+               (SELECT COUNT(*) FROM modules m WHERE m.course_id = c.id)     AS module_count
+        FROM courses c
+        JOIN users u ON c.instructor_id = u.id
+        WHERE c.archived = 0
+        ORDER BY c.created_at DESC
+      `));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 
   app.post(
     "/api/admin/courses",
@@ -1012,6 +1120,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P2-2: bulk-enrol now also creates Supabase Auth users for new emails
   app.post(
     "/api/admin/bulk-enroll",
     requireAuth, requireRole("admin"),
@@ -1026,20 +1135,50 @@ async function startServer() {
           for (const email of emails) {
             const trimmed = email.trim().toLowerCase();
             if (!trimmed) continue;
-            let user = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
-            if (!user) {
+
+            // Check if user already exists
+            let userRow = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
+            let isNewUser = false;
+            let tempPassword: string | null = null;
+
+            if (!userRow) {
+              // New user — create in public.users
               const name = trimmed.split("@")[0].replace(/[._]/g, " ");
               const r = await client.query(
                 "INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name",
                 [name, trimmed]
               );
-              user = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
+              userRow = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
+              isNewUser = true;
             }
+
+            // Create Auth user if this is a new DB user (or if identity map row is missing)
+            if (isNewUser) {
+              try {
+                const authResult = await createAuthUserAndIdentityMapRow(
+                  client, userRow.id, trimmed, "student"
+                );
+                if (authResult) tempPassword = authResult.tempPassword;
+              } catch (authErr: any) {
+                console.warn(`[bulk-enroll] Auth user creation failed for ${trimmed}:`, authErr.message);
+                // Non-fatal — continue enrolling; admin can fix manually
+              }
+            }
+
+            // Enrol into course
             const r = await client.query(
               "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
-              [course_id, user.id]
+              [course_id, userRow.id]
             );
-            results.push({ email: trimmed, student_id: user.id, enrolled: r.rows.length > 0 });
+
+            results.push({
+              email:       trimmed,
+              student_id:  userRow.id,
+              enrolled:    r.rows.length > 0,
+              newUser:     isNewUser,
+              // Only present for new users — admin must communicate this to the student
+              tempPassword: tempPassword ?? undefined,
+            });
           }
           await client.query("COMMIT");
         } catch (e) { await client.query("ROLLBACK"); throw e; }
@@ -1225,7 +1364,6 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", async () => {
     console.log(`\nLearnIT API  →  http://localhost:${PORT}  [${process.env.NODE_ENV ?? "development"}]  (PostgreSQL + Supabase Storage)`);
     if (!isProduction) console.log(`LearnIT App  →  http://localhost:5173  (Vite dev server)\n`);
-    // Verify storage credentials on startup
     await checkStorageConnectivity();
   });
 }
