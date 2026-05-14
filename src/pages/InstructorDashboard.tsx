@@ -16,17 +16,12 @@ interface Module {
   course_id: number;
 }
 
-const CLASS_DATA: ClassOverviewData = {
-  courseName: "Computer Science — All Courses",
-  classAverage: 78,
-  students: [
-    { name: "Sarah Johnson", average: 92, missed: 0, status: "On Track" },
-    { name: "Michael Chen", average: 78, missed: 1, status: "Needs Review" },
-    { name: "Alex Rivera", average: 64, missed: 3, status: "At Risk" },
-  ],
-};
-
-const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
+interface StudentStat {
+  name: string;
+  average: number;
+  missed: number;
+  status: string;
+}
 
 function BoldText({ text }: { text: string }) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
@@ -67,9 +62,8 @@ function CreateAssignmentModal({
 
   useEffect(() => {
     if (!courseId) { setModules([]); setModuleId(''); return; }
-    fetch(`${BASE}/api/courses/${courseId}/modules`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { setModules(Array.isArray(data) ? data : []); setModuleId(''); })
+    api.getCourseModules(courseId as number)
+      .then((data: any) => { setModules(Array.isArray(data) ? data : []); setModuleId(''); })
       .catch(() => setModules([]));
   }, [courseId]);
 
@@ -82,27 +76,15 @@ function CreateAssignmentModal({
     try {
       let briefUrl = '';
       if (briefFile) {
-        const form = new FormData();
-        form.append('file', briefFile);
-        form.append('title', `${title} — Brief`);
-        form.append('type', 'pdf');
-        const matRes = await fetch(`${BASE}/api/modules/${moduleId}/materials`, {
-          method: 'POST', body: form, credentials: 'include',
-        });
-        if (matRes.ok) { const mat = await matRes.json(); briefUrl = mat.url ?? mat.file_url ?? ''; }
+        const uploadedNote = await api.uploadNote(moduleId as number, briefFile);
+        briefUrl = uploadedNote?.url ?? uploadedNote?.file_url ?? '';
       }
-      const res = await fetch(`${BASE}/api/modules/${moduleId}/assignments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim() + (briefUrl ? `\n\n[Assignment Brief PDF](${briefUrl})` : ''),
-          due_date: dueDate,
-          max_points: maxPoints,
-        }),
+      await api.createAssignment(moduleId as number, {
+        title: title.trim(),
+        description: description.trim() + (briefUrl ? `\n\n[Assignment Brief PDF](${briefUrl})` : ''),
+        due_date: dueDate,
+        max_points: maxPoints,
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Failed to create assignment');
       toast.success('Assignment created!');
       onCreated();
       onClose();
@@ -207,13 +189,7 @@ function CreateAssignmentModal({
 }
 
 // ─── Upload Notes Modal ────────────────────────────────────────────────────
-function UploadNotesModal({
-  courses,
-  onClose,
-}: {
-  courses: Course[];
-  onClose: () => void;
-}) {
+function UploadNotesModal({ courses, onClose }: { courses: Course[]; onClose: () => void }) {
   const [courseId, setCourseId] = useState<number | ''>('');
   const [moduleId, setModuleId] = useState<number | ''>('');
   const [modules, setModules] = useState<Module[]>([]);
@@ -225,9 +201,8 @@ function UploadNotesModal({
 
   useEffect(() => {
     if (!courseId) { setModules([]); setModuleId(''); return; }
-    fetch(`${BASE}/api/courses/${courseId}/modules`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { setModules(Array.isArray(data) ? data : []); setModuleId(''); })
+    api.getCourseModules(courseId as number)
+      .then((data: any) => { setModules(Array.isArray(data) ? data : []); setModuleId(''); })
       .catch(() => setModules([]));
   }, [courseId]);
 
@@ -236,15 +211,9 @@ function UploadNotesModal({
     if (!moduleId) return setError('Select a module.');
     if (!file) return setError('Select a file to upload.');
     setUploading(true); setError(''); setProgress('Uploading & embedding…');
-    const formData = new FormData();
-    formData.append('file', file);
     try {
-      const res = await fetch(`${BASE}/api/modules/${moduleId}/notes`, {
-        method: 'POST', body: formData, credentials: 'include',
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Upload failed');
-      const data = await res.json();
-      setProgress(`Done — ${data.chunk_count ?? 0} chunks embedded ✓`);
+      const data = await api.uploadNote(moduleId as number, file);
+      setProgress(`Done — ${data?.chunk_count ?? 0} chunks embedded ✓`);
       toast.success('Notes uploaded and embedded!');
       setTimeout(() => onClose(), 1500);
     } catch (e: any) {
@@ -334,13 +303,9 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
   const [deletingAssignmentId, setDeletingAssignmentId] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!courseId) {
-      setModules([]); setModuleId(''); setNotes([]); setAssignments([]);
-      return;
-    }
-    fetch(`${BASE}/api/courses/${courseId}/modules`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { setModules(Array.isArray(data) ? data : []); setModuleId(''); setNotes([]); setAssignments([]); })
+    if (!courseId) { setModules([]); setModuleId(''); setNotes([]); setAssignments([]); return; }
+    api.getCourseModules(courseId as number)
+      .then((data: any) => { setModules(Array.isArray(data) ? data : []); setModuleId(''); setNotes([]); setAssignments([]); })
       .catch(() => setModules([]));
   }, [courseId]);
 
@@ -353,42 +318,27 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
     ]).then(([n, a]) => {
       setNotes(Array.isArray(n) ? n : []);
       setAssignments(Array.isArray(a) ? a : []);
-    }).catch(() => {
-      setNotes([]); setAssignments([]);
-    }).finally(() => setLoading(false));
+    }).catch(() => { setNotes([]); setAssignments([]); }).finally(() => setLoading(false));
   }, [moduleId]);
 
   async function handleDeleteNote(noteId: number, fileName: string) {
     if (!window.confirm(`Delete note "${fileName}"? This is permanent.`)) return;
     setDeletingNoteId(noteId);
-    try {
-      await api.deleteNote(noteId);
-      setNotes(prev => prev.filter(n => n.id !== noteId));
-      toast.success('Note deleted.');
-    } catch (e: any) {
-      toast.error(e.message ?? 'Failed to delete note.');
-    } finally {
-      setDeletingNoteId(null);
-    }
+    try { await api.deleteNote(noteId); setNotes(prev => prev.filter(n => n.id !== noteId)); toast.success('Note deleted.'); }
+    catch (e: any) { toast.error(e.message ?? 'Failed to delete note.'); }
+    finally { setDeletingNoteId(null); }
   }
 
   async function handleDeleteAssignment(assignmentId: number, title: string) {
     if (!window.confirm(`Delete assignment "${title}"? Students will lose access.`)) return;
     setDeletingAssignmentId(assignmentId);
-    try {
-      await api.deleteAssignment(assignmentId);
-      setAssignments(prev => prev.filter(a => a.id !== assignmentId));
-      toast.success('Assignment deleted.');
-    } catch (e: any) {
-      toast.error(e.message ?? 'Failed to delete assignment.');
-    } finally {
-      setDeletingAssignmentId(null);
-    }
+    try { await api.deleteAssignment(assignmentId); setAssignments(prev => prev.filter(a => a.id !== assignmentId)); toast.success('Assignment deleted.'); }
+    catch (e: any) { toast.error(e.message ?? 'Failed to delete assignment.'); }
+    finally { setDeletingAssignmentId(null); }
   }
 
   return (
     <div className="space-y-8">
-      {/* Course + Module selectors */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 flex flex-col sm:flex-row gap-4">
         <div className="flex-1">
           <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Course</label>
@@ -408,99 +358,66 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
           </select>
         </div>
       </div>
-
-      {loading && (
-        <div className="flex items-center gap-3 text-slate-500 text-sm">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading module content…
-        </div>
-      )}
-
+      {loading && <div className="flex items-center gap-3 text-slate-500 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading module content…</div>}
       {!loading && moduleId !== '' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Notes */}
           <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-teal-600" /> Notes
-              </h3>
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2"><BookOpen className="w-4 h-4 text-teal-600" /> Notes</h3>
               <span className="text-xs bg-teal-100 text-teal-700 font-bold px-2 py-0.5 rounded-full">{notes.length}</span>
             </div>
             <div className="divide-y divide-slate-50">
-              {notes.length === 0 ? (
-                <div className="px-6 py-8 text-center text-sm text-slate-400">No notes uploaded for this module.</div>
-              ) : notes.map(note => {
-                // API returns: original_name, uploaded_at, chunk_count, cloudinary_url
-                const displayName = note.original_name ?? note.filename ?? `Note #${note.id}`;
-                const uploadedAt = note.uploaded_at ?? note.created_at;
-                return (
-                  <div key={note.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-800 truncate">📄 {displayName}</p>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        {uploadedAt ? new Date(uploadedAt).toLocaleDateString() : ''}
-                        {note.chunk_count ? ` · ${note.chunk_count} chunks` : ''}
-                        {note.cloudinary_url ? ' · ☁ Cloud' : ' · 💾 Local'}
-                      </p>
+              {notes.length === 0 ? <div className="px-6 py-8 text-center text-sm text-slate-400">No notes uploaded for this module.</div>
+                : notes.map(note => {
+                  const displayName = note.original_name ?? note.filename ?? `Note #${note.id}`;
+                  const uploadedAt = note.uploaded_at ?? note.created_at;
+                  return (
+                    <div key={note.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-800 truncate">📄 {displayName}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {uploadedAt ? new Date(uploadedAt).toLocaleDateString() : ''}
+                          {note.chunk_count ? ` · ${note.chunk_count} chunks` : ''}
+                          {note.cloudinary_url ? ' · ☁ Cloud' : ' · 💾 Local'}
+                        </p>
+                      </div>
+                      <button onClick={() => handleDeleteNote(note.id, displayName)} disabled={deletingNoteId === note.id}
+                        className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40">
+                        {deletingNoteId === note.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                      </button>
                     </div>
-                    <button
-                      onClick={() => handleDeleteNote(note.id, displayName)}
-                      disabled={deletingNoteId === note.id}
-                      className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40"
-                      title="Delete note"
-                    >
-                      {deletingNoteId === note.id
-                        ? <Loader2 className="w-4 h-4 animate-spin" />
-                        : <Trash2 className="w-4 h-4" />}
-                    </button>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           </div>
-
-          {/* Assignments */}
           <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-indigo-600" /> Assignments
-              </h3>
+              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-indigo-600" /> Assignments</h3>
               <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{assignments.length}</span>
             </div>
             <div className="divide-y divide-slate-50">
-              {assignments.length === 0 ? (
-                <div className="px-6 py-8 text-center text-sm text-slate-400">No assignments for this module.</div>
-              ) : assignments.map(assignment => (
-                <div key={assignment.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-800 truncate">{assignment.title}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Due {assignment.due_date ? new Date(assignment.due_date).toLocaleDateString() : 'N/A'}
-                      {assignment.max_points ? ` · ${assignment.max_points} pts` : ''}
-                    </p>
+              {assignments.length === 0 ? <div className="px-6 py-8 text-center text-sm text-slate-400">No assignments for this module.</div>
+                : assignments.map(assignment => (
+                  <div key={assignment.id} className="flex items-center justify-between px-6 py-3 hover:bg-slate-50 transition">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-800 truncate">{assignment.title}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Due {assignment.due_date ? new Date(assignment.due_date).toLocaleDateString() : 'N/A'}
+                        {assignment.max_points ? ` · ${assignment.max_points} pts` : ''}
+                      </p>
+                    </div>
+                    <button onClick={() => handleDeleteAssignment(assignment.id, assignment.title)} disabled={deletingAssignmentId === assignment.id}
+                      className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40">
+                      {deletingAssignmentId === assignment.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleDeleteAssignment(assignment.id, assignment.title)}
-                    disabled={deletingAssignmentId === assignment.id}
-                    className="ml-4 shrink-0 p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition disabled:opacity-40"
-                    title="Delete assignment"
-                  >
-                    {deletingAssignmentId === assignment.id
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <Trash2 className="w-4 h-4" />}
-                  </button>
-                </div>
-              ))}
+                ))}
             </div>
           </div>
         </div>
       )}
-
-      {!loading && moduleId === '' && courseId !== '' && (
-        <div className="text-center text-sm text-slate-400 py-8">Select a module to manage its notes and assignments.</div>
-      )}
-      {!loading && courseId === '' && (
-        <div className="text-center text-sm text-slate-400 py-8">Select a course to get started.</div>
-      )}
+      {!loading && moduleId === '' && courseId !== '' && <div className="text-center text-sm text-slate-400 py-8">Select a module to manage its notes and assignments.</div>}
+      {!loading && courseId === '' && <div className="text-center text-sm text-slate-400 py-8">Select a course to get started.</div>}
     </div>
   );
 }
@@ -509,6 +426,9 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
 export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
+  const [students, setStudents] = useState<StudentStat[]>([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
+  const [classAvg, setClassAvg] = useState<number>(0);
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
   const [grade, setGrade] = useState<number>(0);
   const [feedback, setFeedback] = useState("");
@@ -520,17 +440,81 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
   const [classSummaryLoading, setClassSummaryLoading] = useState(false);
   const [showCreateAssignment, setShowCreateAssignment] = useState(false);
   const [showUploadNotes, setShowUploadNotes] = useState(false);
+  const [studentSearch, setStudentSearch] = useState('');
 
   function loadSubmissions() {
-    fetch(`${BASE}/api/instructor/submissions`, { credentials: 'include' })
-      .then(res => res.json()).then(d => setSubmissions(Array.isArray(d) ? d : [])).catch(() => {});
+    api.getInstructorSubmissions()
+      .then((d: any) => setSubmissions(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }
+
+  function loadStudents() {
+    if (students.length > 0) return;
+    setStudentsLoading(true);
+    // Build per-student stats from courses analytics
+    Promise.all(
+      courses.map((c: Course) => api.getCourseAnalytics(c.id))
+    ).then((results: any[]) => {
+      const map = new Map<string, { name: string; total: number; count: number; missed: number }>();
+      results.forEach((r: any) => {
+        if (!Array.isArray(r?.students)) return;
+        r.students.forEach((s: any) => {
+          const key = String(s.student_id ?? s.name);
+          const prev = map.get(key) ?? { name: s.name, total: 0, count: 0, missed: 0 };
+          map.set(key, {
+            name: s.name,
+            total: prev.total + (s.avg_grade ?? 0),
+            count: prev.count + 1,
+            missed: prev.missed + (s.missed ?? 0),
+          });
+        });
+      });
+      const list: StudentStat[] = [];
+      map.forEach(v => {
+        const avg = v.count > 0 ? Math.round(v.total / v.count) : 0;
+        list.push({
+          name: v.name,
+          average: avg,
+          missed: v.missed,
+          status: avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
+        });
+      });
+      setStudents(list.sort((a, b) => b.average - a.average));
+      const allAvg = list.length > 0 ? Math.round(list.reduce((s, v) => s + v.average, 0) / list.length) : 0;
+      setClassAvg(allAvg);
+    }).catch(() => {}).finally(() => setStudentsLoading(false));
   }
 
   useEffect(() => {
     loadSubmissions();
-    fetch(`${BASE}/api/instructor/${user.id}/courses`, { credentials: 'include' })
-      .then(res => res.json()).then(d => setCourses(Array.isArray(d) ? d : [])).catch(() => {});
+    api.getInstructorCourses(user.id)
+      .then((d: any) => setCourses(Array.isArray(d) ? d : []))
+      .catch(() => {});
   }, [user.id]);
+
+  useEffect(() => {
+    if (activeTab === 'students' && courses.length > 0) loadStudents();
+    if (activeTab === 'analytics' && courses.length > 0 && students.length === 0) loadStudents();
+  }, [activeTab, courses]);
+
+  const fetchClassSummary = async () => {
+    if (students.length === 0) return;
+    setClassSummaryLoading(true); setClassSummary("");
+    try {
+      const classData: ClassOverviewData = {
+        courseName: courses.map(c => c.name).join(', ') || 'All Courses',
+        classAverage: classAvg,
+        students: students.map(s => ({ name: s.name, average: s.average, missed: s.missed, status: s.status })),
+      };
+      const summary = await getClassOverviewSummary(classData);
+      setClassSummary(summary);
+    } catch { toast.error("Could not generate class summary."); }
+    finally { setClassSummaryLoading(false); }
+  };
+
+  useEffect(() => {
+    if (activeTab === "analytics" && students.length > 0 && !classSummary) fetchClassSummary();
+  }, [activeTab, students]);
 
   const handleAiGrade = async () => {
     if (!selectedSubmission) return;
@@ -540,17 +524,13 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
       const suggestion = await getGradingSuggestion(selectedSubmission.content, rubric);
       setAiSuggestion(suggestion);
       toast.success("AI grading suggestion ready!");
-    } catch {
-      toast.error("AI grading failed. Please try again.");
-    } finally {
-      setIsAiLoading(false);
-    }
+    } catch { toast.error("AI grading failed. Please try again."); }
+    finally { setIsAiLoading(false); }
   };
 
   const handleAcceptAiGrade = () => {
     if (!aiSuggestion) return;
-    setGrade(aiSuggestion.score);
-    setFeedback(aiSuggestion.feedback);
+    setGrade(aiSuggestion.score); setFeedback(aiSuggestion.feedback);
     toast.success("AI grade accepted — edit if needed, then publish.");
   };
 
@@ -558,51 +538,24 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
     if (!selectedSubmission) return;
     setIsSubmitting(true);
     try {
-      const response = await fetch(`${BASE}/api/submissions/${selectedSubmission.id}/grade`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: 'include',
-        body: JSON.stringify({ grade, feedback }),
-      });
-      if (response.ok) {
-        toast.success("Grade published successfully!");
-        setSubmissions(prev => prev.filter(s => s.id !== selectedSubmission.id));
-        setSelectedSubmission(null);
-        setAiSuggestion(null);
-      }
-    } catch {
-      toast.error("Failed to publish grade.");
-    } finally {
-      setIsSubmitting(false);
-    }
+      await api.gradeSubmission(selectedSubmission.id, grade, feedback);
+      toast.success("Grade published successfully!");
+      setSubmissions(prev => prev.filter(s => s.id !== selectedSubmission.id));
+      setSelectedSubmission(null); setAiSuggestion(null);
+    } catch { toast.error("Failed to publish grade."); }
+    finally { setIsSubmitting(false); }
   };
 
-  const fetchClassSummary = async () => {
-    setClassSummaryLoading(true); setClassSummary("");
-    try {
-      const summary = await getClassOverviewSummary(CLASS_DATA);
-      setClassSummary(summary);
-    } catch {
-      toast.error("Could not generate class summary.");
-    } finally {
-      setClassSummaryLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (activeTab === "analytics" && !classSummary) fetchClassSummary();
-  }, [activeTab]);
+  const filteredStudents = students.filter(s =>
+    s.name.toLowerCase().includes(studentSearch.toLowerCase())
+  );
 
   return (
     <div className="max-w-7xl mx-auto space-y-8">
       <Toaster position="top-right" />
       <AnimatePresence>
-        {showCreateAssignment && (
-          <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={loadSubmissions} />
-        )}
-        {showUploadNotes && (
-          <UploadNotesModal courses={courses} onClose={() => setShowUploadNotes(false)} />
-        )}
+        {showCreateAssignment && <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={loadSubmissions} />}
+        {showUploadNotes && <UploadNotesModal courses={courses} onClose={() => setShowUploadNotes(false)} />}
       </AnimatePresence>
 
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -624,9 +577,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
               <button key={tab} onClick={() => setActiveTab(tab)}
                 className={`px-4 py-2 rounded-xl text-xs font-bold transition-all capitalize ${
                   activeTab === tab ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-500 hover:bg-slate-50"
-                }`}>
-                {tab}
-              </button>
+                }`}>{tab}</button>
             ))}
           </div>
         </div>
@@ -635,8 +586,8 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
           { label: "Pending Grading", value: submissions.length, sub: "Action required", icon: Clock, color: "indigo" },
-          { label: "Average Grade", value: "84%", sub: "Across all courses", icon: CheckCircle2, color: "emerald" },
-          { label: "At-Risk Students", value: 3, sub: "Flagged by AI", icon: AlertCircle, color: "red" },
+          { label: "Class Average", value: classAvg > 0 ? `${classAvg}%` : '—', sub: "Across all courses", icon: CheckCircle2, color: "emerald" },
+          { label: "At-Risk Students", value: students.filter(s => s.status === 'At Risk').length, sub: "Flagged by AI", icon: AlertCircle, color: "red" },
         ].map((kpi, i) => (
           <div key={i} className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
             <div className="flex items-center gap-4 mb-4">
@@ -687,7 +638,6 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
               )}
             </div>
           </div>
-
           <div className="lg:col-span-2">
             <AnimatePresence mode="wait">
               {selectedSubmission ? (
@@ -701,8 +651,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                     </div>
                     <button onClick={handleAiGrade} disabled={isAiLoading}
                       className="px-5 py-2.5 bg-green-700 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-green-800 transition-all shadow-lg shadow-green-700/20 disabled:opacity-50">
-                      {isAiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
-                      AI Grade
+                      {isAiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />} AI Grade
                     </button>
                   </div>
                   <div className="p-8 space-y-6">
@@ -750,9 +699,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-2">Strengths</p>
                               <ul className="space-y-1">
                                 {aiSuggestion.strengths.map((s: string, i: number) => (
-                                  <li key={i} className="flex items-start gap-2 text-xs text-green-800">
-                                    <span className="text-emerald-500 mt-0.5">✓</span> {s}
-                                  </li>
+                                  <li key={i} className="flex items-start gap-2 text-xs text-green-800"><span className="text-emerald-500 mt-0.5">✓</span> {s}</li>
                                 ))}
                               </ul>
                             </div>
@@ -760,9 +707,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-2">Improvements</p>
                               <ul className="space-y-1">
                                 {aiSuggestion.improvements.map((s: string, i: number) => (
-                                  <li key={i} className="flex items-start gap-2 text-xs text-green-800">
-                                    <span className="text-amber-500 mt-0.5">→</span> {s}
-                                  </li>
+                                  <li key={i} className="flex items-start gap-2 text-xs text-green-800"><span className="text-amber-500 mt-0.5">→</span> {s}</li>
                                 ))}
                               </ul>
                             </div>
@@ -792,16 +737,14 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                         className="px-8 py-3 text-sm font-bold text-slate-500 hover:text-slate-700">Skip for Now</button>
                       <button onClick={submitGrade} disabled={isSubmitting}
                         className="px-10 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50">
-                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : (<>Publish Grade <CheckCircle2 className="w-4 h-4" /></>)}
+                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Publish Grade <CheckCircle2 className="w-4 h-4" /></>}
                       </button>
                     </div>
                   </div>
                 </motion.div>
               ) : (
                 <div className="h-full flex flex-col items-center justify-center p-12 bg-white rounded-[32px] border border-dashed border-slate-200 text-center min-h-[400px]">
-                  <div className="bg-slate-50 p-6 rounded-full mb-4">
-                    <Star className="w-12 h-12 text-slate-300" />
-                  </div>
+                  <div className="bg-slate-50 p-6 rounded-full mb-4"><Star className="w-12 h-12 text-slate-300" /></div>
                   <h3 className="text-lg font-bold text-slate-900 mb-2">Select a submission to grade</h3>
                   <p className="text-sm text-slate-500 max-w-xs">Choose a student's work from the list on the left to start grading.</p>
                   <div className="flex gap-3 mt-6">
@@ -827,48 +770,57 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
             <h3 className="text-xl font-bold text-slate-900">Student Monitoring</h3>
             <div className="relative max-w-xs w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input type="text" placeholder="Search students…"
+              <input type="text" placeholder="Search students…" value={studentSearch} onChange={e => setStudentSearch(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
             </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50/50">
-                  {["Student", "Average", "Missed", "AI Status", ""].map((h, i) => (
-                    <th key={i} className={`px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${i === 4 ? "text-right" : ""}`}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {CLASS_DATA.students.map((student, i) => {
-                  const color = student.status === "On Track" ? "emerald" : student.status === "At Risk" ? "red" : "amber";
-                  return (
-                    <tr key={i} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="px-8 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 bg-${color}-50 text-${color}-600 rounded-xl flex items-center justify-center font-bold text-xs`}>
-                            {student.name.split(" ").map(n => n[0]).join("")}
+          {studentsLoading ? (
+            <div className="flex items-center gap-3 text-slate-400 text-sm p-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading student data…</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50/50">
+                    {["Student", "Average", "Missed", "AI Status", ""].map((h, i) => (
+                      <th key={i} className={`px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${i === 4 ? "text-right" : ""}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {filteredStudents.map((student, i) => {
+                    const color = student.status === "On Track" ? "emerald" : student.status === "At Risk" ? "red" : "amber";
+                    return (
+                      <tr key={i} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-8 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 bg-${color}-50 text-${color}-600 rounded-xl flex items-center justify-center font-bold text-xs`}>
+                              {student.name.split(" ").map((n: string) => n[0]).join("")}
+                            </div>
+                            <span className="text-sm font-bold text-slate-900">{student.name}</span>
                           </div>
-                          <span className="text-sm font-bold text-slate-900">{student.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-8 py-4 font-bold text-slate-700 tabular-nums">{student.average}%</td>
-                      <td className="px-8 py-4 text-slate-500">{student.missed}</td>
-                      <td className="px-8 py-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-${color}-100 text-${color}-700`}>
-                          {student.status}
-                        </span>
-                      </td>
-                      <td className="px-8 py-4 text-right">
-                        <button className="text-indigo-600 text-xs font-bold hover:underline">View Profile</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        </td>
+                        <td className="px-8 py-4 font-bold text-slate-700 tabular-nums">{student.average}%</td>
+                        <td className="px-8 py-4 text-slate-500">{student.missed}</td>
+                        <td className="px-8 py-4">
+                          <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-${color}-100 text-${color}-700`}>
+                            {student.status}
+                          </span>
+                        </td>
+                        <td className="px-8 py-4 text-right">
+                          <span className="text-slate-400 text-xs">—</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredStudents.length === 0 && (
+                    <tr><td colSpan={5} className="text-center text-sm text-slate-400 py-12">
+                      {students.length === 0 ? 'No student data available yet.' : 'No students match the search.'}
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -884,29 +836,22 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
               </div>
             </div>
             {classSummaryLoading ? (
-              <div className="flex items-center gap-3 text-green-800 text-sm">
-                <Loader2 className="w-4 h-4 animate-spin" /> Generating AI class summary…
-              </div>
+              <div className="flex items-center gap-3 text-green-800 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Generating AI class summary…</div>
             ) : classSummary ? (
-              <p className="text-sm text-green-900 leading-relaxed">
-                <BoldText text={classSummary} />
-              </p>
+              <p className="text-sm text-green-900 leading-relaxed"><BoldText text={classSummary} /></p>
             ) : (
-              <button onClick={fetchClassSummary}
-                className="text-sm text-green-700 font-bold hover:underline">Generate summary</button>
+              <button onClick={fetchClassSummary} className="text-sm text-green-700 font-bold hover:underline">Generate summary</button>
             )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {[
-              { label: "Class Average", value: `${CLASS_DATA.classAverage}%`, icon: TrendingUp, color: "emerald" },
-              { label: "On Track", value: CLASS_DATA.students.filter(s => s.status === "On Track").length, icon: CheckCircle2, color: "indigo" },
-              { label: "At Risk", value: CLASS_DATA.students.filter(s => s.status === "At Risk").length, icon: AlertCircle, color: "red" },
+              { label: "Class Average", value: classAvg > 0 ? `${classAvg}%` : '—', icon: TrendingUp, color: "emerald" },
+              { label: "On Track", value: students.filter(s => s.status === "On Track").length, icon: CheckCircle2, color: "indigo" },
+              { label: "At Risk", value: students.filter(s => s.status === "At Risk").length, icon: AlertCircle, color: "red" },
             ].map((kpi, i) => (
               <div key={i} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
                 <div className="flex items-center gap-3 mb-3">
-                  <div className={`bg-${kpi.color}-100 p-2.5 rounded-xl`}>
-                    <kpi.icon className={`w-5 h-5 text-${kpi.color}-600`} />
-                  </div>
+                  <div className={`bg-${kpi.color}-100 p-2.5 rounded-xl`}><kpi.icon className={`w-5 h-5 text-${kpi.color}-600`} /></div>
                   <p className="text-sm text-slate-500 font-medium">{kpi.label}</p>
                 </div>
                 <p className="text-3xl font-bold text-slate-900">{kpi.value}</p>
@@ -919,30 +864,33 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                 <BarChart3 className="w-4 h-4 text-indigo-500" /> Performance Breakdown
               </h3>
             </div>
-            <div className="divide-y divide-slate-50">
-              {CLASS_DATA.students.map((s, i) => {
-                const color = s.status === "On Track" ? "emerald" : s.status === "At Risk" ? "red" : "amber";
-                return (
-                  <div key={i} className="px-8 py-4 flex items-center gap-6">
-                    <div className="w-32 shrink-0">
-                      <p className="text-sm font-bold text-slate-900 truncate">{s.name}</p>
-                      <span className={`text-[10px] font-bold uppercase tracking-wider text-${color}-600`}>{s.status}</span>
+            {studentsLoading ? (
+              <div className="flex items-center gap-3 text-slate-400 text-sm p-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
+            ) : (
+              <div className="divide-y divide-slate-50">
+                {students.map((s, i) => {
+                  const color = s.status === "On Track" ? "emerald" : s.status === "At Risk" ? "red" : "amber";
+                  return (
+                    <div key={i} className="px-8 py-4 flex items-center gap-6">
+                      <div className="w-32 shrink-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{s.name}</p>
+                        <span className={`text-[10px] font-bold uppercase tracking-wider text-${color}-600`}>{s.status}</span>
+                      </div>
+                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                        <div className={`bg-${color}-500 h-2 rounded-full transition-all`} style={{ width: `${s.average}%` }} />
+                      </div>
+                      <span className="text-sm font-bold text-slate-700 tabular-nums w-12 text-right">{s.average}%</span>
                     </div>
-                    <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
-                      <div className={`bg-${color}-500 h-2 rounded-full transition-all`} style={{ width: `${s.average}%` }} />
-                    </div>
-                    <span className="text-sm font-bold text-slate-700 tabular-nums w-12 text-right">{s.average}%</span>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+                {students.length === 0 && <div className="text-center text-sm text-slate-400 py-12">No analytics data available yet.</div>}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {activeTab === "manage" && (
-        <ManageTab courses={courses} user={user} />
-      )}
+      {activeTab === "manage" && <ManageTab courses={courses} user={user} />}
     </div>
   );
 };

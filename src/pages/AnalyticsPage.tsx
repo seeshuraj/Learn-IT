@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AIAnalyticsSummary } from '../components/AIAnalyticsSummary';
 import { StudentAnalyticsData } from '../services/aiService';
+import { api } from '../services/api';
 
 interface CourseStats {
   course_code: string;
@@ -21,8 +22,6 @@ interface AnalyticsData {
 }
 
 interface Props { user: any; }
-
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 function toAISummaryData(data: AnalyticsData, submissionRate: number): StudentAnalyticsData {
   return {
@@ -52,9 +51,8 @@ export default function AnalyticsPage({ user }: Props) {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`${API}/api/students/${user.id}/analytics`)
-      .then(r => r.json())
-      .then(setData)
+    api.getStudentAnalytics(user.id)
+      .then((d: any) => setData(d))
       .catch(() => setError('Could not load analytics data.'))
       .finally(() => setLoading(false));
   }, [user?.id]);
@@ -79,17 +77,13 @@ export default function AnalyticsPage({ user }: Props) {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
-
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-800">My Analytics</h1>
         <p className="text-slate-500 text-sm mt-1">Performance overview · {data.student_name}</p>
       </div>
 
-      {/* AI Summary — auto-loads with typewriter reveal */}
       <AIAnalyticsSummary data={aiData} autoLoad={true} />
 
-      {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
           {
@@ -120,7 +114,6 @@ export default function AnalyticsPage({ user }: Props) {
         ))}
       </div>
 
-      {/* Per-course breakdown */}
       {data.courses.length === 0 ? (
         <div className="text-center py-16 text-slate-400">
           <p className="text-3xl mb-2">📊</p>
@@ -148,7 +141,6 @@ export default function AnalyticsPage({ user }: Props) {
                   </span>
                 </div>
               </div>
-
               <div className="px-5 pt-4 pb-2">
                 <div className="flex items-center gap-3 mb-4">
                   <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -161,7 +153,6 @@ export default function AnalyticsPage({ user }: Props) {
                     {c.assignments_submitted}/{c.assignments_total} submitted
                   </span>
                 </div>
-
                 {c.grades.length > 0 ? (
                   <div className="divide-y divide-slate-50">
                     {c.grades.map((g, i) => (
@@ -169,9 +160,7 @@ export default function AnalyticsPage({ user }: Props) {
                         <span className="text-sm text-slate-600 truncate max-w-xs">{g.title}</span>
                         <div className="flex items-center gap-3 shrink-0">
                           <span className="text-xs text-slate-400">
-                            {new Date(g.submitted_at).toLocaleDateString('en-IE', {
-                              day: 'numeric', month: 'short',
-                            })}
+                            {new Date(g.submitted_at).toLocaleDateString('en-IE', { day: 'numeric', month: 'short' })}
                           </span>
                           <span className={`text-sm font-semibold tabular-nums w-12 text-right ${gradeColor(g.grade)}`}>
                             {g.grade}%

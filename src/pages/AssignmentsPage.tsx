@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { api } from '../services/api';
 
 interface Assignment {
   id: number;
@@ -19,9 +20,6 @@ interface Assignment {
 }
 
 interface Props { user: any; }
-
-// Use VITE_API_BASE_URL (set in Vercel env) or empty string (Vite proxy in dev)
-const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
 
 export default function AssignmentsPage({ user }: Props) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -44,10 +42,9 @@ export default function AssignmentsPage({ user }: Props) {
   async function fetchAssignments() {
     setLoading(true);
     try {
-      const res = await fetch(`${BASE}/api/student/${user.id}/assignments`, { credentials: 'include' });
-      const data = await res.json();
+      const data = await api.getStudentAssignments(user.id);
       setAssignments(Array.isArray(data) ? data : []);
-    } catch (e) {
+    } catch {
       setError('Could not load assignments.');
     } finally {
       setLoading(false);
@@ -63,31 +60,16 @@ export default function AssignmentsPage({ user }: Props) {
     setSubmitting(true); setError(''); setSuccess('');
     try {
       if (submitMode === 'file') {
-        const formData = new FormData();
-        formData.append('assignment_id', String(selected.id));
-        formData.append('student_id', String(user.id));
-        formData.append('content', textContent);
-        Array.from(files!).forEach(f => formData.append('files', f));
-        const res = await fetch(`${BASE}/api/submissions/upload`, {
-          method: 'POST',
-          body: formData,
-          credentials: 'include',
-        });
-        if (!res.ok) throw new Error((await res.json()).error ?? 'Upload failed');
+        // student_id resolved server-side from JWT — do NOT send it from client
+        await api.uploadSubmission(selected.id, Array.from(files!), textContent);
       } else {
-        const res = await fetch(`${BASE}/api/submissions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ assignment_id: selected.id, student_id: user.id, content: textContent }),
-        });
-        if (!res.ok) throw new Error((await res.json()).error ?? 'Submission failed');
+        // student_id resolved server-side from JWT
+        await api.submitAssignment(selected.id, textContent);
       }
       setSuccess('Submitted successfully! ✓');
       setTextContent(''); setFiles(null);
       if (fileRef.current) fileRef.current.value = '';
       await fetchAssignments();
-      // refresh selected card
       setSelected(prev => prev ? { ...prev, submission_id: -1 } : null);
     } catch (e: any) {
       setError(e.message ?? 'Submission failed');
@@ -199,7 +181,6 @@ export default function AssignmentsPage({ user }: Props) {
                 <ReactMarkdown>{selected.description}</ReactMarkdown>
               </div>
 
-              {/* Graded result */}
               {selected.grade != null && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-2">
                   <div className="flex items-center gap-3">
@@ -219,7 +200,6 @@ export default function AssignmentsPage({ user }: Props) {
                 </div>
               )}
 
-              {/* Pending submission state */}
               {selected.submission_id && selected.grade == null && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <p className="text-sm text-blue-700 font-medium">✓ Submitted — awaiting grade</p>
@@ -229,10 +209,8 @@ export default function AssignmentsPage({ user }: Props) {
                 </div>
               )}
 
-              {/* Submission form */}
               {!selected.submission_id && (
                 <form onSubmit={handleSubmit} className="space-y-4">
-                  {/* Toggle: text vs file */}
                   <div className="flex gap-2">
                     {(['text', 'file'] as const).map(mode => (
                       <button
