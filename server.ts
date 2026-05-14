@@ -46,6 +46,8 @@ import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
 import { startCronJobs } from "./src/server/jobs/cron.js";
 import { createRoadmapRouter } from "./src/server/routes/roadmaps.js";
+import { createNotificationsRouter } from "./src/server/routes/notifications.js";
+import { notify } from "./src/server/lib/notify.js";
 
 dotenv.config();
 validateEnv();
@@ -404,8 +406,6 @@ async function nimEmbed(
 }
 
 // ── Snapshot staleness threshold ──────────────────────────────────────────────
-// A snapshot is "fresh" if it was written within the last 35 minutes
-// (30-min cron cadence + 5 min grace for slow runs).
 const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 
 async function startServer() {
@@ -414,7 +414,6 @@ async function startServer() {
   app.use(attachRequestId);
   app.use(requestLogger);
 
-  // ── Rate limiting ─────────────────────────────────────────────────────────
   app.use("/api", generalApiLimiter);
 
   const ALLOWED_RE =
@@ -437,6 +436,9 @@ async function startServer() {
 
   // ── P3-3: Student Roadmaps ────────────────────────────────────────────────
   app.use("/api/roadmaps", createRoadmapRouter(pool, nimChat));
+
+  // ── P3-4: Notifications ─────────────────────────────────────────────────
+  app.use("/api/notifications", createNotificationsRouter(pool));
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
@@ -490,7 +492,6 @@ async function startServer() {
   });
 
   // ── Auth ──────────────────────────────────────────────────────────────────
-  // P3-1: audit login.success
   app.post("/api/login", loginLimiter, requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -500,22 +501,16 @@ async function startServer() {
       );
       if (user) {
         writeAudit({
-          action:       'login.success',
-          resourceType: 'user',
-          resourceId:   String(user.id),
-          actorUserId:  authReq.auth.legacyUserId,
-          actorEmail:   authReq.auth.email,
-          actorRole:    authReq.auth.role,
-          req,
+          action: 'login.success', resourceType: 'user', resourceId: String(user.id),
+          actorUserId: authReq.auth.legacyUserId, actorEmail: authReq.auth.email,
+          actorRole: authReq.auth.role, req,
         });
         res.json(user);
       } else {
         writeAudit({
-          action:      'login.denied',
-          actorEmail:  authReq.auth.email,
+          action: 'login.denied', actorEmail: authReq.auth.email,
           actorUserId: authReq.auth.legacyUserId,
-          metadata:    { reason: 'inactive_or_not_found' },
-          req,
+          metadata: { reason: 'inactive_or_not_found' }, req,
         });
         res.status(403).json({ error: "Account inactive or not found" });
       }
@@ -544,13 +539,9 @@ async function startServer() {
     }
   });
 
-  // ── Signed URL endpoint ───────────────────────────────────────────────────
   app.get("/api/notes/:id/signed-url", requireAuth, async (req, res) => {
     try {
-      const note = await queryOne(
-        "SELECT storage_path FROM notes WHERE id=$1",
-        [req.params.id]
-      );
+      const note = await queryOne("SELECT storage_path FROM notes WHERE id=$1", [req.params.id]);
       if (!note) return res.status(404).json({ error: "Note not found" });
       if (!note.storage_path) return res.status(404).json({ error: "File not stored" });
       const url = await getSignedUrl(NOTES_BUCKET, note.storage_path, 900);
@@ -640,6 +631,21 @@ async function startServer() {
           "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
           [req.params.id, title, description, due_date, max_points, rubric, status]
         );
+        // P3-4: notify all enrolled students of the new assignment
+        if (status === 'active') {
+          const enrolled = await query(
+            `SELECT e.student_id FROM enrollments e
+             JOIN modules m ON m.course_id = e.course_id
+             WHERE m.id = $1`,
+            [req.params.id]
+          );
+          for (const r of enrolled) {
+            notify(pool, r.student_id, 'new_assignment',
+              `New assignment posted: "${title}"`,
+              { assignmentId: result.lastInsertId, moduleId: req.params.id }
+            );
+          }
+        }
         res.json({ id: result.lastInsertId });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
@@ -661,19 +667,13 @@ async function startServer() {
     }
   );
 
-  // P3-1: audit assignment.archive
   app.delete("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       await run("UPDATE assignments SET status='archived' WHERE id=$1", [req.params.id]);
       const auth = (req as AuthenticatedRequest).auth;
       writeAudit({
-        action:       'assignment.archive',
-        resourceType: 'assignment',
-        resourceId:   req.params.id,
-        actorUserId:  auth.legacyUserId,
-        actorEmail:   auth.email,
-        actorRole:    auth.role,
-        req,
+        action: 'assignment.archive', resourceType: 'assignment', resourceId: req.params.id,
+        actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role, req,
       });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -774,7 +774,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-1: audit grade.submit
+  // P3-1: audit grade.submit + P3-4: notify student
   app.post(
     "/api/submissions/:id/grade",
     requireAuth, requireRole("instructor", "admin"),
@@ -788,15 +788,23 @@ async function startServer() {
         );
         const auth = (req as AuthenticatedRequest).auth;
         writeAudit({
-          action:       'grade.submit',
-          resourceType: 'submission',
-          resourceId:   req.params.id,
-          actorUserId:  auth.legacyUserId,
-          actorEmail:   auth.email,
-          actorRole:    auth.role,
-          metadata:     { grade },
-          req,
+          action: 'grade.submit', resourceType: 'submission', resourceId: req.params.id,
+          actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
+          metadata: { grade }, req,
         });
+        // P3-4: notify the student
+        const sub = await queryOne(
+          `SELECT s.student_id, a.title as assignment_title
+           FROM submissions s JOIN assignments a ON s.assignment_id = a.id
+           WHERE s.id = $1`,
+          [req.params.id]
+        );
+        if (sub) {
+          notify(pool, sub.student_id, 'grade_posted',
+            `Your submission for "${sub.assignment_title}" has been graded: ${grade}%`,
+            { submissionId: req.params.id, grade }
+          );
+        }
         res.json({ success: true });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
@@ -807,14 +815,10 @@ async function startServer() {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
-
-      const text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-
+      const text       = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
       const ext        = path.extname(file.originalname).toLowerCase();
       const objectPath = `module/${req.params.id}/${Date.now()}${ext}`;
-
       const storedPath = await uploadToStorage(NOTES_BUCKET, objectPath, file.buffer, file.mimetype);
-
       const result = await run(
         `INSERT INTO notes
            (student_id, module_id, filename, original_name, storage_path, content_text, file_type)
@@ -822,7 +826,6 @@ async function startServer() {
         [req.params.id, file.originalname, file.originalname, storedPath, text, file.mimetype]
       );
       const noteId = result.lastInsertId;
-
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
@@ -838,13 +841,7 @@ async function startServer() {
           console.error("[notes] embedding error (non-fatal):", embErr);
         }
       }
-
-      res.json({
-        id: noteId,
-        original_name: file.originalname,
-        chunk_count:   chunks.length,
-        text_length:   text.length,
-      });
+      res.json({ id: noteId, original_name: file.originalname, chunk_count: chunks.length, text_length: text.length });
     } catch (e: any) {
       console.error("[POST /api/modules/:id/notes] error:", e.message);
       res.status(500).json({ error: e.message });
@@ -855,8 +852,7 @@ async function startServer() {
     try {
       const notes = await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
-               n.storage_path,
-               m.name as module_name, c.name as course_name,
+               n.storage_path, m.name as module_name, c.name as course_name,
                (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
         FROM notes n
         JOIN modules m ON n.module_id = m.id
@@ -873,7 +869,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-1: audit note.delete
   app.delete("/api/notes/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const note = await queryOne("SELECT storage_path, original_name FROM notes WHERE id=$1", [req.params.id]);
@@ -882,14 +877,9 @@ async function startServer() {
       await run("DELETE FROM notes WHERE id=$1",            [req.params.id]);
       const auth = (req as AuthenticatedRequest).auth;
       writeAudit({
-        action:       'note.delete',
-        resourceType: 'note',
-        resourceId:   req.params.id,
-        actorUserId:  auth.legacyUserId,
-        actorEmail:   auth.email,
-        actorRole:    auth.role,
-        metadata:     { original_name: note?.original_name ?? null },
-        req,
+        action: 'note.delete', resourceType: 'note', resourceId: req.params.id,
+        actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
+        metadata: { original_name: note?.original_name ?? null }, req,
       });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -899,16 +889,13 @@ async function startServer() {
     try {
       const notes = await query(`
         SELECT n.id, n.original_name, n.file_type, n.uploaded_at, n.module_id,
-               n.storage_path,
-               m.name as module_name, c.name as course_name,
+               n.storage_path, m.name as module_name, c.name as course_name,
                (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id) as chunk_count
         FROM notes n
         JOIN modules m ON n.module_id = m.id
         JOIN courses c ON m.course_id = c.id
         JOIN enrollments e ON e.course_id = c.id
-        WHERE e.student_id = $1
-          AND n.student_id IS NULL
-          AND c.archived = 0
+        WHERE e.student_id = $1 AND n.student_id IS NULL AND c.archived = 0
         ORDER BY n.uploaded_at DESC
       `, [req.params.id]);
       const withUrls = await Promise.all(notes.map(async (n: any) => {
@@ -996,12 +983,11 @@ async function startServer() {
             AND a.due_date IS NOT NULL AND s.submitted_at::date > a.due_date::date
         `, [studentId, course.id]);
         return {
-          course_code:           course.course_code,
-          course_name:           course.course_name,
-          assignments_total:     parseInt(totalRow?.count) || 0,
+          course_code: course.course_code, course_name: course.course_name,
+          assignments_total: parseInt(totalRow?.count) || 0,
           assignments_submitted: grades.length,
-          avg_grade:             avg != null ? Math.round(avg * 10) / 10 : null,
-          late:                  parseInt(lateRow?.count) || 0,
+          avg_grade: avg != null ? Math.round(avg * 10) / 10 : null,
+          late: parseInt(lateRow?.count) || 0,
           grades,
         };
       }));
@@ -1035,7 +1021,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-1: audit user.create
   app.post(
     "/api/admin/users",
     requireAuth, requireRole("admin"),
@@ -1056,25 +1041,16 @@ async function startServer() {
           if (authResult) tempPassword = authResult.tempPassword;
         } catch (authErr: any) {
           await client.query("ROLLBACK");
-          console.error("[POST /api/admin/users] Auth creation failed:", authErr.message);
           return res.status(500).json({ error: `User created in DB but Auth setup failed: ${authErr.message}` });
         }
         await client.query("COMMIT");
         const actor = (req as AuthenticatedRequest).auth;
         writeAudit({
-          action:       'user.create',
-          resourceType: 'user',
-          resourceId:   String(legacyUserId),
-          actorUserId:  actor.legacyUserId,
-          actorEmail:   actor.email,
-          actorRole:    actor.role,
-          metadata:     { email, role, name },
-          req,
+          action: 'user.create', resourceType: 'user', resourceId: String(legacyUserId),
+          actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+          metadata: { email, role, name }, req,
         });
-        res.json({
-          id: legacyUserId,
-          tempPassword: tempPassword ?? "(Auth user already existed — no new password set)",
-        });
+        res.json({ id: legacyUserId, tempPassword: tempPassword ?? "(Auth user already existed — no new password set)" });
       } catch (e: any) {
         await client.query("ROLLBACK").catch(() => {});
         res.status(400).json({ error: "Email already exists" });
@@ -1084,7 +1060,6 @@ async function startServer() {
     }
   );
 
-  // P3-1: audit user.update
   app.put(
     "/api/admin/users/:id",
     requireAuth, requireRole("admin"),
@@ -1098,14 +1073,9 @@ async function startServer() {
         );
         const actor = (req as AuthenticatedRequest).auth;
         writeAudit({
-          action:       'user.update',
-          resourceType: 'user',
-          resourceId:   req.params.id,
-          actorUserId:  actor.legacyUserId,
-          actorEmail:   actor.email,
-          actorRole:    actor.role,
-          metadata:     { name, email, role, active },
-          req,
+          action: 'user.update', resourceType: 'user', resourceId: req.params.id,
+          actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+          metadata: { name, email, role, active }, req,
         });
         res.json({ success: true });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -1116,14 +1086,11 @@ async function startServer() {
     try {
       res.json(await query(`
         SELECT c.id, c.code, c.name, c.archived, c.created_at,
-               u.id   AS instructor_id,
-               u.name AS instructor_name,
+               u.id AS instructor_id, u.name AS instructor_name,
                (SELECT COUNT(*) FROM enrollments e WHERE e.course_id = c.id) AS enrollment_count,
                (SELECT COUNT(*) FROM modules m WHERE m.course_id = c.id)     AS module_count
-        FROM courses c
-        JOIN users u ON c.instructor_id = u.id
-        WHERE c.archived = 0
-        ORDER BY c.created_at DESC
+        FROM courses c JOIN users u ON c.instructor_id = u.id
+        WHERE c.archived = 0 ORDER BY c.created_at DESC
       `));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -1152,25 +1119,17 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-2: admin stats — read from latest fresh snapshot, fall back to live query
   app.get("/api/admin/stats", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
-      const snap = await queryOne(
-        `SELECT * FROM admin_stats_snapshots
-         ORDER BY snapshotted_at DESC LIMIT 1`
-      );
+      const snap = await queryOne(`SELECT * FROM admin_stats_snapshots ORDER BY snapshotted_at DESC LIMIT 1`);
       if (snap && Date.now() - new Date(snap.snapshotted_at).getTime() < SNAPSHOT_STALE_MS) {
         return res.json({
-          activeUsers:      snap.active_users,
-          totalCourses:     snap.total_courses,
-          averageGrade:     snap.average_grade,
-          totalNotes:       snap.total_notes,
+          activeUsers: snap.active_users, totalCourses: snap.total_courses,
+          averageGrade: snap.average_grade, totalNotes: snap.total_notes,
           totalSubmissions: snap.total_submissions,
-          _source:          'snapshot',
-          _snapshotted_at:  snap.snapshotted_at,
+          _source: 'snapshot', _snapshotted_at: snap.snapshotted_at,
         });
       }
-      // Fallback: live query
       const [activeUsers, totalCourses, avgGrade, totalNotes, totalSubmissions] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM users WHERE active=1"),
         queryOne("SELECT COUNT(*) as count FROM courses WHERE archived=0"),
@@ -1179,20 +1138,19 @@ async function startServer() {
         queryOne("SELECT COUNT(*) as count FROM submissions"),
       ]);
       res.json({
-        activeUsers:      parseInt(activeUsers?.count)      || 0,
-        totalCourses:     parseInt(totalCourses?.count)     || 0,
-        averageGrade:     Math.round(parseFloat(avgGrade?.avg) || 0),
-        totalNotes:       parseInt(totalNotes?.count)       || 0,
+        activeUsers: parseInt(activeUsers?.count) || 0,
+        totalCourses: parseInt(totalCourses?.count) || 0,
+        averageGrade: Math.round(parseFloat(avgGrade?.avg) || 0),
+        totalNotes: parseInt(totalNotes?.count) || 0,
         totalSubmissions: parseInt(totalSubmissions?.count) || 0,
-        _source:          'live',
+        _source: 'live',
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.get("/api/admin/settings", requireAuth, requireRole("admin"), async (_req, res) => {
-    try {
-      res.json(await query("SELECT * FROM settings"));
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    try { res.json(await query("SELECT * FROM settings")); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   app.post(
@@ -1233,6 +1191,14 @@ async function startServer() {
           [course_id, student_id]
         );
         if (!result.lastInsertId) return res.status(409).json({ error: "Already enrolled" });
+        // P3-4: notify student of enrollment
+        const course = await queryOne("SELECT name FROM courses WHERE id=$1", [course_id]);
+        if (course) {
+          notify(pool, student_id, 'enrollment_confirmed',
+            `You have been enrolled in "${course.name}"`,
+            { courseId: course_id }
+          );
+        }
         res.json({ id: result.lastInsertId });
       } catch (e: any) { res.status(400).json({ error: e.message }); }
     }
@@ -1245,7 +1211,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-1: audit enrollment.bulk
   app.post(
     "/api/admin/bulk-enroll",
     requireAuth, requireRole("admin"),
@@ -1255,27 +1220,15 @@ async function startServer() {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-
         const results: Array<{
-          email: string;
-          student_id: number;
-          enrolled: boolean;
-          newUser: boolean;
-          tempPassword?: string;
+          email: string; student_id: number; enrolled: boolean; newUser: boolean; tempPassword?: string;
         }> = [];
-
         for (const email of emails) {
           const trimmed = email.trim().toLowerCase();
           if (!trimmed) continue;
-
-          let userRow = (await client.query(
-            "SELECT id, name FROM users WHERE email = $1",
-            [trimmed]
-          )).rows[0];
-
+          let userRow = (await client.query("SELECT id, name FROM users WHERE email = $1", [trimmed])).rows[0];
           let isNewUser = false;
           let tempPassword: string | undefined;
-
           if (!userRow) {
             const name = trimmed.split("@")[0].replace(/[._]/g, " ");
             const r = await client.query(
@@ -1285,54 +1238,42 @@ async function startServer() {
             userRow = r.rows[0] ??
               (await client.query("SELECT id, name FROM users WHERE email = $1", [trimmed])).rows[0];
             isNewUser = true;
-
             try {
-              const authResult = await createAuthUserAndIdentityMapRow(
-                client, userRow.id, trimmed, "student"
-              );
+              const authResult = await createAuthUserAndIdentityMapRow(client, userRow.id, trimmed, "student");
               if (authResult) tempPassword = authResult.tempPassword;
             } catch (authErr: any) {
               await client.query("ROLLBACK");
-              console.error(`[bulk-enroll] Auth creation FAILED for ${trimmed}:`, authErr.message);
               return res.status(500).json({
                 error: `Failed to create Auth account for ${trimmed}: ${authErr.message}. No users were enrolled.`,
               });
             }
           }
-
           const r = await client.query(
             "INSERT INTO enrollments (course_id, student_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
             [course_id, userRow.id]
           );
-
-          results.push({
-            email:      trimmed,
-            student_id: userRow.id,
-            enrolled:   r.rows.length > 0,
-            newUser:    isNewUser,
-            ...(tempPassword ? { tempPassword } : {}),
-          });
+          results.push({ email: trimmed, student_id: userRow.id, enrolled: r.rows.length > 0, newUser: isNewUser, ...(tempPassword ? { tempPassword } : {}) });
         }
-
         await client.query("COMMIT");
-
         const enrolled = results.filter(r => r.enrolled).length;
         const created  = results.filter(r => r.newUser).length;
-
         const actor = (req as AuthenticatedRequest).auth;
         writeAudit({
-          action:       'enrollment.bulk',
-          resourceType: 'course',
-          resourceId:   String(course_id),
-          actorUserId:  actor.legacyUserId,
-          actorEmail:   actor.email,
-          actorRole:    actor.role,
-          metadata:     { enrolled, created, emailCount: emails.length },
-          req,
+          action: 'enrollment.bulk', resourceType: 'course', resourceId: String(course_id),
+          actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+          metadata: { enrolled, created, emailCount: emails.length }, req,
         });
-
+        // P3-4: notify each newly enrolled student
+        const course = await queryOne("SELECT name FROM courses WHERE id=$1", [course_id]);
+        if (course) {
+          for (const r of results.filter(x => x.enrolled)) {
+            notify(pool, r.student_id, 'enrollment_confirmed',
+              `You have been enrolled in "${course.name}"`,
+              { courseId: course_id }
+            );
+          }
+        }
         res.json({ enrolled, created, results });
-
       } catch (e: any) {
         await client.query("ROLLBACK").catch(() => {});
         res.status(500).json({ error: e.message });
@@ -1354,89 +1295,49 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-2: course analytics — read from latest fresh snapshot, fall back to live query
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const courseId = req.params.id;
-
       const snap = await queryOne(
-        `SELECT * FROM course_analytics_snapshots
-         WHERE course_id = $1
-         ORDER BY snapshotted_at DESC LIMIT 1`,
+        `SELECT * FROM course_analytics_snapshots WHERE course_id = $1 ORDER BY snapshotted_at DESC LIMIT 1`,
         [courseId]
       );
-
       if (snap && Date.now() - new Date(snap.snapshotted_at).getTime() < SNAPSHOT_STALE_MS) {
-        const students: any[] = typeof snap.students === 'string'
-          ? JSON.parse(snap.students)
-          : snap.students;
+        const students: any[] = typeof snap.students === 'string' ? JSON.parse(snap.students) : snap.students;
         return res.json({
-          enrollments:     snap.enrollment_count,
-          averageGrade:    snap.average_grade,
-          students,
-          _source:         'snapshot',
-          _snapshotted_at: snap.snapshotted_at,
+          enrollments: snap.enrollment_count, averageGrade: snap.average_grade, students,
+          _source: 'snapshot', _snapshotted_at: snap.snapshotted_at,
         });
       }
-
-      // Fallback: live query
       const [enrollmentCount, avgGradeRow] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM enrollments WHERE course_id=$1", [courseId]),
-        queryOne(
-          `SELECT AVG(s.grade) as avg
-           FROM submissions s
-           JOIN assignments a ON s.assignment_id = a.id
-           JOIN modules m ON a.module_id = m.id
-           WHERE m.course_id = $1 AND s.grade IS NOT NULL`,
-          [courseId]
-        ),
+        queryOne(`SELECT AVG(s.grade) as avg FROM submissions s JOIN assignments a ON s.assignment_id = a.id JOIN modules m ON a.module_id = m.id WHERE m.course_id = $1 AND s.grade IS NOT NULL`, [courseId]),
       ]);
-
       const studentRows = await query(`
-        SELECT
-          u.id                                          AS student_id,
-          u.name,
-          ROUND(AVG(s.grade)::numeric, 1)               AS avg_grade,
-          COUNT(s.id)                                   AS submission_count,
-          COUNT(CASE
-            WHEN a.due_date IS NOT NULL
-             AND s.submitted_at::date > a.due_date::date
-            THEN 1 END)                                 AS late,
-          (
-            SELECT COUNT(*)
-            FROM assignments a2
-            JOIN modules m2 ON a2.module_id = m2.id
-            WHERE m2.course_id = $1
-              AND a2.status = 'active'
-              AND NOT EXISTS (
-                SELECT 1 FROM submissions s2
-                WHERE s2.assignment_id = a2.id AND s2.student_id = u.id
-              )
-          )                                             AS missed
+        SELECT u.id AS student_id, u.name,
+          ROUND(AVG(s.grade)::numeric, 1) AS avg_grade,
+          COUNT(s.id) AS submission_count,
+          COUNT(CASE WHEN a.due_date IS NOT NULL AND s.submitted_at::date > a.due_date::date THEN 1 END) AS late,
+          (SELECT COUNT(*) FROM assignments a2 JOIN modules m2 ON a2.module_id = m2.id
+           WHERE m2.course_id = $1 AND a2.status = 'active'
+             AND NOT EXISTS (SELECT 1 FROM submissions s2 WHERE s2.assignment_id = a2.id AND s2.student_id = u.id)
+          ) AS missed
         FROM enrollments e
         JOIN users u ON e.student_id = u.id
         LEFT JOIN submissions s ON s.student_id = u.id
-          AND EXISTS (
-            SELECT 1 FROM assignments a
-            JOIN modules m ON a.module_id = m.id
-            WHERE a.id = s.assignment_id AND m.course_id = $1
-          )
+          AND EXISTS (SELECT 1 FROM assignments a JOIN modules m ON a.module_id = m.id WHERE a.id = s.assignment_id AND m.course_id = $1)
         LEFT JOIN assignments a ON a.id = s.assignment_id
         WHERE e.course_id = $1
-        GROUP BY u.id, u.name
-        ORDER BY u.name
+        GROUP BY u.id, u.name ORDER BY u.name
       `, [courseId]);
-
       res.json({
-        enrollments:  parseInt(enrollmentCount?.count) || 0,
+        enrollments: parseInt(enrollmentCount?.count) || 0,
         averageGrade: Math.round(parseFloat(avgGradeRow?.avg) || 0),
         students: studentRows.map((r: any) => ({
-          student_id:       r.student_id,
-          name:             r.name,
-          avg_grade:        r.avg_grade != null ? parseFloat(r.avg_grade) : 0,
+          student_id: r.student_id, name: r.name,
+          avg_grade: r.avg_grade != null ? parseFloat(r.avg_grade) : 0,
           submission_count: parseInt(r.submission_count) || 0,
-          late:             parseInt(r.late) || 0,
-          missed:           parseInt(r.missed) || 0,
+          late: parseInt(r.late) || 0, missed: parseInt(r.missed) || 0,
         })),
         _source: 'live',
       });
@@ -1454,6 +1355,21 @@ async function startServer() {
           "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
           [module_id, title, description, due_date, max_points, rubric, status]
         );
+        // P3-4: notify enrolled students
+        if (status === 'active') {
+          const enrolled = await query(
+            `SELECT e.student_id FROM enrollments e
+             JOIN modules m ON m.course_id = e.course_id
+             WHERE m.id = $1`,
+            [module_id]
+          );
+          for (const r of enrolled) {
+            notify(pool, r.student_id, 'new_assignment',
+              `New assignment posted: "${title}"`,
+              { assignmentId: result.lastInsertId, moduleId: module_id }
+            );
+          }
+        }
         res.json({ id: result.lastInsertId });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
@@ -1507,10 +1423,7 @@ async function startServer() {
             notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
         }
         const fallbackRubricRow = submission
-          ? await queryOne(
-              "SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)",
-              [submission_id]
-            )
+          ? await queryOne("SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)", [submission_id])
           : null;
         const effectiveRubric = rubric || fallbackRubricRow?.rubric || "Grade on overall quality, correctness, and clarity.";
         const raw = await nimChat([
