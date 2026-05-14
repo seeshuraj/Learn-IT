@@ -41,30 +41,42 @@ validateEnv();
 
 dns.setDefaultResultOrder("ipv4first");
 
-// ── Supabase Storage (P1-5) ───────────────────────────────────────────────
-const SUPABASE_URL            = process.env.SUPABASE_URL ?? "";
-const SUPABASE_SERVICE_ROLE   = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-const NOTES_BUCKET            = "learnit-notes";
-const SUBMISSIONS_BUCKET      = "learnit-submissions";
-const SIGNED_URL_TTL          = 3600;
+// ── Supabase Storage ──────────────────────────────────────────────────────
+const SUPABASE_URL          = process.env.SUPABASE_URL ?? "";
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+const NOTES_BUCKET          = "learnit-notes";
+const SUBMISSIONS_BUCKET    = "learnit-submissions";
+const SIGNED_URL_TTL        = 3600;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
+// ── Storage helpers ───────────────────────────────────────────────────────
+
+/**
+ * Upload a buffer to Supabase Storage.
+ * THROWS on failure — callers must not swallow the error or insert broken DB rows.
+ */
 async function uploadToStorage(
   bucket: string,
   objectPath: string,
   buffer: Buffer,
   mimetype: string
-): Promise<string | null> {
+): Promise<string> {
   const { error } = await supabaseAdmin.storage
     .from(bucket)
     .upload(objectPath, buffer, { contentType: mimetype, upsert: true });
+
   if (error) {
-    console.error(`[Storage] upload error (${bucket}/${objectPath}):`, error.message);
-    return null;
+    console.error(`[Storage] upload FAILED (${bucket}/${objectPath})`, {
+      message: error.message,
+      name: (error as any).name ?? "StorageError",
+      statusCode: (error as any).statusCode,
+    });
+    throw new Error(`Storage upload failed: ${error.message}`);
   }
+
   console.log(`[Storage] uploaded → ${bucket}/${objectPath}`);
   return objectPath;
 }
@@ -106,13 +118,32 @@ async function deleteFromStorage(bucket: string, objectPath: string): Promise<vo
   else console.log(`[Storage] deleted ${bucket}/${objectPath}`);
 }
 
+/** Ping Supabase Storage on startup so misconfigured env fails loudly. */
+async function checkStorageConnectivity(): Promise<void> {
+  const testKey = `_healthcheck/${Date.now()}.txt`;
+  try {
+    const { error: upErr } = await supabaseAdmin.storage
+      .from(NOTES_BUCKET)
+      .upload(testKey, Buffer.from("ping"), { contentType: "text/plain", upsert: true });
+    if (upErr) throw upErr;
+    await supabaseAdmin.storage.from(NOTES_BUCKET).remove([testKey]);
+    console.log("[Storage] connectivity OK — learnit-notes bucket reachable");
+  } catch (e: any) {
+    console.error("[Storage] CONNECTIVITY FAIL — check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY", {
+      message: e.message,
+      name: e.name,
+      statusCode: e.statusCode,
+    });
+  }
+}
+
 const require = createRequire(import.meta.url);
 const multer   = require("multer");
 const pdfParse = require("pdf-parse");
 const mammoth  = require("mammoth");
 
-const __filename  = fileURLToPath(import.meta.url);
-const __dirname   = path.dirname(__filename);
+const __filename   = fileURLToPath(import.meta.url);
+const __dirname    = path.dirname(__filename);
 const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -146,28 +177,44 @@ function sanitizeText(t: string) {
     .replace(/\uFFFD/g, "");
 }
 
+// Keep UPLOADS_DIR for grade-pdf tmp files only (submissions downloaded from storage)
 const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-const memStorage = multer.memoryStorage();
-const uploadNote       = multer({ storage: memStorage, limits: { fileSize: 20 * 1024 * 1024 } });
+const memStorage      = multer.memoryStorage();
+const uploadNote      = multer({ storage: memStorage, limits: { fileSize: 20 * 1024 * 1024 } });
 const uploadSubmission = multer({ storage: memStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 
+/**
+ * Extract text directly from a Buffer — no temp files needed.
+ * pdf-parse and mammoth both accept Buffer natively.
+ */
 async function extractTextFromBuffer(
   buffer: Buffer,
   mimetype: string,
   originalname: string
 ): Promise<string> {
-  const ext     = path.extname(originalname).toLowerCase();
-  const tmpPath = path.join(UPLOADS_DIR, `tmp-${Date.now()}${ext}`);
-  fs.writeFileSync(tmpPath, buffer);
+  const ext = path.extname(originalname).toLowerCase();
   try {
-    return await extractText(tmpPath, mimetype);
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch (_) {}
+    if (ext === ".pdf" || mimetype === "application/pdf") {
+      const data = await pdfParse(buffer);
+      return sanitizeText(data.text ?? "");
+    }
+    if (ext === ".docx" || mimetype.includes("wordprocessingml")) {
+      const result = await mammoth.extractRawText({ buffer });
+      return sanitizeText(result.value ?? "");
+    }
+    if (ext === ".txt" || mimetype === "text/plain") {
+      return sanitizeText(buffer.toString("utf-8"));
+    }
+    return "";
+  } catch (e) {
+    console.error("[extractTextFromBuffer] error:", e);
+    return "";
   }
 }
 
+/** Used only by grade-pdf which downloads from storage first (needs a file path). */
 async function extractText(filePath: string, mimetype: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
   try {
@@ -185,7 +232,7 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
     }
     return "";
   } catch (e) {
-    console.error("Text extraction error:", e);
+    console.error("[extractText] error:", e);
     return "";
   }
 }
@@ -329,7 +376,7 @@ async function startServer() {
 
   app.use(express.json());
 
-  // ── Health (public) ───────────────────────────────────────────────────
+  // ── Health ────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
     try {
       await pool.query("SELECT 1");
@@ -342,7 +389,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── Auth (P1-4) ───────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────────
   app.post("/api/login", requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -355,7 +402,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── File proxy (P1-5) ─────────────────────────────────────────────────
+  // ── File proxy ────────────────────────────────────────────────────────
   app.get("/api/notes/:id/proxy", requireAuth, async (req, res) => {
     try {
       const note = await queryOne(
@@ -363,20 +410,33 @@ async function startServer() {
         [req.params.id]
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
-      if (note.storage_path) {
-        const result = await downloadFromStorage(NOTES_BUCKET, note.storage_path);
-        if (!result) return res.status(502).json({ error: "Failed to fetch from storage" });
-        const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
-        res.setHeader("Content-Type",        note.file_type || result.contentType);
-        res.setHeader("Content-Disposition", disposition);
-        res.setHeader("Content-Length",      result.buffer.length);
-        return res.send(result.buffer);
-      }
-      res.status(404).json({ error: "File not found" });
+      if (!note.storage_path) return res.status(404).json({ error: "File not stored — upload may have failed" });
+      const result = await downloadFromStorage(NOTES_BUCKET, note.storage_path);
+      if (!result) return res.status(502).json({ error: "Failed to fetch from Supabase Storage" });
+      const disposition = `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`;
+      res.setHeader("Content-Type",        note.file_type || result.contentType);
+      res.setHeader("Content-Disposition", disposition);
+      res.setHeader("Content-Length",      result.buffer.length);
+      return res.send(result.buffer);
     } catch (e: any) {
       console.error("[proxy] error:", e.message);
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Signed URL endpoint (lightweight alternative to proxy) ────────────
+  app.get("/api/notes/:id/signed-url", requireAuth, async (req, res) => {
+    try {
+      const note = await queryOne(
+        "SELECT storage_path FROM notes WHERE id=$1",
+        [req.params.id]
+      );
+      if (!note) return res.status(404).json({ error: "Note not found" });
+      if (!note.storage_path) return res.status(404).json({ error: "File not stored" });
+      const url = await getSignedUrl(NOTES_BUCKET, note.storage_path, 900); // 15 min
+      if (!url) return res.status(502).json({ error: "Could not generate signed URL" });
+      res.json({ url });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // ── Courses ────────────────────────────────────────────────────────────
@@ -531,14 +591,20 @@ async function startServer() {
       for (const file of files) {
         const ext        = path.extname(file.originalname).toLowerCase();
         const objectPath = `submission/${submissionId}/${Date.now()}${ext}`;
-        const storedPath = await uploadToStorage(
-          SUBMISSIONS_BUCKET, objectPath, file.buffer, file.mimetype
-        );
-        await run(
-          "INSERT INTO submission_files (submission_id,filename,original_name,file_type,storage_path) VALUES ($1,$2,$3,$4,$5)",
-          [submissionId, file.originalname, file.originalname, file.mimetype, storedPath ?? ""]
-        );
-        savedFiles.push({ filename: file.originalname, original_name: file.originalname, storage_path: storedPath });
+        try {
+          const storedPath = await uploadToStorage(
+            SUBMISSIONS_BUCKET, objectPath, file.buffer, file.mimetype
+          );
+          await run(
+            "INSERT INTO submission_files (submission_id,filename,original_name,file_type,storage_path) VALUES ($1,$2,$3,$4,$5)",
+            [submissionId, file.originalname, file.originalname, file.mimetype, storedPath]
+          );
+          savedFiles.push({ filename: file.originalname, original_name: file.originalname, storage_path: storedPath });
+        } catch (uploadErr: any) {
+          console.error(`[submissions/upload] file upload failed for ${file.originalname}:`, uploadErr.message);
+          // Continue with other files but report failure
+          savedFiles.push({ filename: file.originalname, error: uploadErr.message });
+        }
       }
       res.json({ id: submissionId, files: savedFiles });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -593,22 +659,29 @@ async function startServer() {
     }
   );
 
-  // ── Notes (P1-5) ──────────────────────────────────────────────────────
+  // ── Notes ─────────────────────────────────────────────────────────────
   app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
+
+      // Extract text from buffer directly — no temp files
       const text = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
+
       const ext        = path.extname(file.originalname).toLowerCase();
       const objectPath = `module/${req.params.id}/${Date.now()}${ext}`;
+
+      // uploadToStorage throws on failure — ensures we never insert a broken note row
       const storedPath = await uploadToStorage(NOTES_BUCKET, objectPath, file.buffer, file.mimetype);
+
       const result = await run(
         `INSERT INTO notes
            (student_id, module_id, filename, original_name, storage_path, content_text, file_type)
          VALUES (NULL,$1,$2,$3,$4,$5,$6) RETURNING id`,
-        [req.params.id, file.originalname, file.originalname, storedPath ?? "", text, file.mimetype]
+        [req.params.id, file.originalname, file.originalname, storedPath, text, file.mimetype]
       );
       const noteId = result.lastInsertId;
+
       const chunks = chunkText(text);
       if (chunks.length > 0) {
         try {
@@ -621,17 +694,21 @@ async function startServer() {
           }
           console.log(`[notes] embedded ${chunks.length} chunks for note ${noteId}`);
         } catch (embErr) {
-          console.error("[notes] embedding error:", embErr);
+          console.error("[notes] embedding error (non-fatal):", embErr);
         }
       }
+
       res.json({
         id: noteId,
         original_name: file.originalname,
         chunk_count:   chunks.length,
         text_length:   text.length,
-        storage_path:  storedPath ?? null,
+        storage_path:  storedPath,
       });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) {
+      console.error("[POST /api/modules/:id/notes] error:", e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.get("/api/modules/:id/notes", requireAuth, async (req, res) => {
@@ -1145,9 +1222,11 @@ async function startServer() {
   }
 
   const PORT = Number(process.env.PORT ?? 3000);
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`\nLearnIT API  →  http://localhost:${PORT}  [${process.env.NODE_ENV ?? "development"}]  (PostgreSQL + Supabase Storage)`);
     if (!isProduction) console.log(`LearnIT App  →  http://localhost:5173  (Vite dev server)\n`);
+    // Verify storage credentials on startup
+    await checkStorageConnectivity();
   });
 }
 
