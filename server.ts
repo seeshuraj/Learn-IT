@@ -47,6 +47,7 @@ import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
 import { startCronJobs } from "./src/server/jobs/cron.js";
 import { createRoadmapRouter } from "./src/server/routes/roadmaps.js";
 import { createNotificationsRouter } from "./src/server/routes/notifications.js";
+import { createAuthRouter } from "./src/server/routes/auth.js";
 import { notify } from "./src/server/lib/notify.js";
 
 dotenv.config();
@@ -185,13 +186,16 @@ async function createAuthUserAndIdentityMapRow(
   const authUserId = authData.user.id;
 
   await client.query(
-    `INSERT INTO user_identity_map (legacy_user_id, auth_user_id, role)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (legacy_user_id) DO UPDATE SET auth_user_id = EXCLUDED.auth_user_id, role = EXCLUDED.role`,
+    `INSERT INTO user_identity_map (legacy_user_id, auth_user_id, role, force_password_change)
+     VALUES ($1, $2, $3, TRUE)
+     ON CONFLICT (legacy_user_id) DO UPDATE
+       SET auth_user_id = EXCLUDED.auth_user_id,
+           role = EXCLUDED.role,
+           force_password_change = TRUE`,
     [legacyUserId, authUserId, role]
   );
 
-  console.log(`[Auth] created Auth user ${authUserId} → legacy ${legacyUserId} (${email})`);
+  console.log(`[Auth] created Auth user ${authUserId} → legacy ${legacyUserId} (${email}) [force_password_change=true]`);
   return { authUserId, tempPassword };
 }
 
@@ -437,8 +441,11 @@ async function startServer() {
   // ── P3-3: Student Roadmaps ────────────────────────────────────────────────
   app.use("/api/roadmaps", createRoadmapRouter(pool, nimChat));
 
-  // ── P3-4: Notifications ─────────────────────────────────────────────────
+  // ── P3-4: Notifications ───────────────────────────────────────────────────
   app.use("/api/notifications", createNotificationsRouter(pool));
+
+  // ── P3-5: Auth (password reset / force-change) ────────────────────────────
+  app.use("/api/auth", createAuthRouter(pool));
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
@@ -491,7 +498,7 @@ async function startServer() {
     });
   });
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // ── Auth login ────────────────────────────────────────────────────────────
   app.post("/api/login", loginLimiter, requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -631,7 +638,6 @@ async function startServer() {
           "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
           [req.params.id, title, description, due_date, max_points, rubric, status]
         );
-        // P3-4: notify all enrolled students of the new assignment
         if (status === 'active') {
           const enrolled = await query(
             `SELECT e.student_id FROM enrollments e
@@ -774,7 +780,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P3-1: audit grade.submit + P3-4: notify student
   app.post(
     "/api/submissions/:id/grade",
     requireAuth, requireRole("instructor", "admin"),
@@ -792,7 +797,6 @@ async function startServer() {
           actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
           metadata: { grade }, req,
         });
-        // P3-4: notify the student
         const sub = await queryOne(
           `SELECT s.student_id, a.title as assignment_title
            FROM submissions s JOIN assignments a ON s.assignment_id = a.id
@@ -1037,6 +1041,7 @@ async function startServer() {
         const legacyUserId: number = r.rows[0].id;
         let tempPassword: string | null = null;
         try {
+          // P3-5: sets force_password_change=TRUE in createAuthUserAndIdentityMapRow
           const authResult = await createAuthUserAndIdentityMapRow(client, legacyUserId, email, role);
           if (authResult) tempPassword = authResult.tempPassword;
         } catch (authErr: any) {
@@ -1191,7 +1196,6 @@ async function startServer() {
           [course_id, student_id]
         );
         if (!result.lastInsertId) return res.status(409).json({ error: "Already enrolled" });
-        // P3-4: notify student of enrollment
         const course = await queryOne("SELECT name FROM courses WHERE id=$1", [course_id]);
         if (course) {
           notify(pool, student_id, 'enrollment_confirmed',
@@ -1239,6 +1243,7 @@ async function startServer() {
               (await client.query("SELECT id, name FROM users WHERE email = $1", [trimmed])).rows[0];
             isNewUser = true;
             try {
+              // P3-5: force_password_change set inside createAuthUserAndIdentityMapRow
               const authResult = await createAuthUserAndIdentityMapRow(client, userRow.id, trimmed, "student");
               if (authResult) tempPassword = authResult.tempPassword;
             } catch (authErr: any) {
@@ -1263,7 +1268,6 @@ async function startServer() {
           actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
           metadata: { enrolled, created, emailCount: emails.length }, req,
         });
-        // P3-4: notify each newly enrolled student
         const course = await queryOne("SELECT name FROM courses WHERE id=$1", [course_id]);
         if (course) {
           for (const r of results.filter(x => x.enrolled)) {
@@ -1355,7 +1359,6 @@ async function startServer() {
           "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
           [module_id, title, description, due_date, max_points, rubric, status]
         );
-        // P3-4: notify enrolled students
         if (status === 'active') {
           const enrolled = await query(
             `SELECT e.student_id FROM enrollments e
