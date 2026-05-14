@@ -45,6 +45,7 @@ import {
 import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
 import { startCronJobs } from "./src/server/jobs/cron.js";
+import { createRoadmapRouter } from "./src/server/routes/roadmaps.js";
 
 dotenv.config();
 validateEnv();
@@ -433,6 +434,9 @@ async function startServer() {
   });
 
   app.use(express.json());
+
+  // ── P3-3: Student Roadmaps ────────────────────────────────────────────────
+  app.use("/api/roadmaps", createRoadmapRouter(pool, nimChat));
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
