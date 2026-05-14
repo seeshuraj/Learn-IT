@@ -5,13 +5,13 @@ import { waitForSession } from '../services/supabaseClient';
 
 /**
  * DEMO_ACCOUNTS — these emails must exist in Supabase Auth AND in
- * public.user_identity_map. Passwords are set when you create the users
- * in the Supabase Auth dashboard.
+ * public.user_identity_map with is_active = true.
+ * Passwords were reset via SQL: Admin123! / Teach123! / Study123!
  */
 const DEMO_ACCOUNTS = [
-  { role: 'Admin',      email: 'admin@learnit.com',      label: 'Admin' },
-  { role: 'Instructor', email: 'instructor@learnit.com', label: 'Instructor' },
-  { role: 'Student',    email: 'student@learnit.com',    label: 'Student' },
+  { role: 'Admin',      email: 'admin@learnit.edu',      label: 'Admin' },
+  { role: 'Instructor', email: 'instructor@learnit.edu', label: 'Instructor' },
+  { role: 'Student',    email: 'michael@learnit.edu',    label: 'Student' },
 ];
 
 interface LoginPageProps {
@@ -93,7 +93,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 required
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                placeholder="you@learnit.com"
+                placeholder="you@learnit.edu"
                 className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
               />
             </div>
@@ -144,7 +144,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               ))}
             </div>
             <p className="text-xs text-slate-400 mt-2">
-              Click a role to pre-fill the email, enter the password you set in Supabase Auth, then Sign in.
+              Click a role to pre-fill the email, then enter the password and Sign in.
             </p>
           </div>
         </div>
