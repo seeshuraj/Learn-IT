@@ -44,6 +44,7 @@ import {
 } from "./src/server/validation/schemas.js";
 import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
+import { startCronJobs } from "./src/server/jobs/cron.js";
 
 dotenv.config();
 validateEnv();
@@ -400,6 +401,11 @@ async function nimEmbed(
   const data = await res.json() as any;
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }
+
+// ── Snapshot staleness threshold ──────────────────────────────────────────────
+// A snapshot is "fresh" if it was written within the last 35 minutes
+// (30-min cron cadence + 5 min grace for slow runs).
+const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 
 async function startServer() {
   const app = express();
@@ -1142,8 +1148,25 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P3-2: admin stats — read from latest fresh snapshot, fall back to live query
   app.get("/api/admin/stats", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
+      const snap = await queryOne(
+        `SELECT * FROM admin_stats_snapshots
+         ORDER BY snapshotted_at DESC LIMIT 1`
+      );
+      if (snap && Date.now() - new Date(snap.snapshotted_at).getTime() < SNAPSHOT_STALE_MS) {
+        return res.json({
+          activeUsers:      snap.active_users,
+          totalCourses:     snap.total_courses,
+          averageGrade:     snap.average_grade,
+          totalNotes:       snap.total_notes,
+          totalSubmissions: snap.total_submissions,
+          _source:          'snapshot',
+          _snapshotted_at:  snap.snapshotted_at,
+        });
+      }
+      // Fallback: live query
       const [activeUsers, totalCourses, avgGrade, totalNotes, totalSubmissions] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM users WHERE active=1"),
         queryOne("SELECT COUNT(*) as count FROM courses WHERE archived=0"),
@@ -1157,6 +1180,7 @@ async function startServer() {
         averageGrade:     Math.round(parseFloat(avgGrade?.avg) || 0),
         totalNotes:       parseInt(totalNotes?.count)       || 0,
         totalSubmissions: parseInt(totalSubmissions?.count) || 0,
+        _source:          'live',
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -1326,10 +1350,32 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P3-2: course analytics — read from latest fresh snapshot, fall back to live query
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const courseId = req.params.id;
 
+      const snap = await queryOne(
+        `SELECT * FROM course_analytics_snapshots
+         WHERE course_id = $1
+         ORDER BY snapshotted_at DESC LIMIT 1`,
+        [courseId]
+      );
+
+      if (snap && Date.now() - new Date(snap.snapshotted_at).getTime() < SNAPSHOT_STALE_MS) {
+        const students: any[] = typeof snap.students === 'string'
+          ? JSON.parse(snap.students)
+          : snap.students;
+        return res.json({
+          enrollments:     snap.enrollment_count,
+          averageGrade:    snap.average_grade,
+          students,
+          _source:         'snapshot',
+          _snapshotted_at: snap.snapshotted_at,
+        });
+      }
+
+      // Fallback: live query
       const [enrollmentCount, avgGradeRow] = await Promise.all([
         queryOne("SELECT COUNT(*) as count FROM enrollments WHERE course_id=$1", [courseId]),
         queryOne(
@@ -1388,6 +1434,7 @@ async function startServer() {
           late:             parseInt(r.late) || 0,
           missed:           parseInt(r.missed) || 0,
         })),
+        _source: 'live',
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -1542,6 +1589,7 @@ async function startServer() {
     console.log(`\nLearnIT API  →  http://localhost:${PORT}  [${process.env.NODE_ENV ?? "development"}]  (PostgreSQL + Supabase Storage)`);
     if (!isProduction) console.log(`LearnIT App  →  http://localhost:5173  (Vite dev server)\n`);
     await checkStorageConnectivity();
+    startCronJobs(pool);
   });
 }
 
