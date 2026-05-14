@@ -20,6 +20,7 @@ interface StudentStat {
   name: string;
   average: number;
   missed: number;
+  late: number;
   status: string;
 }
 
@@ -38,7 +39,7 @@ function BoldText({ text }: { text: string }) {
   );
 }
 
-// ─── Create Assignment Modal ───────────────────────────────────────────────
+// ─── Create Assignment Modal ─────────────────────────────────────────────────────
 function CreateAssignmentModal({
   courses,
   onClose,
@@ -188,7 +189,7 @@ function CreateAssignmentModal({
   );
 }
 
-// ─── Upload Notes Modal ────────────────────────────────────────────────────
+// ─── Upload Notes Modal ─────────────────────────────────────────────────────────
 function UploadNotesModal({ courses, onClose }: { courses: Course[]; onClose: () => void }) {
   const [courseId, setCourseId] = useState<number | ''>('');
   const [moduleId, setModuleId] = useState<number | ''>('');
@@ -291,7 +292,7 @@ function UploadNotesModal({ courses, onClose }: { courses: Course[]; onClose: ()
   );
 }
 
-// ─── Manage Tab ────────────────────────────────────────────────────────────
+// ─── Manage Tab ───────────────────────────────────────────────────────────────
 function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
   const [courseId, setCourseId] = useState<number | ''>('');
   const [moduleId, setModuleId] = useState<number | ''>('');
@@ -422,8 +423,8 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
   );
 }
 
-// ─── Main Dashboard ────────────────────────────────────────────────────────
-export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
+// ─── Main Dashboard ───────────────────────────────────────────────────────────
+const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [students, setStudents] = useState<StudentStat[]>([]);
@@ -448,24 +449,25 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
       .catch(() => {});
   }
 
+  // P2-11: removed early-exit guard so this always re-fetches fresh data
   function loadStudents() {
-    if (students.length > 0) return;
     setStudentsLoading(true);
-    // Build per-student stats from courses analytics
     Promise.all(
       courses.map((c: Course) => api.getCourseAnalytics(c.id))
     ).then((results: any[]) => {
-      const map = new Map<string, { name: string; total: number; count: number; missed: number }>();
+      // P2-12: track late alongside missed
+      const map = new Map<string, { name: string; total: number; count: number; missed: number; late: number }>();
       results.forEach((r: any) => {
         if (!Array.isArray(r?.students)) return;
         r.students.forEach((s: any) => {
           const key = String(s.student_id ?? s.name);
-          const prev = map.get(key) ?? { name: s.name, total: 0, count: 0, missed: 0 };
+          const prev = map.get(key) ?? { name: s.name, total: 0, count: 0, missed: 0, late: 0 };
           map.set(key, {
-            name: s.name,
-            total: prev.total + (s.avg_grade ?? 0),
-            count: prev.count + 1,
+            name:   s.name,
+            total:  prev.total  + (s.avg_grade ?? 0),
+            count:  prev.count  + 1,
             missed: prev.missed + (s.missed ?? 0),
+            late:   prev.late   + (s.late   ?? 0),
           });
         });
       });
@@ -473,14 +475,17 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
       map.forEach(v => {
         const avg = v.count > 0 ? Math.round(v.total / v.count) : 0;
         list.push({
-          name: v.name,
+          name:    v.name,
           average: avg,
-          missed: v.missed,
-          status: avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
+          missed:  v.missed,
+          late:    v.late,
+          status:  avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
         });
       });
       setStudents(list.sort((a, b) => b.average - a.average));
-      const allAvg = list.length > 0 ? Math.round(list.reduce((s, v) => s + v.average, 0) / list.length) : 0;
+      const allAvg = list.length > 0
+        ? Math.round(list.reduce((s, v) => s + v.average, 0) / list.length)
+        : 0;
       setClassAvg(allAvg);
     }).catch(() => {}).finally(() => setStudentsLoading(false));
   }
@@ -585,9 +590,9 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
-          { label: "Pending Grading", value: submissions.length, sub: "Action required", icon: Clock, color: "indigo" },
-          { label: "Class Average", value: classAvg > 0 ? `${classAvg}%` : '—', sub: "Across all courses", icon: CheckCircle2, color: "emerald" },
-          { label: "At-Risk Students", value: students.filter(s => s.status === 'At Risk').length, sub: "Flagged by AI", icon: AlertCircle, color: "red" },
+          { label: "Pending Grading",  value: submissions.length,                              sub: "Action required",  icon: Clock,         color: "indigo"  },
+          { label: "Class Average",     value: classAvg > 0 ? `${classAvg}%` : '—',            sub: "Across all courses", icon: CheckCircle2,   color: "emerald" },
+          { label: "At-Risk Students",  value: students.filter(s => s.status === 'At Risk').length, sub: "Flagged by AI", icon: AlertCircle,    color: "red"     },
         ].map((kpi, i) => (
           <div key={i} className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
             <div className="flex items-center gap-4 mb-4">
@@ -766,8 +771,20 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
 
       {activeTab === "students" && (
         <div className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
-          <div className="p-8 border-b border-slate-50 flex items-center justify-between">
-            <h3 className="text-xl font-bold text-slate-900">Student Monitoring</h3>
+          {/* P2-11: header now includes Refresh button */}
+          <div className="p-8 border-b border-slate-50 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4 flex-1">
+              <h3 className="text-xl font-bold text-slate-900">Student Monitoring</h3>
+              <button
+                type="button"
+                onClick={loadStudents}
+                title="Refresh student data"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-indigo-600 transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${studentsLoading ? 'animate-spin' : ''}`} />
+                <span>{studentsLoading ? 'Refreshing…' : 'Refresh'}</span>
+              </button>
+            </div>
             <div className="relative max-w-xs w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input type="text" placeholder="Search students…" value={studentSearch} onChange={e => setStudentSearch(e.target.value)}
@@ -781,8 +798,9 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
               <table className="w-full text-left">
                 <thead>
                   <tr className="bg-slate-50/50">
-                    {["Student", "Average", "Missed", "AI Status", ""].map((h, i) => (
-                      <th key={i} className={`px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${i === 4 ? "text-right" : ""}`}>{h}</th>
+                    {/* P2-12: added Late column */}
+                    {["Student", "Average", "Late", "Missed", "AI Status", ""].map((h, i) => (
+                      <th key={i} className={`px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${i === 5 ? 'text-right' : ''}`}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -800,6 +818,16 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                           </div>
                         </td>
                         <td className="px-8 py-4 font-bold text-slate-700 tabular-nums">{student.average}%</td>
+                        {/* P2-12: Late badge — amber when > 0, grey when 0 */}
+                        <td className="px-8 py-4">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                            student.late > 0
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-slate-100 text-slate-400'
+                          }`}>
+                            {student.late}
+                          </span>
+                        </td>
                         <td className="px-8 py-4 text-slate-500">{student.missed}</td>
                         <td className="px-8 py-4">
                           <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-${color}-100 text-${color}-700`}>
@@ -813,7 +841,7 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
                     );
                   })}
                   {filteredStudents.length === 0 && (
-                    <tr><td colSpan={5} className="text-center text-sm text-slate-400 py-12">
+                    <tr><td colSpan={6} className="text-center text-sm text-slate-400 py-12">
                       {students.length === 0 ? 'No student data available yet.' : 'No students match the search.'}
                     </td></tr>
                   )}
@@ -845,9 +873,9 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {[
-              { label: "Class Average", value: classAvg > 0 ? `${classAvg}%` : '—', icon: TrendingUp, color: "emerald" },
-              { label: "On Track", value: students.filter(s => s.status === "On Track").length, icon: CheckCircle2, color: "indigo" },
-              { label: "At Risk", value: students.filter(s => s.status === "At Risk").length, icon: AlertCircle, color: "red" },
+              { label: "Class Average", value: classAvg > 0 ? `${classAvg}%` : '—', icon: TrendingUp,  color: "emerald" },
+              { label: "On Track",      value: students.filter(s => s.status === "On Track").length,     icon: CheckCircle2, color: "indigo"  },
+              { label: "At Risk",       value: students.filter(s => s.status === "At Risk").length,      icon: AlertCircle,  color: "red"     },
             ].map((kpi, i) => (
               <div key={i} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
                 <div className="flex items-center gap-3 mb-3">
@@ -894,3 +922,5 @@ export const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }
     </div>
   );
 };
+
+export { InstructorDashboard };
