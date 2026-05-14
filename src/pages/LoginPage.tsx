@@ -1,11 +1,17 @@
 import { useState } from 'react';
 import { User } from '../types';
 import { api, supabaseSignIn } from '../services/api';
+import { waitForSession } from '../services/supabaseClient';
 
+/**
+ * DEMO_ACCOUNTS — these emails must exist in Supabase Auth AND in
+ * public.user_identity_map. Passwords are set when you create the users
+ * in the Supabase Auth dashboard.
+ */
 const DEMO_ACCOUNTS = [
-  { role: 'Admin',      email: 'admin@learnit.edu',      label: 'Admin' },
-  { role: 'Instructor', email: 'instructor@learnit.edu', label: 'Instructor' },
-  { role: 'Student',    email: 'sarah@learnit.edu',      label: 'Student' },
+  { role: 'Admin',      email: 'admin@learnit.com',      label: 'Admin' },
+  { role: 'Instructor', email: 'instructor@learnit.com', label: 'Instructor' },
+  { role: 'Student',    email: 'student@learnit.com',    label: 'Student' },
 ];
 
 interface LoginPageProps {
@@ -26,15 +32,26 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       const normalizedEmail = email.trim().toLowerCase();
 
       // 1. Authenticate with Supabase Auth → stores access token in sessionStorage.
+      //    signInWithPassword returns the session directly; we use that token
+      //    immediately rather than relying on a follow-up getSession() call,
+      //    which avoids the sessionStorage write-race that caused 401s.
       const { session } = await supabaseSignIn(normalizedEmail, password);
       console.log('SUPABASE_SESSION', session?.access_token?.slice(0, 20), !!session);
 
       if (!session?.access_token) {
-        throw new Error('Supabase session was not established. Check VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY env vars.');
+        throw new Error(
+          'Supabase login succeeded but no session was returned. ' +
+          'Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in Vercel.'
+        );
       }
 
-      // 2. Fetch the legacy user record from our Express API.
-      //    requireAuth on protected routes will validate the Supabase token we just got.
+      // 2. Wait for the session to be persisted so that any parallel fetch
+      //    that calls getAccessToken() will find it.
+      await waitForSession(session.access_token);
+
+      // 3. Fetch the legacy user record from our Express API.
+      //    The request() wrapper in api.ts calls getAccessToken() which now
+      //    always finds a valid session.
       const user = await api.login(normalizedEmail);
       onLogin(user);
     } catch (err: any) {
@@ -76,7 +93,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 required
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                placeholder="you@university.edu"
+                placeholder="you@learnit.com"
                 className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
               />
             </div>
@@ -126,7 +143,9 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 </button>
               ))}
             </div>
-            <p className="text-xs text-slate-400 mt-2">Click a role to pre-fill the email, then enter your password and Sign in</p>
+            <p className="text-xs text-slate-400 mt-2">
+              Click a role to pre-fill the email, enter the password you set in Supabase Auth, then Sign in.
+            </p>
           </div>
         </div>
 
