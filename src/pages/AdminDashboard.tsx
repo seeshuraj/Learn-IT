@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { Users, BookOpen, TrendingUp, ShieldCheck, Activity } from "lucide-react";
-import { 
+import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   Cell, PieChart, Pie
 } from "recharts";
+import { api } from "../services/api";
 
 interface AdminStats {
   activeUsers: number;
@@ -13,11 +14,17 @@ interface AdminStats {
 
 export const AdminDashboard: React.FC = () => {
   const [stats, setStats] = useState<AdminStats | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/admin/stats").then(res => res.json()).then(setStats);
+    api.getAdminStats()
+      .then((data: any) => setStats(data))
+      .catch((e: any) => setError(e.message));
   }, []);
 
+  if (error) return (
+    <div className="p-8 text-red-500">Failed to load stats: {error}</div>
+  );
   if (!stats) return null;
 
   const PIE_DATA = [
@@ -86,7 +93,7 @@ export const AdminDashboard: React.FC = () => {
             <Activity className="w-5 h-5 text-indigo-600" />
             User Distribution
           </h3>
-          <div className="h-[300px] w-full">
+          <div style={{ width: "100%", height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie data={PIE_DATA} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
@@ -113,7 +120,7 @@ export const AdminDashboard: React.FC = () => {
             <TrendingUp className="w-5 h-5 text-indigo-600" />
             AI Usage Stats
           </h3>
-          <div className="h-[300px] w-full">
+          <div style={{ width: "100%", height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={[
                 { name: "Chatbot", uses: 450 },
