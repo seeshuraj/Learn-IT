@@ -1,7 +1,7 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-14  
-Status: **Phase 2 + Phase 3 (P3-3) code-complete.** P2-10, P3-1, P3-2 pending.
+Status: **Phase 1 + Phase 2 + P3-3 fully complete. P3-1, P3-2 pending.**
 
 ---
 
@@ -40,6 +40,7 @@ Status: **Phase 2 + Phase 3 (P3-3) code-complete.** P2-10, P3-1, P3-2 pending.
 | Instructor analytics missing per-student breakdown | ✅ Resolved (P2-8) |
 | Bulk-enroll silent Auth failure | ✅ Resolved (P2-2) |
 | Static AI insight on DashboardPage | ✅ Resolved (P2-7) |
+| No bot protection on login | ✅ Resolved (P2-10) |
 | Seed users on shared temp password `ChangeMe123!` | ⏳ **Run at deployment** — `scripts/rotate-seed-passwords.ts` |
 | Orphaned `cloudinary_url` columns in DB | ⏳ **Run at deployment** — `scripts/run-migration.ts migrations/004_drop_cloudinary_url_columns.sql` |
 
@@ -62,19 +63,20 @@ Status: **Phase 2 + Phase 3 (P3-3) code-complete.** P2-10, P3-1, P3-2 pending.
 - Helper functions hardened with `SET search_path = ''`
 - 15 performance indexes added
 
-### Phase 2 (P2-1 → P2-9) ✅
+### Phase 2 (P2-1 → P2-10) ✅
 
 | # | What |
 |---|---|
 | P2-1 | `GET /api/admin/courses` — returns `{ id, code, name, instructor_id, instructor_name, enrollment_count, module_count }` |
 | P2-2 | Bulk-enroll hard-fails entire transaction on Auth creation error; returns `tempPassword` per new user in response |
-| P2-3 | `rateLimit.ts` — all 6 limiters verified: `loginLimiter`, `aiLimiter`, `aiGradeLimiter`, `uploadLimiter`, `reportLimiter`, `generalApiLimiter` |
+| P2-3 | `rateLimit.ts` — all 6 limiters: `loginLimiter`, `aiLimiter`, `aiGradeLimiter`, `uploadLimiter`, `reportLimiter`, `generalApiLimiter` |
 | P2-4 | `scripts/rotate-seed-passwords.ts` — rotates `ChangeMe123!` for all seeded Auth accounts; **run at deployment** |
 | P2-5 | `migrations/004_drop_cloudinary_url_columns.sql` + `scripts/run-migration.ts` — drops dead `cloudinary_url` columns; **run at deployment** |
 | P2-6 | `storage_path` stripped from all note/submission API responses; only `proxy_url` + `signed_url` returned |
 | P2-7 | `DashboardPage.tsx` — live AI insight via `api.getStudentAnalytics()` → `api.aiAnalyticsSummary()`; loading spinner + graceful fallback |
 | P2-8 | `GET /api/instructor/courses/:id/analytics` — extended with `students[]` array `{ student_id, name, avg_grade, submission_count, late, missed }` |
 | P2-9 | `GET /api/ready` — probes DB + Supabase Storage; returns 200 `{ status: "ready" }` or 503 `{ status: "unavailable", checks }` |
+| P2-10 | hCaptcha on login — `useCaptcha.ts` hook dynamically loads widget; `supabaseSignIn()` forwards `captchaToken`; disabled automatically when `VITE_HCAPTCHA_SITE_KEY` is not set |
 
 ### Phase 3 (P3-3) ✅
 
@@ -115,18 +117,16 @@ npx tsx scripts/run-migration.ts migrations/004_drop_cloudinary_url_columns.sql
 npx tsx scripts/rotate-seed-passwords.ts
 ```
 
-Also do **once** in the Supabase Auth dashboard:
-- Authentication → Settings → Password Security → Enable "Check passwords against HaveIBeenPwned"
+Do these **once** in the Supabase Auth dashboard:
+- Authentication → Settings → Password Security → Enable **"Check passwords against HaveIBeenPwned"**
+- Authentication → Settings → Bot and Abuse Protection → Enable **hCaptcha** → paste in your **hCaptcha Secret Key**
+
+Add to **Vercel environment variables** (Production + Preview):
+- `VITE_HCAPTCHA_SITE_KEY` — from [https://dashboard.hcaptcha.com](https://dashboard.hcaptcha.com) → Settings → Sites → your site → **Site Key**
 
 ---
 
 ## 5. Remaining Work
-
-### P2-10 — hCaptcha on sign-up and password reset 🟢
-
-- [ ] Enable hCaptcha in Supabase Auth dashboard
-- [ ] Add `options.captchaToken` to `supabase.auth.signInWithPassword()` and `resetPasswordForEmail()` calls in the frontend
-- [ ] Reference: https://supabase.com/docs/guides/auth/auth-captcha
 
 ### P3-1 — Audit logs table 🟢
 
@@ -142,6 +142,8 @@ CREATE TABLE audit_logs (
 );
 ```
 
+Write to it on: grade submission, enroll/unenroll student, create/delete course, admin user create/update.
+
 ### P3-2 — Analytics snapshots + cron 🟢
 
 Add `analytics_snapshots` table + background cron job so dashboards read pre-aggregated data instead of hitting raw tables on every load.
@@ -152,6 +154,5 @@ Add `analytics_snapshots` table + background cron job so dashboards read pre-agg
 
 | Priority | Task | Est. effort |
 |---|---|
-| 🟢 1 | P2-10: hCaptcha integration | 30 min |
-| 🟢 2 | P3-1: `audit_logs` table + write to it on key actions | 30 min |
-| 🟢 3 | P3-2: `analytics_snapshots` + cron aggregation job | 60 min |
+| 🟢 1 | P3-1: `audit_logs` table + write to it on key actions | 30 min |
+| 🟢 2 | P3-2: `analytics_snapshots` + cron aggregation job | 60 min |
