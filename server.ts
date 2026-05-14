@@ -1041,7 +1041,6 @@ async function startServer() {
         const legacyUserId: number = r.rows[0].id;
         let tempPassword: string | null = null;
         try {
-          // P3-5: sets force_password_change=TRUE in createAuthUserAndIdentityMapRow
           const authResult = await createAuthUserAndIdentityMapRow(client, legacyUserId, email, role);
           if (authResult) tempPassword = authResult.tempPassword;
         } catch (authErr: any) {
@@ -1100,6 +1099,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── P3-1: course.create audit ─────────────────────────────────────────────
   app.post(
     "/api/admin/courses",
     requireAuth, requireRole("admin"),
@@ -1111,15 +1111,28 @@ async function startServer() {
           "INSERT INTO courses (code,name,instructor_id) VALUES ($1,$2,$3) RETURNING id",
           [code, name, instructor_id]
         );
+        const actor = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action: 'course.create', resourceType: 'course', resourceId: String(result.lastInsertId),
+          actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+          metadata: { code, name, instructor_id }, req,
+        });
         res.json({ id: result.lastInsertId });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
   );
 
+  // ── P3-1: course.delete audit ─────────────────────────────────────────────
   app.delete("/api/admin/courses/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       await run("DELETE FROM enrollments WHERE course_id=$1", [req.params.id]);
       await run("DELETE FROM courses WHERE id=$1",            [req.params.id]);
+      const actor = (req as AuthenticatedRequest).auth;
+      writeAudit({
+        action: 'course.delete', resourceType: 'course', resourceId: req.params.id,
+        actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+        req,
+      });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -1184,6 +1197,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── P3-1: enrollment.create audit ────────────────────────────────────────
   app.post(
     "/api/admin/enrollments",
     requireAuth, requireRole("admin"),
@@ -1196,6 +1210,12 @@ async function startServer() {
           [course_id, student_id]
         );
         if (!result.lastInsertId) return res.status(409).json({ error: "Already enrolled" });
+        const actor = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action: 'enrollment.create', resourceType: 'enrollment', resourceId: String(result.lastInsertId),
+          actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+          metadata: { course_id, student_id }, req,
+        });
         const course = await queryOne("SELECT name FROM courses WHERE id=$1", [course_id]);
         if (course) {
           notify(pool, student_id, 'enrollment_confirmed',
@@ -1208,9 +1228,24 @@ async function startServer() {
     }
   );
 
+  // ── P3-1: enrollment.delete audit ────────────────────────────────────────
   app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
+      const enrollment = await queryOne(
+        "SELECT course_id, student_id FROM enrollments WHERE id=$1",
+        [req.params.id]
+      );
       await run("DELETE FROM enrollments WHERE id=$1", [req.params.id]);
+      const actor = (req as AuthenticatedRequest).auth;
+      writeAudit({
+        action: 'enrollment.delete', resourceType: 'enrollment', resourceId: req.params.id,
+        actorUserId: actor.legacyUserId, actorEmail: actor.email, actorRole: actor.role,
+        metadata: {
+          course_id:  enrollment?.course_id  ?? null,
+          student_id: enrollment?.student_id ?? null,
+        },
+        req,
+      });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -1243,7 +1278,6 @@ async function startServer() {
               (await client.query("SELECT id, name FROM users WHERE email = $1", [trimmed])).rows[0];
             isNewUser = true;
             try {
-              // P3-5: force_password_change set inside createAuthUserAndIdentityMapRow
               const authResult = await createAuthUserAndIdentityMapRow(client, userRow.id, trimmed, "student");
               if (authResult) tempPassword = authResult.tempPassword;
             } catch (authErr: any) {
