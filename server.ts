@@ -440,6 +440,49 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
+  // ── P2-9: Readiness probe ─────────────────────────────────────────────────
+  // Returns 200 { status: "ready" } only when BOTH the DB and Supabase Storage
+  // are reachable.  Returns 503 { status: "unavailable", checks } otherwise.
+  // Intended for load-balancer / uptime-monitor use — no auth required.
+  app.get("/api/ready", async (_req, res) => {
+    const checks: Record<string, { ok: boolean; error?: string }> = {
+      db:      { ok: false },
+      storage: { ok: false },
+    };
+
+    // DB check
+    try {
+      await pool.query("SELECT 1");
+      checks.db.ok = true;
+    } catch (e: any) {
+      checks.db.error = e.message;
+    }
+
+    // Storage check — write + delete a tiny probe file
+    if (SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
+      const testKey = `_healthcheck/ready-${Date.now()}.txt`;
+      try {
+        const { error: upErr } = await supabaseAdmin.storage
+          .from(NOTES_BUCKET)
+          .upload(testKey, Buffer.from("ready"), { contentType: "text/plain", upsert: true });
+        if (upErr) throw upErr;
+        await supabaseAdmin.storage.from(NOTES_BUCKET).remove([testKey]);
+        checks.storage.ok = true;
+      } catch (e: any) {
+        checks.storage.error = e.message;
+      }
+    } else {
+      checks.storage.error = "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured";
+    }
+
+    const allOk = Object.values(checks).every(c => c.ok);
+    res.status(allOk ? 200 : 503).json({
+      status: allOk ? "ready" : "unavailable",
+      checks,
+      ts: new Date().toISOString(),
+    });
+  });
+
   // ── Auth ──────────────────────────────────────────────────────────────────
   app.post("/api/login", loginLimiter, requireAuth, async (req, res) => {
     try {
@@ -1175,18 +1218,73 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P2-8: Extended analytics — now includes per-student breakdown for the
+  // InstructorDashboard Students tab.  Shape expected by loadStudents():
+  //   r.students[i] = { student_id, name, avg_grade, submission_count, late, missed }
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
-      const [enrollmentCount, avgGrade] = await Promise.all([
-        queryOne("SELECT COUNT(*) as count FROM enrollments WHERE course_id=$1", [req.params.id]),
+      const courseId = req.params.id;
+
+      const [enrollmentCount, avgGradeRow] = await Promise.all([
+        queryOne("SELECT COUNT(*) as count FROM enrollments WHERE course_id=$1", [courseId]),
         queryOne(
-          "SELECT AVG(s.grade) as avg FROM submissions s JOIN assignments a ON s.assignment_id=a.id JOIN modules m ON a.module_id=m.id WHERE m.course_id=$1 AND s.grade IS NOT NULL",
-          [req.params.id]
+          `SELECT AVG(s.grade) as avg
+           FROM submissions s
+           JOIN assignments a ON s.assignment_id = a.id
+           JOIN modules m ON a.module_id = m.id
+           WHERE m.course_id = $1 AND s.grade IS NOT NULL`,
+          [courseId]
         ),
       ]);
+
+      // Per-student stats: avg grade, submission count, late submissions, missed assignments
+      const studentRows = await query(`
+        SELECT
+          u.id                                          AS student_id,
+          u.name,
+          ROUND(AVG(s.grade)::numeric, 1)               AS avg_grade,
+          COUNT(s.id)                                   AS submission_count,
+          COUNT(CASE
+            WHEN a.due_date IS NOT NULL
+             AND s.submitted_at::date > a.due_date::date
+            THEN 1 END)                                 AS late,
+          -- missed = active assignments with no submission at all
+          (
+            SELECT COUNT(*)
+            FROM assignments a2
+            JOIN modules m2 ON a2.module_id = m2.id
+            WHERE m2.course_id = $1
+              AND a2.status = 'active'
+              AND NOT EXISTS (
+                SELECT 1 FROM submissions s2
+                WHERE s2.assignment_id = a2.id AND s2.student_id = u.id
+              )
+          )                                             AS missed
+        FROM enrollments e
+        JOIN users u ON e.student_id = u.id
+        LEFT JOIN submissions s ON s.student_id = u.id
+          AND EXISTS (
+            SELECT 1 FROM assignments a
+            JOIN modules m ON a.module_id = m.id
+            WHERE a.id = s.assignment_id AND m.course_id = $1
+          )
+        LEFT JOIN assignments a ON a.id = s.assignment_id
+        WHERE e.course_id = $1
+        GROUP BY u.id, u.name
+        ORDER BY u.name
+      `, [courseId]);
+
       res.json({
         enrollments:  parseInt(enrollmentCount?.count) || 0,
-        averageGrade: Math.round(parseFloat(avgGrade?.avg) || 0),
+        averageGrade: Math.round(parseFloat(avgGradeRow?.avg) || 0),
+        students: studentRows.map((r: any) => ({
+          student_id:       r.student_id,
+          name:             r.name,
+          avg_grade:        r.avg_grade != null ? parseFloat(r.avg_grade) : 0,
+          submission_count: parseInt(r.submission_count) || 0,
+          late:             parseInt(r.late) || 0,
+          missed:           parseInt(r.missed) || 0,
+        })),
       });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
