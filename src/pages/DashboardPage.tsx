@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { User, Course, Assignment } from "../types";
-import { BookOpen, Calendar, Clock, ArrowRight, CheckCircle2, AlertCircle, Bot } from "lucide-react";
+import { BookOpen, Calendar, Clock, ArrowRight, CheckCircle2, AlertCircle, Bot, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Toaster, toast } from "sonner";
 import { api } from "../services/api";
@@ -10,14 +10,27 @@ interface DashboardPageProps {
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
-  const [courses, setCourses] = useState<Course[]>([]);
+  const [courses, setCourses]         = useState<Course[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [aiInsight, setAiInsight]     = useState<string | null>(null);
+  const [aiLoading, setAiLoading]     = useState(false);
 
   useEffect(() => {
     api.getStudentCourses(user.id)
-      .then((data: any) => setCourses(Array.isArray(data) ? data : []));
+      .then((data: any) => setCourses(Array.isArray(data) ? data : []))
+      .catch(() => {});
+
     api.getStudentAssignments(user.id)
-      .then((data: any) => setAssignments(Array.isArray(data) ? data : []));
+      .then((data: any) => setAssignments(Array.isArray(data) ? data : []))
+      .catch(() => {});
+
+    // P2-7: fetch analytics then pipe into AI summary
+    setAiLoading(true);
+    api.getStudentAnalytics(user.id)
+      .then((analytics: any) => api.aiAnalyticsSummary(analytics))
+      .then((res: any) => setAiInsight(res?.summary ?? null))
+      .catch(() => setAiInsight(null))
+      .finally(() => setAiLoading(false));
   }, [user.id]);
 
   const upcomingAssignments = assignments.filter(
@@ -63,13 +76,25 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
         </div>
       </div>
 
+      {/* P2-7: Live AI insight — loading skeleton → real summary → silent fail */}
       <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-3xl p-8 text-white">
         <div className="flex items-center gap-2 text-indigo-200 text-xs font-bold uppercase tracking-wider mb-3">
           <Bot className="w-4 h-4" /> AI Learning Insight
         </div>
-        <p className="text-sm leading-relaxed opacity-90">
-          Based on your recent performance, keep up the great work! Check your assignments and stay on top of upcoming deadlines.
-        </p>
+
+        {aiLoading ? (
+          <div className="flex items-center gap-2 text-sm text-indigo-200 opacity-80">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Generating your personalised insight…
+          </div>
+        ) : aiInsight ? (
+          <p className="text-sm leading-relaxed opacity-90">{aiInsight}</p>
+        ) : (
+          <p className="text-sm leading-relaxed opacity-75 italic">
+            Could not load AI insight right now — check back shortly.
+          </p>
+        )}
+
         <Link to="/courses" className="mt-4 inline-flex items-center gap-1 text-sm font-bold text-white hover:text-indigo-200 transition-colors">
           Start Practice Session <ArrowRight className="w-4 h-4" />
         </Link>
