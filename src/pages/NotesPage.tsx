@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ChatBot } from '../components/ChatBot';
+import { api } from '../services/api';
 
 interface Note {
   id: number;
@@ -12,7 +13,6 @@ interface Note {
   chunk_count: number;
   module_id: number;
   cloudinary_url?: string;
-  // extracted text content for RAG context (populated by backend when available)
   text_content?: string;
 }
 
@@ -24,7 +24,7 @@ interface Module {
 
 interface Props { user: any; }
 
-const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? '';
+const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? 'https://learn-it-3f5h.onrender.com';
 
 const FILE_ICONS: Record<string, string> = {
   'application/pdf': '📄',
@@ -49,20 +49,18 @@ export default function NotesPage({ user }: Props) {
   async function loadData() {
     setLoading(true);
     try {
-      const coursesRes = await fetch(`${BASE}/api/student/${user.id}/courses`, { credentials: 'include' });
-      const courses = await coursesRes.json();
+      // Use authenticated api.* helpers — these inject Bearer token automatically
+      const courses = await api.getStudentCourses(user.id).catch(() => []);
       const allModules: Module[] = [];
       for (const course of (Array.isArray(courses) ? courses : [])) {
-        const modRes = await fetch(`${BASE}/api/courses/${course.id}/modules`, { credentials: 'include' });
-        const mods = await modRes.json();
+        const mods = await api.getCourseModules(course.id).catch(() => []);
         (Array.isArray(mods) ? mods : []).forEach((m: any) =>
           allModules.push({ id: m.id, name: m.name, course_name: course.name })
         );
       }
       setModules(allModules);
 
-      const notesRes = await fetch(`${BASE}/api/students/${user.id}/notes`, { credentials: 'include' });
-      const notesData = await notesRes.json();
+      const notesData = await api.getStudentNotes(user.id).catch(() => []);
       const fetchedNotes: Note[] = Array.isArray(notesData) ? notesData : [];
       setNotes(fetchedNotes);
 
@@ -92,15 +90,12 @@ export default function NotesPage({ user }: Props) {
 
   const currentModule = sidebarModules.find(m => m.id === selectedModuleId);
 
-  // Build chatbot module title
   const chatModuleTitle = activeNote
     ? `${activeNote.module_name} · ${activeNote.course_name}`
     : currentModule
       ? `${currentModule.name} · ${currentModule.course_name}`
       : 'Course Assistant';
 
-  // Build notesContext: concatenate text_content from notes in the current module
-  // Falls back to listing note names so the chatbot at least knows what files exist
   const chatNotesContext: string = (() => {
     const contextNotes = activeNote ? [activeNote] : filteredNotes;
     const withContent = contextNotes.filter(n => n.text_content);
@@ -110,7 +105,6 @@ export default function NotesPage({ user }: Props) {
         .join('\n\n')
         .slice(0, 4000);
     }
-    // Fallback: list available note filenames so chatbot knows what's uploaded
     if (contextNotes.length > 0) {
       return `The following notes have been uploaded for this module:\n` +
         contextNotes.map(n => `- ${n.original_name}`).join('\n') +
@@ -183,7 +177,6 @@ export default function NotesPage({ user }: Props) {
             </div>
           )}
 
-          {/* PDF / text viewer */}
           {activeNote && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
@@ -226,7 +219,6 @@ export default function NotesPage({ user }: Props) {
             </div>
           )}
 
-          {/* Notes list */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-semibold text-slate-700">
@@ -300,7 +292,7 @@ export default function NotesPage({ user }: Props) {
                         <button
                           onClick={async () => {
                             if (!confirm('Delete this note?')) return;
-                            await fetch(`${BASE}/api/notes/${note.id}`, { method: 'DELETE', credentials: 'include' });
+                            await api.deleteNote(note.id);
                             setNotes(prev => prev.filter(n => n.id !== note.id));
                             if (activeNote?.id === note.id) setActiveNote(null);
                           }}
@@ -316,7 +308,6 @@ export default function NotesPage({ user }: Props) {
         </div>
       </div>
 
-      {/* ChatBot — receives correct moduleTitle and notesContext string */}
       <ChatBot
         moduleTitle={chatModuleTitle}
         notesContext={chatNotesContext}

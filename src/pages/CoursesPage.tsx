@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Course, User } from "../types";
 import { BookOpen, Search, Filter, ArrowRight, Star } from "lucide-react";
 import { Link } from "react-router-dom";
+import { api } from "../services/api";
 
 interface CoursesPageProps {
   user: User;
@@ -12,12 +13,24 @@ export const CoursesPage: React.FC<CoursesPageProps> = ({ user }) => {
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    const endpoint = user.role === 'student' ? `/api/student/${user.id}/courses` : '/api/courses';
-    fetch(endpoint).then(res => res.json()).then(setCourses);
+    const load = async () => {
+      try {
+        let data: any;
+        if (user.role === 'student') {
+          data = await api.getStudentCourses(user.id);
+        } else {
+          data = await api.getCourses();
+        }
+        setCourses(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error('[CoursesPage] failed to load courses:', e);
+      }
+    };
+    load();
   }, [user.id, user.role]);
 
-  const filteredCourses = courses.filter(c => 
-    c.name.toLowerCase().includes(search.toLowerCase()) || 
+  const filteredCourses = courses.filter(c =>
+    c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.code.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -31,9 +44,9 @@ export const CoursesPage: React.FC<CoursesPageProps> = ({ user }) => {
         <div className="flex items-center gap-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Search courses..." 
+            <input
+              type="text"
+              placeholder="Search courses..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 transition-all w-64"
@@ -47,8 +60,8 @@ export const CoursesPage: React.FC<CoursesPageProps> = ({ user }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {filteredCourses.map(course => (
-          <Link 
-            key={course.id} 
+          <Link
+            key={course.id}
             to={`/courses/${course.id}`}
             className="group bg-white rounded-[32px] border border-slate-100 shadow-sm hover:shadow-2xl hover:shadow-indigo-600/10 hover:border-indigo-100 transition-all overflow-hidden flex flex-col"
           >
@@ -87,6 +100,9 @@ export const CoursesPage: React.FC<CoursesPageProps> = ({ user }) => {
             </div>
           </Link>
         ))}
+        {filteredCourses.length === 0 && (
+          <p className="text-slate-400 text-sm col-span-3">No courses found.</p>
+        )}
       </div>
     </div>
   );
