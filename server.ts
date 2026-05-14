@@ -19,6 +19,14 @@ import { attachRequestId } from "./src/server/middleware/requestId.js";
 import { requestLogger } from "./src/server/middleware/logger.js";
 import { validateBody, validateParams } from "./src/server/middleware/validate.js";
 import {
+  loginLimiter,
+  aiLimiter,
+  aiGradeLimiter,
+  uploadLimiter,
+  reportLimiter,
+  generalApiLimiter,
+} from "./src/server/middleware/rateLimit.js";
+import {
   assignmentCreateSchema,
   assignmentUpdateSchema,
   instructorAssignmentCreateSchema,
@@ -54,10 +62,6 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
 
 // ── Storage helpers ───────────────────────────────────────────────────────
 
-/**
- * Upload a buffer to Supabase Storage.
- * THROWS on failure — callers must not swallow the error or insert broken DB rows.
- */
 async function uploadToStorage(
   bucket: string,
   objectPath: string,
@@ -118,7 +122,6 @@ async function deleteFromStorage(bucket: string, objectPath: string): Promise<vo
   else console.log(`[Storage] deleted ${bucket}/${objectPath}`);
 }
 
-/** Ping Supabase Storage on startup so misconfigured env fails loudly. */
 async function checkStorageConnectivity(): Promise<void> {
   const testKey = `_healthcheck/${Date.now()}.txt`;
   try {
@@ -139,29 +142,18 @@ async function checkStorageConnectivity(): Promise<void> {
 
 // ── Auth user helpers ─────────────────────────────────────────────────────
 
-/**
- * Generate a cryptographically random temporary password.
- * 16 chars: uppercase, lowercase, digits, symbols — satisfies most password policies.
- */
 function generateTempPassword(): string {
   const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*";
   let pwd = "";
-  // Guarantee at least one uppercase, one digit, one symbol
   pwd += "ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 24)];
   pwd += "23456789"[Math.floor(Math.random() * 8)];
   pwd += "!@#$%^&*"[Math.floor(Math.random() * 8)];
   for (let i = 3; i < 16; i++) {
     pwd += charset[Math.floor(Math.random() * charset.length)];
   }
-  // Shuffle
   return pwd.split("").sort(() => Math.random() - 0.5).join("");
 }
 
-/**
- * Create a Supabase Auth user + matching user_identity_map row.
- * Returns { authUserId, tempPassword } on success.
- * Returns null (and logs) if the Auth user already exists — caller should handle gracefully.
- */
 async function createAuthUserAndIdentityMapRow(
   client: pkg.PoolClient,
   legacyUserId: number,
@@ -173,11 +165,10 @@ async function createAuthUserAndIdentityMapRow(
   const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
     email,
     password: tempPassword,
-    email_confirm: true, // skip email confirmation — admin-created accounts go straight in
+    email_confirm: true,
   });
 
   if (authErr) {
-    // Auth user already exists (e.g. re-running bulk enrol) — not fatal
     if (authErr.message.includes("already registered") || authErr.message.includes("already been registered")) {
       console.warn(`[Auth] user already exists for ${email} — skipping Auth creation`);
       return null;
@@ -188,7 +179,6 @@ async function createAuthUserAndIdentityMapRow(
 
   const authUserId = authData.user.id;
 
-  // Insert into user_identity_map inside the caller's transaction
   await client.query(
     `INSERT INTO user_identity_map (legacy_user_id, auth_user_id, role)
      VALUES ($1, $2, $3)
@@ -240,7 +230,6 @@ function sanitizeText(t: string) {
     .replace(/\uFFFD/g, "");
 }
 
-// Keep UPLOADS_DIR for grade-pdf tmp files only (submissions downloaded from storage)
 const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
@@ -248,10 +237,6 @@ const memStorage      = multer.memoryStorage();
 const uploadNote      = multer({ storage: memStorage, limits: { fileSize: 20 * 1024 * 1024 } });
 const uploadSubmission = multer({ storage: memStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-/**
- * Extract text directly from a Buffer — no temp files needed.
- * pdf-parse and mammoth both accept Buffer natively.
- */
 async function extractTextFromBuffer(
   buffer: Buffer,
   mimetype: string,
@@ -277,7 +262,6 @@ async function extractTextFromBuffer(
   }
 }
 
-/** Used only by grade-pdf which downloads from storage first (needs a file path). */
 async function extractText(filePath: string, mimetype: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
   try {
@@ -421,6 +405,10 @@ async function startServer() {
   app.use(attachRequestId);
   app.use(requestLogger);
 
+  // ── Rate limiting ───────────────────────────────────────────────────────
+  // General catch-all: 200 req / 15 min per IP (skips /api/health and /api/ready)
+  app.use("/api", generalApiLimiter);
+
   const ALLOWED_RE =
     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
 
@@ -453,7 +441,8 @@ async function startServer() {
   });
 
   // ── Auth ──────────────────────────────────────────────────────────────
-  app.post("/api/login", requireAuth, async (req, res) => {
+  // loginLimiter applied here: 10 attempts per IP per 15 min
+  app.post("/api/login", loginLimiter, requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
       const user = await queryOne(
@@ -487,7 +476,7 @@ async function startServer() {
     }
   });
 
-  // ── Signed URL endpoint (lightweight alternative to proxy) ────────────
+  // ── Signed URL endpoint ───────────────────────────────────────────────────
   app.get("/api/notes/:id/signed-url", requireAuth, async (req, res) => {
     try {
       const note = await queryOne(
@@ -496,7 +485,7 @@ async function startServer() {
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
       if (!note.storage_path) return res.status(404).json({ error: "File not stored" });
-      const url = await getSignedUrl(NOTES_BUCKET, note.storage_path, 900); // 15 min
+      const url = await getSignedUrl(NOTES_BUCKET, note.storage_path, 900);
       if (!url) return res.status(502).json({ error: "Could not generate signed URL" });
       res.json({ url });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -634,7 +623,8 @@ async function startServer() {
     }
   );
 
-  app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadSubmission.array("files", 5), async (req: any, res) => {
+  // uploadLimiter applied: 20 uploads per IP per 24h
+  app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadLimiter, uploadSubmission.array("files", 5), async (req: any, res) => {
     try {
       const { assignment_id, content = "" } = req.body;
       const student_id = (req as AuthenticatedRequest).auth.legacyUserId;
@@ -722,7 +712,8 @@ async function startServer() {
   );
 
   // ── Notes ─────────────────────────────────────────────────────────────
-  app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadNote.single("file"), async (req: any, res) => {
+  // uploadLimiter applied: 20 uploads per IP per 24h
+  app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadLimiter, uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "file required" });
@@ -941,7 +932,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-2: create user in both public.users AND Supabase Auth + user_identity_map
   app.post(
     "/api/admin/users",
     requireAuth, requireRole("admin"),
@@ -951,32 +941,23 @@ async function startServer() {
       try {
         const { name, email, role, major, year } = req.body;
         await client.query("BEGIN");
-
-        // 1. Insert into public.users
         const r = await client.query(
           "INSERT INTO users (name,email,role,major,year) VALUES ($1,$2,$3,$4,$5) RETURNING id",
           [name, email, role, major, year]
         );
         const legacyUserId: number = r.rows[0].id;
-
-        // 2. Create Supabase Auth user + user_identity_map row
         let tempPassword: string | null = null;
         try {
           const authResult = await createAuthUserAndIdentityMapRow(client, legacyUserId, email, role);
           if (authResult) tempPassword = authResult.tempPassword;
         } catch (authErr: any) {
-          // Roll back DB insert if Auth creation fails hard
           await client.query("ROLLBACK");
           console.error("[POST /api/admin/users] Auth creation failed:", authErr.message);
           return res.status(500).json({ error: `User created in DB but Auth setup failed: ${authErr.message}` });
         }
-
         await client.query("COMMIT");
-
         res.json({
           id: legacyUserId,
-          // Return temp password so admin can share it with the new user.
-          // Remove from logs — never store plain-text passwords.
           tempPassword: tempPassword ?? "(Auth user already existed — no new password set)",
         });
       } catch (e: any) {
@@ -1004,7 +985,7 @@ async function startServer() {
     }
   );
 
-  // P2-1: GET /api/admin/courses — was missing, caused 404 in AdminCourseManagement
+  // P2-1: GET /api/admin/courses (was missing)
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       res.json(await query(`
@@ -1120,7 +1101,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-2: bulk-enrol now also creates Supabase Auth users for new emails
   app.post(
     "/api/admin/bulk-enroll",
     requireAuth, requireRole("admin"),
@@ -1135,14 +1115,10 @@ async function startServer() {
           for (const email of emails) {
             const trimmed = email.trim().toLowerCase();
             if (!trimmed) continue;
-
-            // Check if user already exists
             let userRow = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
             let isNewUser = false;
             let tempPassword: string | null = null;
-
             if (!userRow) {
-              // New user — create in public.users
               const name = trimmed.split("@")[0].replace(/[._]/g, " ");
               const r = await client.query(
                 "INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name",
@@ -1151,32 +1127,23 @@ async function startServer() {
               userRow = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
               isNewUser = true;
             }
-
-            // Create Auth user if this is a new DB user (or if identity map row is missing)
             if (isNewUser) {
               try {
-                const authResult = await createAuthUserAndIdentityMapRow(
-                  client, userRow.id, trimmed, "student"
-                );
+                const authResult = await createAuthUserAndIdentityMapRow(client, userRow.id, trimmed, "student");
                 if (authResult) tempPassword = authResult.tempPassword;
               } catch (authErr: any) {
                 console.warn(`[bulk-enroll] Auth user creation failed for ${trimmed}:`, authErr.message);
-                // Non-fatal — continue enrolling; admin can fix manually
               }
             }
-
-            // Enrol into course
             const r = await client.query(
               "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
               [course_id, userRow.id]
             );
-
             results.push({
               email:       trimmed,
               student_id:  userRow.id,
               enrolled:    r.rows.length > 0,
               newUser:     isNewUser,
-              // Only present for new users — admin must communicate this to the student
               tempPassword: tempPassword ?? undefined,
             });
           }
@@ -1233,7 +1200,8 @@ async function startServer() {
   );
 
   // ── AI ─────────────────────────────────────────────────────────────────
-  app.post("/api/ai/grade", requireAuth, async (req, res) => {
+  // aiGradeLimiter: 20 per IP per hour (more expensive than chat)
+  app.post("/api/ai/grade", requireAuth, aiGradeLimiter, async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
       const raw = await nimChat([
@@ -1245,9 +1213,11 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // aiGradeLimiter: 20 per IP per hour
   app.post(
     "/api/ai/grade-pdf",
     requireAuth, requireRole("instructor", "admin"),
+    aiGradeLimiter,
     validateBody(gradePdfSchema),
     async (req, res) => {
       try {
@@ -1301,7 +1271,8 @@ async function startServer() {
     }
   );
 
-  app.post("/api/ai/chat", requireAuth, async (req, res) => {
+  // aiLimiter: 30 per IP per hour
+  app.post("/api/ai/chat", requireAuth, aiLimiter, async (req, res) => {
     try {
       const { question, moduleTitle, moduleId, history = [] } = req.body;
       let notesContext = "No notes have been uploaded for this module yet.";
@@ -1332,7 +1303,8 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ai/analytics-summary", requireAuth, async (req, res) => {
+  // reportLimiter: 5 per IP per hour (heavy DB aggregation + LLM)
+  app.post("/api/ai/analytics-summary", requireAuth, reportLimiter, async (req, res) => {
     try {
       const { analytics } = req.body;
       if (!analytics) return res.status(400).json({ error: "analytics payload required" });
