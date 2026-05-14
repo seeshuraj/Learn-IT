@@ -26,6 +26,7 @@ import { AdminUserManagement } from "./pages/AdminUserManagement";
 import AdminCourseManagement from "./pages/AdminCourseManagement";
 import { AdminSettings } from "./pages/AdminSettings";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
+import RoadmapPage from "./pages/RoadmapPage";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
@@ -44,7 +45,6 @@ const AppContent: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // After login, check force_password_change flag via /api/auth/me
   const checkForceChange = React.useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -68,10 +68,8 @@ const AppContent: React.FC = () => {
   const handleLogin = (userData: User) => {
     setUser(userData);
     try { sessionStorage.setItem("learnit_user", JSON.stringify(userData)); } catch {}
-    // checkForceChange will fire via useEffect above; navigation handled there
   };
 
-  // Navigate after auth check
   React.useEffect(() => {
     if (!authChecked || !user) return;
     if (forceChange && location.pathname !== "/change-password") {
@@ -99,11 +97,8 @@ const AppContent: React.FC = () => {
   if (location.pathname === "/landing") return <LandingPage />;
   if (location.pathname === "/login") return <LoginPage onLogin={handleLogin} />;
   if (!user) return <Navigate to="/landing" replace />;
-
-  // Block all routes until auth check completes
   if (!authChecked) return null;
 
-  // Force password change wall
   if (forceChange) {
     return <ChangePasswordPage onSuccess={handlePasswordChanged} />;
   }
@@ -129,6 +124,9 @@ const AppContent: React.FC = () => {
             <Route path="/assignments" element={<AssignmentsPage user={user!} />} />
             <Route path="/notes" element={<NotesPage user={user!} />} />
             <Route path="/analytics" element={<AnalyticsPage user={user!} />} />
+            {user?.role === "student" && (
+              <Route path="/roadmap" element={<RoadmapPage user={user!} />} />
+            )}
             {user?.role === "admin" && (
               <>
                 <Route path="/admin/users" element={<AdminUserManagement />} />

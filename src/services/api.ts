@@ -28,9 +28,6 @@ async function authHeaders(): Promise<Record<string, string>> {
 /**
  * Sign in with Supabase (email + password).
  * Optionally forwards a captchaToken from hCaptcha (P2-10).
- * hCaptcha must be enabled in the Supabase Auth dashboard for the token to
- * be validated server-side; if it is not enabled the token is simply ignored.
- * Returns { user, session }.
  */
 export async function supabaseSignIn(
   email: string,
@@ -65,8 +62,6 @@ async function request<T = any>(path: string, options?: RequestInit): Promise<T>
     credentials: 'include',
   });
 
-  // Guard: if the server returned HTML (wrong host / 404 SPA fallback),
-  // throw a readable error instead of a cryptic SyntaxError.
   const contentType = res.headers.get('content-type') ?? '';
   if (!contentType.includes('application/json')) {
     const preview = await res.text();
@@ -83,9 +78,7 @@ async function request<T = any>(path: string, options?: RequestInit): Promise<T>
 // ── Public API surface ──────────────────────────────────────────────────────────
 
 export const api = {
-  // Auth — login still hits our Express endpoint to get the legacy user record.
-  // The caller is responsible for calling supabaseSignIn() FIRST so a valid
-  // Supabase session exists before this request is made.
+  // Auth
   login: (email: string) =>
     request('/api/login', { method: 'POST', body: JSON.stringify({ email }) }),
 
@@ -109,7 +102,6 @@ export const api = {
   getModuleNotes: (moduleId: number) => request(`/api/modules/${moduleId}/notes`),
   deleteNote: (noteId: number) => request(`/api/notes/${noteId}`, { method: 'DELETE' }),
 
-  /** Upload a note file (multipart/form-data) — no Content-Type so browser sets boundary */
   uploadNote: async (moduleId: number, file: File): Promise<any> => {
     const ah = await authHeaders();
     const formData = new FormData();
@@ -127,25 +119,18 @@ export const api = {
     return res.json();
   },
 
-  /** Returns the backend proxy URL for a note (no auth needed here — it's just a URL string). */
   getNoteProxyUrl: (noteId: number): string => `${BASE}/api/notes/${noteId}/proxy`,
 
-  /**
-   * Fetches a short-lived signed URL (15 min) for a note from the backend.
-   * Prefer this over the proxy for large files to avoid streaming through the server.
-   */
   getSignedNoteUrl: (noteId: number): Promise<{ url: string }> =>
     request(`/api/notes/${noteId}/signed-url`),
 
   // Submissions
-  // student_id is NOT sent — the server resolves it from req.auth (JWT).
   submitAssignment: (assignmentId: number, content: string) =>
     request('/api/submissions', {
       method: 'POST',
       body: JSON.stringify({ assignment_id: assignmentId, content }),
     }),
 
-  /** Upload assignment files (multipart). student_id resolved server-side. */
   uploadSubmission: async (assignmentId: number, files: File[], content = ''): Promise<any> => {
     const ah = await authHeaders();
     const formData = new FormData();
@@ -189,33 +174,25 @@ export const api = {
   createInstructorAssignment: (data: any) =>
     request('/api/instructor/assignments', { method: 'POST', body: JSON.stringify(data) }),
 
-  // Admin — canonical methods
-  getAdminUsers:   () => request('/api/admin/users'),
-  getAdminStats:   () => request('/api/admin/stats'),
+  // Admin
+  getAdminUsers:    () => request('/api/admin/users'),
+  getAdminStats:    () => request('/api/admin/stats'),
   getAdminSettings: () => request('/api/admin/settings'),
   saveAdminSetting: (key: string, value: string) =>
     request('/api/admin/settings', { method: 'POST', body: JSON.stringify({ key, value }) }),
-
-  // Admin Users — aliases used by AdminUserManagement.tsx
-  createAdminUser: (data: any) =>
+  createAdminUser:  (data: any) =>
     request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
-  updateAdminUser: (userId: number, data: any) =>
+  updateAdminUser:  (userId: number, data: any) =>
     request(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
-
-  // Legacy aliases (keep for any other callers)
-  createUser: (data: any) =>
+  createUser:       (data: any) =>
     request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
-  updateUser: (userId: number, data: any) =>
+  updateUser:       (userId: number, data: any) =>
     request(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
-
-  // Admin Courses — aliases used by AdminCourseManagement.tsx
-  getAdminCourses: () => request('/api/admin/courses'),
-  createAdminCourse: (data: any) =>
+  getAdminCourses:  () => request('/api/admin/courses'),
+  createAdminCourse:(data: any) =>
     request('/api/admin/courses', { method: 'POST', body: JSON.stringify(data) }),
-  deleteAdminCourse: (courseId: number) =>
+  deleteAdminCourse:(courseId: number) =>
     request(`/api/admin/courses/${courseId}`, { method: 'DELETE' }),
-
-  // Admin Enrollments — aliases used by AdminCourseManagement.tsx
   getAdminEnrollments: (courseId: number) =>
     request(`/api/admin/enrollments/${courseId}`),
   enrollStudent: ({ course_id, student_id }: { course_id: number; student_id: number }) =>
@@ -230,8 +207,6 @@ export const api = {
     }),
   removeEnrollment: (enrollmentId: number) =>
     request(`/api/admin/enrollments/${enrollmentId}`, { method: 'DELETE' }),
-
-  // Legacy enrollment aliases
   getEnrollments: (courseId: number) =>
     request(`/api/admin/enrollments/${courseId}`),
   addEnrollment: (courseId: number, studentId: number) =>
@@ -245,7 +220,7 @@ export const api = {
       body: JSON.stringify({ course_id: courseId, emails }),
     }),
 
-  // AI — all calls go through backend so NVIDIA_API_KEY stays server-side
+  // AI
   aiGrade: (submissionContent: string, rubric: string) =>
     request('/api/ai/grade', { method: 'POST', body: JSON.stringify({ submissionContent, rubric }) }),
   aiGradePdf: (submissionId: number, rubric: string, moduleId?: number) =>
@@ -254,6 +229,18 @@ export const api = {
     request('/api/ai/chat', { method: 'POST', body: JSON.stringify({ question, moduleTitle, moduleId, history }) }),
   aiAnalyticsSummary: (analytics: any) =>
     request('/api/ai/analytics-summary', { method: 'POST', body: JSON.stringify({ analytics }) }),
+
+  // Roadmaps (P3-3)
+  getRoadmap:          (courseId: number) => request(`/api/roadmaps/${courseId}`),
+  generateRoadmap:     (courseId: number) =>
+    request(`/api/roadmaps/${courseId}/generate`, { method: 'POST' }),
+  updateMilestoneStatus: (milestoneId: number, status: 'pending' | 'in_progress' | 'completed') =>
+    request(`/api/roadmaps/milestones/${milestoneId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
+  deleteRoadmap: (courseId: number) =>
+    request(`/api/roadmaps/${courseId}`, { method: 'DELETE' }),
 
   // Health (public)
   health: () => request('/api/health'),
