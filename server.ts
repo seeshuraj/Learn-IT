@@ -43,6 +43,7 @@ import {
   routeParamId,
 } from "./src/server/validation/schemas.js";
 import { validateEnv } from "./src/server/config/env.js";
+import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
 
 dotenv.config();
 validateEnv();
@@ -209,6 +210,7 @@ const pool = new Pool({
 });
 
 setPool(pool);
+setAuditPool(pool);
 
 async function query(sql: string, params: any[] = []) {
   const { rows } = await pool.query(sql, params);
@@ -406,7 +408,6 @@ async function startServer() {
   app.use(requestLogger);
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
-  // General catch-all: 200 req / 15 min per IP (skips /api/health and /api/ready)
   app.use("/api", generalApiLimiter);
 
   const ALLOWED_RE =
@@ -479,6 +480,7 @@ async function startServer() {
   });
 
   // ── Auth ──────────────────────────────────────────────────────────────────
+  // P3-1: audit login.success
   app.post("/api/login", loginLimiter, requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -486,8 +488,27 @@ async function startServer() {
         "SELECT id,name,email,role,active,year,major,gpa FROM users WHERE id=$1 AND active=1",
         [authReq.auth.legacyUserId]
       );
-      if (user) res.json(user);
-      else res.status(403).json({ error: "Account inactive or not found" });
+      if (user) {
+        writeAudit({
+          action:       'login.success',
+          resourceType: 'user',
+          resourceId:   String(user.id),
+          actorUserId:  authReq.auth.legacyUserId,
+          actorEmail:   authReq.auth.email,
+          actorRole:    authReq.auth.role,
+          req,
+        });
+        res.json(user);
+      } else {
+        writeAudit({
+          action:      'login.denied',
+          actorEmail:  authReq.auth.email,
+          actorUserId: authReq.auth.legacyUserId,
+          metadata:    { reason: 'inactive_or_not_found' },
+          req,
+        });
+        res.status(403).json({ error: "Account inactive or not found" });
+      }
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -630,9 +651,20 @@ async function startServer() {
     }
   );
 
+  // P3-1: audit assignment.archive
   app.delete("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       await run("UPDATE assignments SET status='archived' WHERE id=$1", [req.params.id]);
+      const auth = (req as AuthenticatedRequest).auth;
+      writeAudit({
+        action:       'assignment.archive',
+        resourceType: 'assignment',
+        resourceId:   req.params.id,
+        actorUserId:  auth.legacyUserId,
+        actorEmail:   auth.email,
+        actorRole:    auth.role,
+        req,
+      });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -688,7 +720,6 @@ async function startServer() {
             "INSERT INTO submission_files (submission_id,filename,original_name,file_type,storage_path) VALUES ($1,$2,$3,$4,$5)",
             [submissionId, file.originalname, file.originalname, file.mimetype, storedPath]
           );
-          // P2-6: return only filename/type — no storage_path to client
           savedFiles.push({ filename: file.originalname, original_name: file.originalname });
         } catch (uploadErr: any) {
           console.error(`[submissions/upload] file upload failed for ${file.originalname}:`, uploadErr.message);
@@ -699,7 +730,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-6: storage_path stripped — returns signed_url + proxy_url only
   app.get("/api/submissions/:id/files", requireAuth, async (req, res) => {
     try {
       const files = await query(
@@ -734,6 +764,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P3-1: audit grade.submit
   app.post(
     "/api/submissions/:id/grade",
     requireAuth, requireRole("instructor", "admin"),
@@ -745,6 +776,17 @@ async function startServer() {
           "UPDATE submissions SET grade=$1,feedback=$2 WHERE id=$3",
           [grade, feedback, req.params.id]
         );
+        const auth = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action:       'grade.submit',
+          resourceType: 'submission',
+          resourceId:   req.params.id,
+          actorUserId:  auth.legacyUserId,
+          actorEmail:   auth.email,
+          actorRole:    auth.role,
+          metadata:     { grade },
+          req,
+        });
         res.json({ success: true });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
@@ -792,7 +834,6 @@ async function startServer() {
         original_name: file.originalname,
         chunk_count:   chunks.length,
         text_length:   text.length,
-        // P2-6: storage_path intentionally omitted from upload response
       });
     } catch (e: any) {
       console.error("[POST /api/modules/:id/notes] error:", e.message);
@@ -800,7 +841,6 @@ async function startServer() {
     }
   });
 
-  // P2-6: storage_path stripped from list response — signed_url + proxy_url only
   app.get("/api/modules/:id/notes", requireAuth, async (req, res) => {
     try {
       const notes = await query(`
@@ -823,17 +863,28 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P3-1: audit note.delete
   app.delete("/api/notes/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
-      const note = await queryOne("SELECT storage_path FROM notes WHERE id=$1", [req.params.id]);
+      const note = await queryOne("SELECT storage_path, original_name FROM notes WHERE id=$1", [req.params.id]);
       if (note?.storage_path) await deleteFromStorage(NOTES_BUCKET, note.storage_path);
       await run("DELETE FROM note_chunks WHERE note_id=$1", [req.params.id]);
       await run("DELETE FROM notes WHERE id=$1",            [req.params.id]);
+      const auth = (req as AuthenticatedRequest).auth;
+      writeAudit({
+        action:       'note.delete',
+        resourceType: 'note',
+        resourceId:   req.params.id,
+        actorUserId:  auth.legacyUserId,
+        actorEmail:   auth.email,
+        actorRole:    auth.role,
+        metadata:     { original_name: note?.original_name ?? null },
+        req,
+      });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-6: storage_path stripped from student notes list
   app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       const notes = await query(`
@@ -974,6 +1025,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P3-1: audit user.create
   app.post(
     "/api/admin/users",
     requireAuth, requireRole("admin"),
@@ -998,6 +1050,17 @@ async function startServer() {
           return res.status(500).json({ error: `User created in DB but Auth setup failed: ${authErr.message}` });
         }
         await client.query("COMMIT");
+        const actor = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action:       'user.create',
+          resourceType: 'user',
+          resourceId:   String(legacyUserId),
+          actorUserId:  actor.legacyUserId,
+          actorEmail:   actor.email,
+          actorRole:    actor.role,
+          metadata:     { email, role, name },
+          req,
+        });
         res.json({
           id: legacyUserId,
           tempPassword: tempPassword ?? "(Auth user already existed — no new password set)",
@@ -1011,6 +1074,7 @@ async function startServer() {
     }
   );
 
+  // P3-1: audit user.update
   app.put(
     "/api/admin/users/:id",
     requireAuth, requireRole("admin"),
@@ -1022,12 +1086,22 @@ async function startServer() {
           "UPDATE users SET name=$1,email=$2,role=$3,active=$4,major=$5,year=$6 WHERE id=$7",
           [name, email, role, active, major, year, req.params.id]
         );
+        const actor = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action:       'user.update',
+          resourceType: 'user',
+          resourceId:   req.params.id,
+          actorUserId:  actor.legacyUserId,
+          actorEmail:   actor.email,
+          actorRole:    actor.role,
+          metadata:     { name, email, role, active },
+          req,
+        });
         res.json({ success: true });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
   );
 
-  // P2-1: GET /api/admin/courses
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       res.json(await query(`
@@ -1143,9 +1217,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-2: bulk-enroll — hard-fails the entire transaction if Auth user creation
-  // fails for any new email. Returns tempPassword per newly created user so the
-  // admin can distribute login credentials immediately.
+  // P3-1: audit enrollment.bulk
   app.post(
     "/api/admin/bulk-enroll",
     requireAuth, requireRole("admin"),
@@ -1168,7 +1240,6 @@ async function startServer() {
           const trimmed = email.trim().toLowerCase();
           if (!trimmed) continue;
 
-          // Look up existing user
           let userRow = (await client.query(
             "SELECT id, name FROM users WHERE email = $1",
             [trimmed]
@@ -1178,7 +1249,6 @@ async function startServer() {
           let tempPassword: string | undefined;
 
           if (!userRow) {
-            // Create the DB user row first
             const name = trimmed.split("@")[0].replace(/[._]/g, " ");
             const r = await client.query(
               "INSERT INTO users (name, email, role) VALUES ($1, $2, 'student') ON CONFLICT DO NOTHING RETURNING id, name",
@@ -1188,18 +1258,12 @@ async function startServer() {
               (await client.query("SELECT id, name FROM users WHERE email = $1", [trimmed])).rows[0];
             isNewUser = true;
 
-            // P2-2 FIX: hard-fail the entire transaction if Auth user creation
-            // fails. A DB user without a Supabase Auth account cannot log in —
-            // allowing silent partial creation is worse than rolling back.
             try {
               const authResult = await createAuthUserAndIdentityMapRow(
                 client, userRow.id, trimmed, "student"
               );
-              // authResult is null only when the Auth user already exists
-              // ("already registered"). In that case no new password is issued.
               if (authResult) tempPassword = authResult.tempPassword;
             } catch (authErr: any) {
-              // Roll back the whole batch — no partial state left in the DB.
               await client.query("ROLLBACK");
               console.error(`[bulk-enroll] Auth creation FAILED for ${trimmed}:`, authErr.message);
               return res.status(500).json({
@@ -1208,7 +1272,6 @@ async function startServer() {
             }
           }
 
-          // Enroll (idempotent via ON CONFLICT DO NOTHING)
           const r = await client.query(
             "INSERT INTO enrollments (course_id, student_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
             [course_id, userRow.id]
@@ -1227,6 +1290,19 @@ async function startServer() {
 
         const enrolled = results.filter(r => r.enrolled).length;
         const created  = results.filter(r => r.newUser).length;
+
+        const actor = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action:       'enrollment.bulk',
+          resourceType: 'course',
+          resourceId:   String(course_id),
+          actorUserId:  actor.legacyUserId,
+          actorEmail:   actor.email,
+          actorRole:    actor.role,
+          metadata:     { enrolled, created, emailCount: emails.length },
+          req,
+        });
+
         res.json({ enrolled, created, results });
 
       } catch (e: any) {
@@ -1250,7 +1326,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-8: Extended analytics — per-student breakdown for InstructorDashboard
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const courseId = req.params.id;
