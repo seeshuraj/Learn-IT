@@ -441,16 +441,12 @@ async function startServer() {
   });
 
   // ── P2-9: Readiness probe ─────────────────────────────────────────────────
-  // Returns 200 { status: "ready" } only when BOTH the DB and Supabase Storage
-  // are reachable.  Returns 503 { status: "unavailable", checks } otherwise.
-  // Intended for load-balancer / uptime-monitor use — no auth required.
   app.get("/api/ready", async (_req, res) => {
     const checks: Record<string, { ok: boolean; error?: string }> = {
       db:      { ok: false },
       storage: { ok: false },
     };
 
-    // DB check
     try {
       await pool.query("SELECT 1");
       checks.db.ok = true;
@@ -458,7 +454,6 @@ async function startServer() {
       checks.db.error = e.message;
     }
 
-    // Storage check — write + delete a tiny probe file
     if (SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
       const testKey = `_healthcheck/ready-${Date.now()}.txt`;
       try {
@@ -708,7 +703,6 @@ async function startServer() {
   app.get("/api/submissions/:id/files", requireAuth, async (req, res) => {
     try {
       const files = await query(
-        // storage_path selected internally for signed URL generation but NOT forwarded to client
         "SELECT id,filename,original_name,file_type,uploaded_at,storage_path FROM submission_files WHERE submission_id=$1",
         [req.params.id]
       );
@@ -716,7 +710,6 @@ async function startServer() {
         const signedUrl = f.storage_path
           ? await getSignedUrl(SUBMISSIONS_BUCKET, f.storage_path)
           : null;
-        // Destructure out storage_path — never send to client
         const { storage_path: _omit, ...safeFile } = f;
         return { ...safeFile, url: signedUrl ?? null };
       }));
@@ -823,7 +816,6 @@ async function startServer() {
       `, [req.params.id]);
       const withUrls = await Promise.all(notes.map(async (n: any) => {
         const signedUrl = n.storage_path ? await getSignedUrl(NOTES_BUCKET, n.storage_path) : null;
-        // Destructure out storage_path — never send to client
         const { storage_path: _omit, ...safeNote } = n;
         return { ...safeNote, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
       }));
@@ -860,7 +852,6 @@ async function startServer() {
       `, [req.params.id]);
       const withUrls = await Promise.all(notes.map(async (n: any) => {
         const signedUrl = n.storage_path ? await getSignedUrl(NOTES_BUCKET, n.storage_path) : null;
-        // Destructure out storage_path — never send to client
         const { storage_path: _omit, ...safeNote } = n;
         return { ...safeNote, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
       }));
@@ -1152,57 +1143,98 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P2-2: bulk-enroll — hard-fails the entire transaction if Auth user creation
+  // fails for any new email. Returns tempPassword per newly created user so the
+  // admin can distribute login credentials immediately.
   app.post(
     "/api/admin/bulk-enroll",
     requireAuth, requireRole("admin"),
     validateBody(bulkEnrollSchema),
     async (req, res) => {
+      const { course_id, emails } = req.body as { course_id: number; emails: string[] };
+      const client = await pool.connect();
       try {
-        const { course_id, emails } = req.body as { course_id: number; emails: string[] };
-        const results: any[] = [];
-        const client = await pool.connect();
-        try {
-          await client.query("BEGIN");
-          for (const email of emails) {
-            const trimmed = email.trim().toLowerCase();
-            if (!trimmed) continue;
-            let userRow = (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
-            let isNewUser = false;
-            let tempPassword: string | null = null;
-            if (!userRow) {
-              const name = trimmed.split("@")[0].replace(/[._]/g, " ");
-              const r = await client.query(
-                "INSERT INTO users (name,email,role) VALUES ($1,$2,'student') ON CONFLICT DO NOTHING RETURNING id,name",
-                [name, trimmed]
-              );
-              userRow = r.rows[0] ?? (await client.query("SELECT id,name FROM users WHERE email=$1", [trimmed])).rows[0];
-              isNewUser = true;
-            }
-            if (isNewUser) {
-              try {
-                const authResult = await createAuthUserAndIdentityMapRow(client, userRow.id, trimmed, "student");
-                if (authResult) tempPassword = authResult.tempPassword;
-              } catch (authErr: any) {
-                console.warn(`[bulk-enroll] Auth user creation failed for ${trimmed}:`, authErr.message);
-              }
-            }
+        await client.query("BEGIN");
+
+        const results: Array<{
+          email: string;
+          student_id: number;
+          enrolled: boolean;
+          newUser: boolean;
+          tempPassword?: string;
+        }> = [];
+
+        for (const email of emails) {
+          const trimmed = email.trim().toLowerCase();
+          if (!trimmed) continue;
+
+          // Look up existing user
+          let userRow = (await client.query(
+            "SELECT id, name FROM users WHERE email = $1",
+            [trimmed]
+          )).rows[0];
+
+          let isNewUser = false;
+          let tempPassword: string | undefined;
+
+          if (!userRow) {
+            // Create the DB user row first
+            const name = trimmed.split("@")[0].replace(/[._]/g, " ");
             const r = await client.query(
-              "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id",
-              [course_id, userRow.id]
+              "INSERT INTO users (name, email, role) VALUES ($1, $2, 'student') ON CONFLICT DO NOTHING RETURNING id, name",
+              [name, trimmed]
             );
-            results.push({
-              email:        trimmed,
-              student_id:   userRow.id,
-              enrolled:     r.rows.length > 0,
-              newUser:      isNewUser,
-              tempPassword: tempPassword ?? undefined,
-            });
+            userRow = r.rows[0] ??
+              (await client.query("SELECT id, name FROM users WHERE email = $1", [trimmed])).rows[0];
+            isNewUser = true;
+
+            // P2-2 FIX: hard-fail the entire transaction if Auth user creation
+            // fails. A DB user without a Supabase Auth account cannot log in —
+            // allowing silent partial creation is worse than rolling back.
+            try {
+              const authResult = await createAuthUserAndIdentityMapRow(
+                client, userRow.id, trimmed, "student"
+              );
+              // authResult is null only when the Auth user already exists
+              // ("already registered"). In that case no new password is issued.
+              if (authResult) tempPassword = authResult.tempPassword;
+            } catch (authErr: any) {
+              // Roll back the whole batch — no partial state left in the DB.
+              await client.query("ROLLBACK");
+              console.error(`[bulk-enroll] Auth creation FAILED for ${trimmed}:`, authErr.message);
+              return res.status(500).json({
+                error: `Failed to create Auth account for ${trimmed}: ${authErr.message}. No users were enrolled.`,
+              });
+            }
           }
-          await client.query("COMMIT");
-        } catch (e) { await client.query("ROLLBACK"); throw e; }
-        finally { client.release(); }
-        res.json({ results });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+
+          // Enroll (idempotent via ON CONFLICT DO NOTHING)
+          const r = await client.query(
+            "INSERT INTO enrollments (course_id, student_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+            [course_id, userRow.id]
+          );
+
+          results.push({
+            email:      trimmed,
+            student_id: userRow.id,
+            enrolled:   r.rows.length > 0,
+            newUser:    isNewUser,
+            ...(tempPassword ? { tempPassword } : {}),
+          });
+        }
+
+        await client.query("COMMIT");
+
+        const enrolled = results.filter(r => r.enrolled).length;
+        const created  = results.filter(r => r.newUser).length;
+        res.json({ enrolled, created, results });
+
+      } catch (e: any) {
+        await client.query("ROLLBACK").catch(() => {});
+        res.status(500).json({ error: e.message });
+      } finally {
+        client.release();
+      }
     }
   );
 
@@ -1218,9 +1250,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // P2-8: Extended analytics — now includes per-student breakdown for the
-  // InstructorDashboard Students tab.  Shape expected by loadStudents():
-  //   r.students[i] = { student_id, name, avg_grade, submission_count, late, missed }
+  // P2-8: Extended analytics — per-student breakdown for InstructorDashboard
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       const courseId = req.params.id;
@@ -1237,7 +1267,6 @@ async function startServer() {
         ),
       ]);
 
-      // Per-student stats: avg grade, submission count, late submissions, missed assignments
       const studentRows = await query(`
         SELECT
           u.id                                          AS student_id,
@@ -1248,7 +1277,6 @@ async function startServer() {
             WHEN a.due_date IS NOT NULL
              AND s.submitted_at::date > a.due_date::date
             THEN 1 END)                                 AS late,
-          -- missed = active assignments with no submission at all
           (
             SELECT COUNT(*)
             FROM assignments a2
