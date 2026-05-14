@@ -168,29 +168,56 @@ export const api = {
   createInstructorAssignment: (data: any) =>
     request('/api/instructor/assignments', { method: 'POST', body: JSON.stringify(data) }),
 
-  // Admin
+  // Admin — canonical methods
   getAdminUsers:   () => request('/api/admin/users'),
-  createUser:      (data: any) =>
-    request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
-  updateUser:      (userId: number, data: any) =>
-    request(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
   getAdminStats:   () => request('/api/admin/stats'),
   getAdminSettings: () => request('/api/admin/settings'),
   saveAdminSetting: (key: string, value: string) =>
     request('/api/admin/settings', { method: 'POST', body: JSON.stringify({ key, value }) }),
+
+  // Admin Users — aliases used by AdminUserManagement.tsx
+  createAdminUser: (data: any) =>
+    request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+  updateAdminUser: (userId: number, data: any) =>
+    request(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Legacy aliases (keep for any other callers)
+  createUser: (data: any) =>
+    request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+  updateUser: (userId: number, data: any) =>
+    request(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Admin Courses — aliases used by AdminCourseManagement.tsx
+  getAdminCourses: () => request('/api/admin/courses'),
   createAdminCourse: (data: any) =>
     request('/api/admin/courses', { method: 'POST', body: JSON.stringify(data) }),
   deleteAdminCourse: (courseId: number) =>
     request(`/api/admin/courses/${courseId}`, { method: 'DELETE' }),
-  getEnrollments:  (courseId: number) =>
+
+  // Admin Enrollments — aliases used by AdminCourseManagement.tsx
+  getAdminEnrollments: (courseId: number) =>
     request(`/api/admin/enrollments/${courseId}`),
-  addEnrollment:   (courseId: number, studentId: number) =>
+  enrollStudent: ({ course_id, student_id }: { course_id: number; student_id: number }) =>
+    request('/api/admin/enrollments', {
+      method: 'POST',
+      body: JSON.stringify({ course_id, student_id }),
+    }),
+  bulkEnrollStudents: ({ course_id, emails }: { course_id: number; emails: string[] }) =>
+    request('/api/admin/bulk-enroll', {
+      method: 'POST',
+      body: JSON.stringify({ course_id, emails }),
+    }),
+  removeEnrollment: (enrollmentId: number) =>
+    request(`/api/admin/enrollments/${enrollmentId}`, { method: 'DELETE' }),
+
+  // Legacy enrollment aliases
+  getEnrollments: (courseId: number) =>
+    request(`/api/admin/enrollments/${courseId}`),
+  addEnrollment: (courseId: number, studentId: number) =>
     request('/api/admin/enrollments', {
       method: 'POST',
       body: JSON.stringify({ course_id: courseId, student_id: studentId }),
     }),
-  removeEnrollment: (enrollmentId: number) =>
-    request(`/api/admin/enrollments/${enrollmentId}`, { method: 'DELETE' }),
   bulkEnroll: (courseId: number, emails: string[]) =>
     request('/api/admin/bulk-enroll', {
       method: 'POST',
