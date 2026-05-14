@@ -1,14 +1,14 @@
 # Required Changes for Learn-IT
 
-Last reviewed: 2026-05-13  
-Status: Phase 1 in progress — P1-2 ✅ completed, P1-3 ✅ mostly completed
+Last reviewed: 2026-05-14  
+Status: Phase 1 — P1-1 through P1-7 ✅ completed. P1-8 through P1-10 + Phase 2 pending.
 
 ---
 
 ## Table of Contents
 
 1. [Current Security State](#1-current-security-state)
-2. [Completed Work — P1-2 and P1-3](#2-completed-work--p1-2-and-p1-3)
+2. [Completed Work](#2-completed-work)
 3. [Applied Migrations](#3-applied-migrations)
 4. [Remaining Work](#4-remaining-work)
 5. [Storage and File Security](#5-storage-and-file-security)
@@ -16,42 +16,40 @@ Status: Phase 1 in progress — P1-2 ✅ completed, P1-3 ✅ mostly completed
 7. [Backend Changes](#7-backend-changes)
 8. [Auth Changes](#8-auth-changes)
 9. [Query and Performance Fixes](#9-query-and-performance-fixes)
-10. [Next Execution Order](#10-next-execution-order)
+10. [Frontend Audit Results](#10-frontend-audit-results)
+11. [Next Execution Order](#11-next-execution-order)
 
 ---
 
 ## 1. Current Security State
 
-### Before P1-2 (original state)
-
-| Issue | Severity |
-|---|---|
-| RLS disabled on all 11 public tables | 🔴 CRITICAL |
-| `public.users.password` exposed via anon key | 🔴 CRITICAL |
-| No auth bridge between legacy integer IDs and Supabase Auth | 🔴 CRITICAL |
-| Helper functions had mutable `search_path` | 🟡 WARN |
-| Leaked password protection disabled in Auth | 🟡 WARN |
-
-### After P1-2 + P1-3 (current state)
+### After P1-1 → P1-7 (current state)
 
 | Issue | Status |
 |---|---|
-| RLS disabled on public tables | ✅ Resolved — RLS enabled, policies applied |
+| RLS disabled on all 11 public tables | ✅ Resolved — RLS enabled, policies applied |
 | `public.users.password` exposed | ✅ Resolved — column dropped |
-| No auth bridge | ✅ Resolved — `user_identity_map` created and backfilled |
+| No auth bridge between legacy integer IDs and Supabase Auth | ✅ Resolved — `user_identity_map` created and backfilled |
 | Mutable `search_path` on helper functions | ✅ Resolved — recreated with `SET search_path = ''` |
 | Leaked password protection disabled | 🟡 Open — manual Auth dashboard action required |
+| Raw `fetch()` calls with hardcoded URLs in frontend | ✅ Resolved — all calls go through `api.ts` |
+| `student_id` sent from client in submissions | ✅ Resolved — resolved server-side from JWT |
+| Hardcoded mock data in InstructorDashboard | ✅ Resolved — replaced with real API calls |
+| Cloudinary public URLs for protected files | ✅ Resolved — migrated to Supabase Storage signed URLs |
+| No Zod validation on route inputs | ✅ Resolved — `validateBody` / `validateParams` middleware applied to all write routes |
+| No request ID / structured logging | ✅ Resolved — `attachRequestId` + `requestLogger` middleware in place |
+| No env validation at boot | ✅ Resolved — `validateEnv()` with Zod runs at startup |
+| No auth middleware | ✅ Resolved — `requireAuth`, `requireRole`, `requireSelfOrAdmin` applied to all routes |
+| Role / userId trusted from request body | ✅ Resolved — all routes use `req.auth.legacyUserId` from JWT |
 
-**Supabase security advisor currently reports: 1 warning (leaked password protection).**
+**Supabase security advisor currently reports: 1 warning (leaked password protection — manual dashboard step).**
 
 ---
 
-## 2. Completed Work — P1-2 and P1-3
+## 2. Completed Work
 
-### 2.1 Auth bridge (`user_identity_map`)
-
+### 2.1 Auth bridge (`user_identity_map`) ✅
 - Created `public.user_identity_map` mapping legacy integer `users.id` to Supabase Auth UUIDs.
-- Pre-populated from `public.users` on migration.
 - All 4 existing users backfilled with Auth UUIDs.
 
 | legacy_user_id | Email | Role | Auth UUID |
@@ -64,7 +62,7 @@ Status: Phase 1 in progress — P1-2 ✅ completed, P1-3 ✅ mostly completed
 > ⚠️ Temporary password for all created Auth users: `ChangeMe123!`  
 > Force-reset these before any real usage.
 
-### 2.2 Helper functions (hardened)
+### 2.2 Helper functions (hardened) ✅
 
 All functions recreated with `SET search_path = ''` and fully-qualified schema references:
 
@@ -76,7 +74,7 @@ All functions recreated with `SET search_path = ''` and fully-qualified schema r
 - `public.can_access_module(p_module_id)` — returns boolean (admin OR instructor OR enrolled)
 - `public.set_updated_at()` — trigger function
 
-### 2.3 Indexes added
+### 2.3 Indexes added ✅
 
 ```sql
 idx_uim_auth_user_id               user_identity_map(auth_user_id)
@@ -96,9 +94,7 @@ idx_notes_module_id                notes(module_id)
 idx_note_chunks_note_id            note_chunks(note_id)
 ```
 
-### 2.4 RLS enabled and policies applied
-
-RLS is now active on all 12 tables with role-scoped policies:
+### 2.4 RLS + policies ✅
 
 | Table | Student | Instructor | Admin |
 |---|---|---|---|
@@ -115,9 +111,69 @@ RLS is now active on all 12 tables with role-scoped policies:
 | `note_chunks` | SELECT if enrolled | Full manage own courses | Full |
 | `settings` | ❌ None | ❌ None | Full |
 
-### 2.5 Sensitive column removed
+### 2.5 Sensitive column removed ✅
+- `public.users.password` column dropped.
 
-- `public.users.password` column dropped — Supabase Auth is now the sole credential store.
+### 2.6 Auth middleware ✅ (P1-4)
+
+`src/server/middleware/auth.ts` is in place and imported by `server.ts`:
+- `requireAuth` — validates Supabase JWT server-side, resolves `legacyUserId` + `role` from `user_identity_map`
+- `requireRole(...roles)` — enforces role-based access
+- `requireSelfOrAdmin(param)` — enforces self-access or admin for user-scoped routes
+- `setPool(pool)` — injects PG pool reference
+
+All routes that access user data use these guards. No route trusts `role` or `userId` from request body.
+
+### 2.7 Supabase Storage migration ✅ (P1-5)
+
+- Private buckets: `learnit-notes`, `learnit-submissions`
+- Notes uploaded to `learnit-notes` bucket via `uploadToStorage()`
+- Submission files uploaded to `learnit-submissions` bucket
+- All file delivery goes through:
+  - `GET /api/notes/:id/proxy` — streams file buffer after auth check
+  - `GET /api/notes/:id/signed-url` — returns a 15-minute signed URL
+  - `GET /api/submissions/:id/files` — returns per-file signed URLs (1hr TTL)
+- `cloudinary_url` columns are now unused; files are stored as `storage_path` only
+- `checkStorageConnectivity()` runs at boot and fails loudly if misconfigured
+
+### 2.8 Zod validation middleware ✅ (P1-6)
+
+`src/server/middleware/validate.ts` exports `validateBody` and `validateParams`.  
+`src/server/validation/schemas.ts` defines Zod schemas for all write routes:
+
+- `assignmentCreateSchema`, `assignmentUpdateSchema`
+- `instructorAssignmentCreateSchema`
+- `submissionCreateSchema`, `gradeSchema`, `gradePdfSchema`
+- `adminUserCreateSchema`, `adminUserUpdateSchema`
+- `courseCreateSchema`, `enrollmentCreateSchema`, `bulkEnrollSchema`
+- `settingsSchema`, `moduleCreateSchema`, `routeParamId`
+
+All POST/PUT routes use `validateBody(schema)` middleware.
+
+### 2.9 Structured logging + Request ID ✅ (P1-6 / P1-9)
+
+- `src/server/middleware/requestId.ts` — injects `X-Request-ID` on every request
+- `src/server/middleware/logger.ts` — logs `{ requestId, method, path, statusCode, durationMs }` as JSON
+- No secrets/tokens logged
+
+### 2.10 Env validation ✅ (P1-6)
+
+`src/server/config/env.ts` — Zod-validated env config runs at boot via `validateEnv()`.  
+Server fails fast with clear error if required env vars are missing.
+
+### 2.11 Health endpoint ✅ (P1-7)
+
+`GET /api/health` — returns `{ status, db, storage, env, ts }`. DB connectivity checked via `SELECT 1`.
+
+### 2.12 Frontend API centralisation ✅
+
+`src/services/api.ts` is fully centralised. All pages use it exclusively:
+- `AnalyticsPage.tsx` — uses `api.getStudentAnalytics(user.id)`
+- `AssignmentsPage.tsx` — uses `api.getStudentAssignments()`, `api.submitAssignment()`, `api.uploadSubmission()`
+- `InstructorDashboard.tsx` — uses `api.*` for all data; no raw fetch; no hardcoded mock data
+- `DashboardPage.tsx` — uses `api.getStudentCourses()`, `api.getStudentAssignments()`
+- `NotesPage.tsx`, `CourseDetailPage.tsx`, `CoursesPage.tsx` — use `api.*`
+- `AdminDashboard.tsx`, `AdminUserManagement.tsx`, `AdminCourseManagement.tsx`, `AdminSettings.tsx` — use `api.*`
 
 ---
 
@@ -144,71 +200,130 @@ RLS is now active on all 12 tables with role-scoped policies:
 
 - Go to: Authentication → Settings → Password Security
 - Enable: "Check passwords against HaveIBeenPwned"
-- Reference: https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection
+- Reference: https://supabase.com/docs/guides/auth/password-security
 
-This will clear the only remaining Supabase security advisor warning.
-
-### 4.2 Audit backend for legacy auth assumptions
-
-- [ ] Identify any routes still reading `req.body.userId` or `req.body.role`
-- [ ] Replace with server-side `supabase.auth.getUser()` + `user_identity_map` lookup
-- [ ] Remove any remaining `public.users`-based password-check logic
-
-### 4.3 Force-reset temporary Auth passwords
+### 4.2 Force-reset temporary Auth passwords
 
 - All 4 Auth users were created with `ChangeMe123!`
 - Must be rotated before any real user testing or staging promotion
+
+### 4.3 Drop deprecated `cloudinary_url` columns
+
+Now that all file delivery is via Supabase Storage, the old `cloudinary_url` columns in `notes` and `submission_files` should be removed.
+
+```sql
+-- Migration: ..._drop_cloudinary_url_columns
+ALTER TABLE notes            DROP COLUMN IF EXISTS cloudinary_url;
+ALTER TABLE submission_files DROP COLUMN IF EXISTS cloudinary_url;
+```
+
+### 4.4 Rate limiting middleware (missing) 🔴
+
+`src/server/middleware/rateLimit.ts` is referenced in the planned architecture but **does not exist**.
+
+- [ ] Add `express-rate-limit` package
+- [ ] Create `src/server/middleware/rateLimit.ts`
+- [ ] Apply per-route limits:
+  - Login: 10 attempts per IP per 15 min
+  - AI chat: 30 messages per student per hour
+  - File upload: 20 uploads per user per day
+  - Report/roadmap generation: 5 per user per hour
+
+### 4.5 `/api/ready` readiness endpoint (missing)
+
+`GET /api/health` exists but `/api/ready` (checks DB + storage + queue) does not.
+
+- [ ] Add `GET /api/ready` that pings DB + verifies Storage bucket is accessible + returns 503 if either is down
+
+### 4.6 Admin user creation does not create Supabase Auth user
+
+`POST /api/admin/users` inserts into `public.users` and `enrollments` but never calls `supabase.auth.admin.createUser()`. These users will exist in the DB but **cannot log in** until an Auth user is created for them.
+
+- [ ] Add `supabaseAdmin.auth.admin.createUser({ email, password: randomTempPassword })` in `POST /api/admin/users`
+- [ ] Insert matching row into `user_identity_map`
+- [ ] Return `tempPassword` in response so admin can communicate it to the new user
+
+### 4.7 Bulk enrol does not create Supabase Auth users
+
+Same issue as 4.6 — `POST /api/admin/bulk-enroll` creates users in `public.users` only.
+
+- [ ] Auto-create Auth users for new emails during bulk enrol
+- [ ] Insert into `user_identity_map`
+
+### 4.8 `GET /api/admin/courses` route is missing
+
+`api.getAdminCourses()` calls `GET /api/admin/courses` but **no such route exists** in `server.ts`.  
+Only `POST /api/admin/courses` and `DELETE /api/admin/courses/:id` exist.
+
+- [ ] Add `GET /api/admin/courses` — returns all non-archived courses with instructor name and enrolment count (same shape as `GET /api/courses`)
+
+### 4.9 No `/api/ready` endpoint
+
+Already noted in 4.5.
+
+### 4.10 DashboardPage AI insight is static
+
+`DashboardPage.tsx` renders a hardcoded AI insight paragraph — it never calls `api.aiAnalyticsSummary()` or any real AI endpoint.
+
+- [ ] Call `api.getStudentAnalytics(user.id)` on mount
+- [ ] Pipe result to `api.aiAnalyticsSummary(analytics)` for a personalised insight
+- [ ] Replace the static string with the live summary
+
+### 4.11 `NotesPage.tsx` uses `api.getNoteProxyUrl()` — verify it handles signed URLs too
+
+Proxy streaming is correct but large files (>6 MB) may timeout on Render free tier. The signed-URL endpoint (`GET /api/notes/:id/signed-url`) exists for lightweight delivery but the frontend does not use it.
+
+- [ ] In `NotesPage.tsx` when opening/viewing a note, prefer `api.getSignedNoteUrl(noteId)` then redirect rather than streaming through the proxy
+- [ ] Add `getSignedNoteUrl: (noteId: number) => request('/api/notes/${noteId}/signed-url')` to `api.ts`
+
+### 4.12 Instructor analytics only returns `enrollments` + `averageGrade`
+
+`GET /api/instructor/courses/:id/analytics` returns only 2 fields. `InstructorDashboard.tsx` needs per-student data to show the Students tab.
+
+- [ ] Extend the endpoint to return per-student grade array, submission count, late count
+- [ ] Or add `GET /api/instructor/courses/:id/students` as a dedicated endpoint
 
 ---
 
 ## 5. Storage and File Security
 
-### 5.1 Replace Cloudinary with Supabase Storage for protected content
+### Status: ✅ Core migration done — cleanup pending
 
-The schema currently stores `cloudinary_url` columns in `notes` and `submission_files`. This is not appropriate for protected academic content.
+- Private Supabase Storage buckets in use: `learnit-notes`, `learnit-submissions`
+- Signed URLs generated server-side with TTL (15 min for view, 1 hr for download)
+- File delivery proxied through authenticated backend route
+- `cloudinary_url` columns still exist in schema — migration to drop them is pending (see 4.3)
 
-Problems:
-- Cloudinary public URLs are guessable or directly accessible
-- No authorization check happens at delivery time
-- Notes and submissions are private intellectual property
+### 5.1 Remaining: Separate metadata from delivery
 
-Required:
-- [ ] Create private Supabase Storage buckets: `notes`, `submissions`, `materials`
-- [ ] Store only path/key references in the database, not public delivery URLs
-- [ ] Generate signed URLs server-side only after verifying access rights
-- [ ] Or proxy file delivery through a backend endpoint that checks access before streaming
-- [ ] Drop or deprecate `cloudinary_url` columns once migrated
-
-### 5.2 Separate metadata from delivery logic
-
-- File metadata (name, size, type, uploaded_at, uploader_id) stays in the database
-- File bytes live in private storage
-- No route returns file bytes without an access check preceding it
-- Signed URLs must be short-lived (e.g. 60 seconds) for download flows
+- [ ] No route should return `storage_path` directly to the client — only signed URLs or proxy paths
+- [ ] Audit: `GET /api/modules/:id/notes` returns `storage_path` in the response — strip it, expose `signed_url` only
+- [ ] Audit: `GET /api/submissions/:id/files` returns `storage_path` — same fix
 
 ---
 
 ## 6. Schema and Migration Discipline
 
-### 6.1 All schema changes must go through migration files only
+### 6.1 Rules
 
-No manual Supabase dashboard edits in staging or production.  
-Standardise all future migrations as `YYYYMMDDHHMMSS_descriptive_name`.
+- All schema changes via migration files only — no manual Supabase dashboard edits in staging/production
+- Naming convention: `YYYYMMDDHHMMSS_descriptive_name`
 
-### 6.2 Next required migrations
+### 6.2 Pending migrations
 
-In order:
+| Priority | Migration | Status |
+|---|---|---|
+| 🔴 High | `..._drop_cloudinary_url_columns` | 🔲 Pending |
+| 🟡 Medium | `..._add_audit_logs_table` | 🔲 Pending |
+| 🟡 Medium | `..._add_processing_jobs_table` | 🔲 Pending |
+| 🟡 Medium | `..._add_analytics_snapshots_table` | 🔲 Pending |
+| 🟢 Low | `..._add_student_roadmaps_table` | 🔲 Pending |
+| 🟢 Low | `..._add_roadmap_progress_table` | 🔲 Pending |
 
-- [ ] `..._replace_cloudinary_with_storage_paths` — migrate file ref columns
-- [ ] `..._add_audit_logs_table` — audit trail for privileged actions
-- [ ] `..._add_processing_jobs_table` — async job tracking
-- [ ] `..._add_analytics_snapshots_table` — derived performance materialisations
-- [ ] `..._add_student_roadmaps_table` — roadmap storage
-
-### 6.3 Missing access-model entities (to confirm/add)
+### 6.3 Missing access-model entities
 
 - [ ] `audit_logs` — actor, action, target, timestamp, metadata
-- [ ] `processing_jobs` — note/submission/report/roadmap async job state
+- [ ] `processing_jobs` — async job state (notes/submissions/reports/roadmaps)
 - [ ] `analytics_snapshots` — precomputed per-student per-module stats
 - [ ] `student_roadmaps` — versioned roadmap snapshots
 - [ ] `roadmap_progress` — per-item completion tracking
@@ -217,117 +332,163 @@ In order:
 
 ## 7. Backend Changes
 
-### 7.1 Break up monolithic server.ts
+### 7.1 Break up monolithic `server.ts` (P1-8) 🔲
 
-The current `server.ts` mixes routing, business logic, auth, AI, and storage concerns.
+`server.ts` is ~53 KB and mixes routing, business logic, auth, AI, and storage concerns in one file. Middleware layer already exists (`src/server/middleware/`). Routes need to be extracted.
 
-Target structure:
+Target structure (not yet created):
 
 ```
 src/server/
-  index.ts
-  middleware/
-    auth.ts             — session validation, role extraction
-    validate.ts         — Zod request validation wrapper
-    logger.ts           — request ID injection, structured logging
-    rateLimit.ts        — per-route rate limiters
+  index.ts                   ← slim entry point, just mounts router
   routes/
     auth.ts
+    courses.ts
     modules.ts
     notes.ts
     assignments.ts
     submissions.ts
     analytics.ts
-    reports.ts
-    roadmaps.ts
+    instructor.ts
     admin.ts
+    ai.ts
     health.ts
   services/
-    auth.service.ts
-    notes.service.ts
-    storage.service.ts
-    ai.service.ts
+    storage.service.ts        ← uploadToStorage, getSignedUrl, deleteFromStorage
+    ai.service.ts             ← nimChat, nimEmbed, retrieveChunks
     analytics.service.ts
-    roadmap.service.ts
   jobs/
     noteProcessor.ts
     assessmentAnalyser.ts
-    reportGenerator.ts
-    roadmapGenerator.ts
   lib/
-    supabase.ts         — server-side Supabase client (service role only)
-    openai.ts
-    queue.ts
-    env.ts              — Zod-validated env config
+    db.ts                     ← query, queryOne, run helpers
+    supabase.ts               ← supabaseAdmin client
 ```
 
-### 7.2 Add Zod validation on all inputs
+### 7.2 Add rate limiting (P1-4.4 above) 🔲
 
-- [ ] Every route handler validates params, query, and body with a Zod schema
-- [ ] Environment config validated with Zod at boot
-- [ ] File uploads validated: type allowlist, max size
+See section 4.4.
 
-### 7.3 Add health and readiness endpoints
+### 7.3 Add `/api/ready` readiness endpoint (P1-7 extension) 🔲
 
-```
-GET /api/health   — liveness: returns 200 if process is alive
-GET /api/ready    — readiness: checks DB, storage, queue connectivity
-```
+See section 4.5.
 
-### 7.4 Add structured JSON logging
+### 7.4 Extend instructor analytics endpoint 🔲
 
-Every log entry must include: `requestId`, `method`, `path`, `statusCode`, `durationMs`, `userId`.  
-No secrets, tokens, passwords, or PII in logs.
+See section 4.12.
 
 ---
 
 ## 8. Auth Changes
 
-### 8.1 Server-side Supabase Auth validation
+### 8.1 Server-side Supabase Auth validation ✅
 
-- [ ] All API routes that access user data must call `supabase.auth.getUser()` server-side
-- [ ] Role resolved from `user_identity_map`, not from JWT metadata
-- [ ] Service role key must only exist in server environment — never in browser
-- [ ] No route trusts `role` or `user_id` from request body/query
+- `requireAuth` calls `supabase.auth.getUser()` server-side on every request
+- Role resolved from `user_identity_map`, not from JWT custom claims
+- Service role key only in server environment
 
-### 8.2 Abuse protection
+### 8.2 Admin user creation must also create Auth users 🔲
 
-- [ ] Rate limit: 10 login attempts per IP per 15 minutes
-- [ ] Rate limit: 30 AI chat messages per student per hour
-- [ ] Rate limit: 20 file uploads per user per day
-- [ ] Rate limit: 5 report/roadmap generations per user per hour
-- [ ] CAPTCHA on sign-up and password reset flows
+See sections 4.6 and 4.7.
+
+### 8.3 Abuse protection (rate limiting) 🔲
+
+See section 4.4.
+
+### 8.4 CAPTCHA on sign-up and password reset 🔲
+
+- [ ] Add hCaptcha or Supabase built-in CAPTCHA on sign-up flow
+- [ ] Enable CAPTCHA on password reset in Supabase Auth settings
 
 ---
 
 ## 9. Query and Performance Fixes
 
-### 9.1 Always filter queries explicitly
+### 9.1 Always filter queries explicitly ✅
 
-Do not rely on RLS alone for query scoping. All backend and client queries must include natural equality filters (e.g. `.eq('student_id', userId)`) so Postgres builds efficient plans.
+All backend queries include explicit equality filters alongside RLS. Postgres builds efficient plans.
 
-### 9.2 Prepare for analytics read separation
+### 9.2 `storage_path` still returned to client 🔲
 
-- Derived aggregates must be written to `analytics_snapshots` by background jobs
+Some endpoints (`GET /api/modules/:id/notes`, `GET /api/submissions/:id/files`) include `storage_path` in the JSON response. This leaks internal bucket paths to the client — only signed URLs should be returned.
+
+- [ ] Remove `storage_path` from select list in those two routes (or explicitly omit it in the response map)
+
+### 9.3 Prepare for analytics read separation 🔲
+
+- Derived aggregates should be written to `analytics_snapshots` by background jobs
 - Dashboard reads should query snapshots, not raw tables
 - Heavy report queries should run on a read replica at scale
 
 ---
 
-## 10. Next Execution Order
+## 10. Frontend Audit Results
+
+### Pages — audit status
+
+| File | Raw fetch? | Hardcoded data? | Status |
+|---|---|---|---|
+| `DashboardPage.tsx` | ❌ | 🟡 Static AI insight string | Needs 4.10 fix |
+| `AnalyticsPage.tsx` | ❌ | ❌ | ✅ Clean |
+| `AssignmentsPage.tsx` | ❌ | ❌ | ✅ Clean |
+| `InstructorDashboard.tsx` | ❌ | ❌ | ✅ Clean |
+| `NotesPage.tsx` | ❌ | ❌ | ✅ Clean (signed URL improvement pending — 4.11) |
+| `CourseDetailPage.tsx` | ❌ | ❌ | ✅ Clean |
+| `CoursesPage.tsx` | ❌ | ❌ | ✅ Clean |
+| `LoginPage.tsx` | ❌ | ❌ | ✅ Clean |
+| `AdminDashboard.tsx` | ❌ | ❌ | ✅ Clean |
+| `AdminUserManagement.tsx` | ❌ | ❌ | ✅ Clean |
+| `AdminCourseManagement.tsx` | ❌ | 🔴 Calls `getAdminCourses` — route missing (4.8) | Needs backend fix |
+| `AdminSettings.tsx` | ❌ | ❌ | ✅ Clean |
+| `LandingPage.tsx` | ❌ | ❌ | ✅ Clean |
+
+### Components — audit status
+
+| File | Raw fetch? | Status |
+|---|---|---|
+| `AIAnalyticsSummary.tsx` | ❌ | ✅ Clean |
+| `AIGradingPanel.tsx` | ❌ | ✅ Clean |
+| `AnalyticsDashboard.tsx` | ❌ | ✅ Clean |
+| `ChatBot.tsx` | ❌ | ✅ Clean |
+| `Header.tsx` | ❌ | ✅ Clean |
+| `Sidebar.tsx` | ❌ | ✅ Clean |
+
+### `api.ts` — method coverage
+
+All methods required by the 5 recently rewritten pages exist. One gap:
+
+- ❌ `getSignedNoteUrl(noteId)` — not in `api.ts`; notes proxy is used instead (see 4.11)
+- ❌ `getAdminCourses` calls `GET /api/admin/courses` — backend route is missing (see 4.8)
+
+---
+
+## 11. Next Execution Order
 
 | Step | Task | Status |
 |---|---|---|
 | P1-1 | Audit server.ts, map all routes and auth checks | ✅ Done |
 | P1-2 | Auth bridge, RLS, policies, indexes | ✅ Done |
-| P1-3 | Drop password column, fix search_path, leaked password protection | ✅ DB done / 🟡 Auth setting pending |
-| P1-4 | Audit and refactor backend auth middleware | 🔲 Next |
-| P1-5 | Migrate file delivery to Supabase Storage + signed URLs | 🔲 Pending |
-| P1-6 | Add Zod validation + request ID middleware | 🔲 Pending |
-| P1-7 | Add health endpoints | 🔲 Pending |
-| P1-8 | Refactor server.ts into service modules | 🔲 Pending |
-| P1-9 | Add structured logging | 🔲 Pending |
+| P1-3 | Drop password column, fix search_path | ✅ DB done / 🟡 Auth leaked-pw setting pending |
+| P1-4 | Audit and refactor backend auth middleware | ✅ Done — `auth.ts`, `requireAuth`, `requireRole`, `requireSelfOrAdmin` |
+| P1-5 | Migrate file delivery to Supabase Storage + signed URLs | ✅ Done |
+| P1-6 | Add Zod validation + request ID middleware + env validation | ✅ Done |
+| P1-7 | Add health endpoint | ✅ Done — `GET /api/health` |
+| P1-8 | Refactor server.ts into service modules | 🔲 Next |
+| P1-9 | Add structured logging (requestId already done; JSON log format in place) | ✅ Mostly done — `logger.ts` active |
 | P1-10 | Environment audit: verify no secrets leak between envs | 🔲 Pending |
+| P2-1 | Add `GET /api/admin/courses` route | 🔲 Next (blockes AdminCourseManagement) |
+| P2-2 | Admin/bulk-enrol create Supabase Auth users + `user_identity_map` rows | 🔲 Next |
+| P2-3 | Add rate limiting middleware (`rateLimit.ts`) | 🔲 Pending |
+| P2-4 | Force-reset `ChangeMe123!` Auth passwords | 🔲 Pending |
+| P2-5 | Drop `cloudinary_url` columns via migration | 🔲 Pending |
+| P2-6 | Strip `storage_path` from API responses (return signed URLs only) | 🔲 Pending |
+| P2-7 | DashboardPage: replace static AI insight with live `aiAnalyticsSummary` call | 🔲 Pending |
+| P2-8 | Extend instructor analytics endpoint to return per-student data | 🔲 Pending |
+| P2-9 | Add `GET /api/ready` readiness endpoint | 🔲 Pending |
+| P2-10 | Add CAPTCHA on sign-up + password reset | 🔲 Pending |
+| P3-1 | Add `audit_logs` table + migration | 🔲 Pending |
+| P3-2 | Add `analytics_snapshots` + background job | 🔲 Pending |
+| P3-3 | Add `student_roadmaps` + `roadmap_progress` tables | 🔲 Pending |
 
 ---
 
