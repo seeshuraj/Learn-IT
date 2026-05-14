@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { AIAnalyticsSummary } from '../components/AIAnalyticsSummary';
+import { StudentAnalyticsData } from '../services/aiService';
 
 interface CourseStats {
   course_code: string;
@@ -22,10 +24,29 @@ interface Props { user: any; }
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
+function toAISummaryData(data: AnalyticsData, submissionRate: number): StudentAnalyticsData {
+  return {
+    studentName: data.student_name,
+    overallAverage: data.overall_avg ?? 0,
+    submissionRate,
+    courses: data.courses.map(c => ({
+      name: c.course_name,
+      average: c.avg_grade ?? 0,
+      assignments: c.assignments_submitted,
+      late: c.late,
+    })),
+  };
+}
+
+const gradeColor = (g: number | null) => {
+  if (g == null) return 'text-slate-400';
+  if (g >= 80) return 'text-green-600';
+  if (g >= 60) return 'text-amber-600';
+  return 'text-red-600';
+};
+
 export default function AnalyticsPage({ user }: Props) {
   const [data, setData] = useState<AnalyticsData | null>(null);
-  const [aiSummary, setAiSummary] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -37,32 +58,6 @@ export default function AnalyticsPage({ user }: Props) {
       .catch(() => setError('Could not load analytics data.'))
       .finally(() => setLoading(false));
   }, [user?.id]);
-
-  async function fetchAISummary() {
-    if (!data) return;
-    setAiLoading(true);
-    setAiSummary('');
-    try {
-      const res = await fetch(`${API}/api/ai/analytics-summary`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analytics: data }),
-      });
-      const json = await res.json();
-      setAiSummary(json.summary ?? 'No summary available.');
-    } catch {
-      setAiSummary('Could not load AI summary. Check your API connection.');
-    } finally {
-      setAiLoading(false);
-    }
-  }
-
-  const gradeColor = (g: number | null) => {
-    if (g == null) return 'text-slate-400';
-    if (g >= 80) return 'text-green-600';
-    if (g >= 60) return 'text-amber-600';
-    return 'text-red-600';
-  };
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-[60vh]">
@@ -80,34 +75,19 @@ export default function AnalyticsPage({ user }: Props) {
     ? Math.round((data.total_submitted / (data.total_submitted + data.total_pending)) * 100)
     : 0;
 
+  const aiData = toAISummaryData(data, submissionRate);
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
 
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">My Analytics</h1>
-          <p className="text-slate-500 text-sm mt-1">Performance overview · {data.student_name}</p>
-        </div>
-        <button
-          onClick={fetchAISummary}
-          disabled={aiLoading}
-          className="flex items-center gap-2 bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-sm font-semibold px-4 py-2 rounded-lg transition"
-        >
-          {aiLoading
-            ? <><span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />Analysing…</>
-            : '✦ AI Summary'
-          }
-        </button>
+      <div>
+        <h1 className="text-2xl font-bold text-slate-800">My Analytics</h1>
+        <p className="text-slate-500 text-sm mt-1">Performance overview · {data.student_name}</p>
       </div>
 
-      {/* AI Summary Card */}
-      {aiSummary && (
-        <div className="bg-teal-50 border border-teal-200 rounded-xl p-5 animate-fade-in">
-          <p className="text-xs font-semibold text-teal-600 uppercase tracking-wide mb-2">✦ AI Insight</p>
-          <p className="text-sm text-teal-900 leading-relaxed">{aiSummary}</p>
-        </div>
-      )}
+      {/* AI Summary — auto-loads with typewriter reveal */}
+      <AIAnalyticsSummary data={aiData} autoLoad={true} />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -150,7 +130,6 @@ export default function AnalyticsPage({ user }: Props) {
         <div className="space-y-5">
           {data.courses.map(c => (
             <div key={c.course_code} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-              {/* Course header */}
               <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3 min-w-0">
                   <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded shrink-0">
@@ -170,7 +149,6 @@ export default function AnalyticsPage({ user }: Props) {
                 </div>
               </div>
 
-              {/* Progress bar + submission count */}
               <div className="px-5 pt-4 pb-2">
                 <div className="flex items-center gap-3 mb-4">
                   <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -184,7 +162,6 @@ export default function AnalyticsPage({ user }: Props) {
                   </span>
                 </div>
 
-                {/* Per-assignment grades */}
                 {c.grades.length > 0 ? (
                   <div className="divide-y divide-slate-50">
                     {c.grades.map((g, i) => (

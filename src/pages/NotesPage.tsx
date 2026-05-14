@@ -12,6 +12,8 @@ interface Note {
   chunk_count: number;
   module_id: number;
   cloudinary_url?: string;
+  // extracted text content for RAG context (populated by backend when available)
+  text_content?: string;
 }
 
 interface Module {
@@ -64,7 +66,6 @@ export default function NotesPage({ user }: Props) {
       const fetchedNotes: Note[] = Array.isArray(notesData) ? notesData : [];
       setNotes(fetchedNotes);
 
-      // Auto-select first module that has notes
       if (fetchedNotes.length > 0) {
         setSelectedModuleId(prev => prev ?? fetchedNotes[0].module_id);
       } else if (allModules.length > 0) {
@@ -77,7 +78,6 @@ export default function NotesPage({ user }: Props) {
     }
   }
 
-  // Sidebar: enrolled modules + any orphan note modules
   const sidebarModules: Module[] = [
     ...modules,
     ...notes
@@ -92,19 +92,34 @@ export default function NotesPage({ user }: Props) {
 
   const currentModule = sidebarModules.find(m => m.id === selectedModuleId);
 
-  // AI chat priority: activeNote module > selected module (if has notes) > first module with notes
-  const chatModuleId: number | undefined =
-    activeNote?.module_id ??
-    (filteredNotes.length > 0 ? (selectedModuleId ?? undefined) : undefined) ??
-    (notes.length > 0 ? notes[0].module_id : undefined);
-
+  // Build chatbot module title
   const chatModuleTitle = activeNote
     ? `${activeNote.module_name} · ${activeNote.course_name}`
     : currentModule
       ? `${currentModule.name} · ${currentModule.course_name}`
       : 'Course Assistant';
 
-  // Backend proxy URL — bypasses Cloudinary CORS/content-disposition for iframe rendering
+  // Build notesContext: concatenate text_content from notes in the current module
+  // Falls back to listing note names so the chatbot at least knows what files exist
+  const chatNotesContext: string = (() => {
+    const contextNotes = activeNote ? [activeNote] : filteredNotes;
+    const withContent = contextNotes.filter(n => n.text_content);
+    if (withContent.length > 0) {
+      return withContent
+        .map(n => `=== ${n.original_name} ===\n${n.text_content}`)
+        .join('\n\n')
+        .slice(0, 4000);
+    }
+    // Fallback: list available note filenames so chatbot knows what's uploaded
+    if (contextNotes.length > 0) {
+      return `The following notes have been uploaded for this module:\n` +
+        contextNotes.map(n => `- ${n.original_name}`).join('\n') +
+        `\n\nNote: Full text content is not yet available in this session. ` +
+        `Please ask the student to describe the content or re-upload the note.`;
+    }
+    return '';
+  })();
+
   function getProxyUrl(note: Note): string {
     return `${BASE}/api/notes/${note.id}/proxy`;
   }
@@ -168,7 +183,7 @@ export default function NotesPage({ user }: Props) {
             </div>
           )}
 
-          {/* PDF / text viewer — uses backend proxy */}
+          {/* PDF / text viewer */}
           {activeNote && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
@@ -218,9 +233,9 @@ export default function NotesPage({ user }: Props) {
                 {currentModule ? `Notes for ${currentModule.name}` : 'All Notes'}
                 <span className="ml-2 text-xs font-normal text-slate-400">({filteredNotes.length})</span>
               </p>
-              {chatModuleId && (
-                <span className="text-xs text-indigo-500 font-medium">
-                  🧠 AI → module #{chatModuleId}
+              {filteredNotes.length > 0 && (
+                <span className="text-xs text-violet-500 font-medium flex items-center gap-1">
+                  ✦ AI Chat active
                 </span>
               )}
             </div>
@@ -301,7 +316,11 @@ export default function NotesPage({ user }: Props) {
         </div>
       </div>
 
-      <ChatBot moduleId={chatModuleId} moduleTitle={chatModuleTitle} />
+      {/* ChatBot — receives correct moduleTitle and notesContext string */}
+      <ChatBot
+        moduleTitle={chatModuleTitle}
+        notesContext={chatNotesContext}
+      />
     </div>
   );
 }
