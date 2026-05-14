@@ -3,13 +3,12 @@
  * Read-only roadmap viewer for instructors.
  * Shown as a slide-over panel when clicking "View Roadmap" on any student row.
  */
-import React, { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import {
-  Map, X, CheckCircle2, Circle, Clock,
-  BookOpen, RefreshCw, ChevronRight
-} from "lucide-react";
-import { api } from "../services/api";
+  Map, X, CheckCircle2, Circle, Clock, BookOpen,
+} from 'lucide-react';
+import { api } from '../services/api';
 
 interface Milestone {
   id: number;
@@ -83,7 +82,7 @@ const InstructorRoadmapView: React.FC<Props> = ({ studentName, courseId, courseN
             </div>
             <div className="min-w-0">
               <p className="text-xs text-slate-400 font-medium truncate">{courseName}</p>
-              <h2 className="text-sm font-bold text-slate-900 truncate">{studentName}&apos;s Roadmap</h2>
+              <h2 className="text-sm font-bold text-slate-900 truncate">{studentName}'s Roadmap</h2>
             </div>
           </div>
           <button onClick={onClose} className="shrink-0 ml-4 text-slate-400 hover:text-slate-700 transition">

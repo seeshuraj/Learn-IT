@@ -1,7 +1,7 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-14  
-Status: **Phase 2 code-complete.** P2-10, P3-1, P3-2, P3-3 pending.
+Status: **Phase 2 + Phase 3 (P3-3) code-complete.** P2-10, P3-1, P3-2 pending.
 
 ---
 
@@ -76,6 +76,16 @@ Status: **Phase 2 code-complete.** P2-10, P3-1, P3-2, P3-3 pending.
 | P2-8 | `GET /api/instructor/courses/:id/analytics` — extended with `students[]` array `{ student_id, name, avg_grade, submission_count, late, missed }` |
 | P2-9 | `GET /api/ready` — probes DB + Supabase Storage; returns 200 `{ status: "ready" }` or 503 `{ status: "unavailable", checks }` |
 
+### Phase 3 (P3-3) ✅
+
+| # | What |
+|---|---|
+| P3-3 | Student `RoadmapPage.tsx` — course picker, AI generate/regenerate, milestone stepper with status cycling (pending → in_progress → completed), progress bar |
+| P3-3 | `InstructorRoadmapView.tsx` — slide-over panel on Students tab, read-only view of any student's roadmap per course, progress bar, milestone list |
+| P3-3 | `InstructorDashboard.tsx` — "Roadmap" button per student row; `StudentStat` extended with `course_id` / `course_name` |
+| P3-3 | `api.ts` — `getRoadmap`, `generateRoadmap`, `updateMilestoneStatus`, `deleteRoadmap` methods |
+| P3-3 | `AdminCourseManagement.tsx` — bulk-enroll now shows temp-password table with per-row + copy-all clipboard buttons |
+
 ---
 
 ## 3. Applied Migrations
@@ -136,10 +146,6 @@ CREATE TABLE audit_logs (
 
 Add `analytics_snapshots` table + background cron job so dashboards read pre-aggregated data instead of hitting raw tables on every load.
 
-### P3-3 — Student roadmaps 🟢
-
-Add `student_roadmaps` + `roadmap_progress` tables for AI-generated learning path tracking.
-
 ---
 
 ## 6. Next Execution Order
@@ -149,4 +155,3 @@ Add `student_roadmaps` + `roadmap_progress` tables for AI-generated learning pat
 | 🟢 1 | P2-10: hCaptcha integration | 30 min |
 | 🟢 2 | P3-1: `audit_logs` table + write to it on key actions | 30 min |
 | 🟢 3 | P3-2: `analytics_snapshots` + cron aggregation job | 60 min |
-| 🟢 4 | P3-3: `student_roadmaps` + `roadmap_progress` tables | 30 min |
