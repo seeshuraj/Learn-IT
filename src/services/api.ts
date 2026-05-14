@@ -25,9 +25,23 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-/** Sign in with Supabase (email + password). Returns { user, session }. */
-export async function supabaseSignIn(email: string, password: string) {
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+/**
+ * Sign in with Supabase (email + password).
+ * Optionally forwards a captchaToken from hCaptcha (P2-10).
+ * hCaptcha must be enabled in the Supabase Auth dashboard for the token to
+ * be validated server-side; if it is not enabled the token is simply ignored.
+ * Returns { user, session }.
+ */
+export async function supabaseSignIn(
+  email: string,
+  password: string,
+  captchaToken?: string
+) {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+    ...(captchaToken ? { options: { captchaToken } } : {}),
+  });
   if (error) throw new Error(error.message);
   return data;
 }
@@ -37,7 +51,7 @@ export async function supabaseSignOut() {
   await supabase.auth.signOut();
 }
 
-// ── Core fetch wrapper ───────────────────────────────────────────────────────
+// ── Core fetch wrapper ──────────────────────────────────────────────────────────
 
 async function request<T = any>(path: string, options?: RequestInit): Promise<T> {
   const ah = await authHeaders();
@@ -66,7 +80,7 @@ async function request<T = any>(path: string, options?: RequestInit): Promise<T>
   return data as T;
 }
 
-// ── Public API surface ───────────────────────────────────────────────────────
+// ── Public API surface ──────────────────────────────────────────────────────────
 
 export const api = {
   // Auth — login still hits our Express endpoint to get the legacy user record.

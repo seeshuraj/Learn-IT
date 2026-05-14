@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { User } from '../types';
 import { api, supabaseSignIn } from '../services/api';
 import { waitForSession } from '../services/supabaseClient';
+import { useCaptcha } from '../hooks/useCaptcha';
 
 /**
  * DEMO_ACCOUNTS — these emails must exist in Supabase Auth AND in
@@ -24,18 +25,29 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState('');
 
+  // P2-10: hCaptcha — disabled automatically if VITE_HCAPTCHA_SITE_KEY is not set
+  const { containerRef, token: captchaToken, reset: resetCaptcha, ready: captchaReady, disabled: captchaDisabled } = useCaptcha();
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+
+    // Block submission until captcha is solved (skip check if captcha is disabled/not configured)
+    if (!captchaDisabled && !captchaToken) {
+      setError('Please complete the CAPTCHA challenge before signing in.');
+      return;
+    }
+
     setLoading(true);
     try {
       const normalizedEmail = email.trim().toLowerCase();
 
-      // 1. Authenticate with Supabase Auth → stores access token in sessionStorage.
-      //    signInWithPassword returns the session directly; we use that token
-      //    immediately rather than relying on a follow-up getSession() call,
-      //    which avoids the sessionStorage write-race that caused 401s.
-      const { session } = await supabaseSignIn(normalizedEmail, password);
+      // 1. Authenticate with Supabase Auth, forwarding captcha token if present.
+      const { session } = await supabaseSignIn(
+        normalizedEmail,
+        password,
+        captchaDisabled ? undefined : (captchaToken ?? undefined)
+      );
       console.log('SUPABASE_SESSION', session?.access_token?.slice(0, 20), !!session);
 
       if (!session?.access_token) {
@@ -45,17 +57,16 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         );
       }
 
-      // 2. Wait for the session to be persisted so that any parallel fetch
-      //    that calls getAccessToken() will find it.
+      // 2. Wait for the session to be persisted so parallel fetches find it.
       await waitForSession(session.access_token);
 
       // 3. Fetch the legacy user record from our Express API.
-      //    The request() wrapper in api.ts calls getAccessToken() which now
-      //    always finds a valid session.
       const user = await api.login(normalizedEmail);
       onLogin(user);
     } catch (err: any) {
       setError(err.message ?? 'Invalid credentials');
+      // Reset captcha on failure so user can try again
+      resetCaptcha();
     } finally {
       setLoading(false);
     }
@@ -113,6 +124,16 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               />
             </div>
 
+            {/* P2-10: hCaptcha widget — only rendered when VITE_HCAPTCHA_SITE_KEY is set */}
+            {!captchaDisabled && (
+              <div>
+                <div ref={containerRef} className="h-captcha" />
+                {!captchaReady && (
+                  <p className="text-xs text-slate-400 mt-1">Loading CAPTCHA…</p>
+                )}
+              </div>
+            )}
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5 rounded-lg">
                 {error}
@@ -121,7 +142,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (!captchaDisabled && !captchaReady)}
               className="w-full bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg text-sm transition"
             >
               {loading ? 'Signing in…' : 'Sign in →'}
