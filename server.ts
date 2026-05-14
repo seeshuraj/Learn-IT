@@ -49,7 +49,7 @@ validateEnv();
 
 dns.setDefaultResultOrder("ipv4first");
 
-// ── Supabase Storage ──────────────────────────────────────────────────────
+// ── Supabase Storage ──────────────────────────────────────────────────────────
 const SUPABASE_URL          = process.env.SUPABASE_URL ?? "";
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const NOTES_BUCKET          = "learnit-notes";
@@ -60,7 +60,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-// ── Storage helpers ───────────────────────────────────────────────────────
+// ── Storage helpers ───────────────────────────────────────────────────────────
 
 async function uploadToStorage(
   bucket: string,
@@ -140,7 +140,7 @@ async function checkStorageConnectivity(): Promise<void> {
   }
 }
 
-// ── Auth user helpers ─────────────────────────────────────────────────────
+// ── Auth user helpers ─────────────────────────────────────────────────────────
 
 function generateTempPassword(): string {
   const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*";
@@ -405,7 +405,7 @@ async function startServer() {
   app.use(attachRequestId);
   app.use(requestLogger);
 
-  // ── Rate limiting ───────────────────────────────────────────────────────
+  // ── Rate limiting ─────────────────────────────────────────────────────────
   // General catch-all: 200 req / 15 min per IP (skips /api/health and /api/ready)
   app.use("/api", generalApiLimiter);
 
@@ -427,7 +427,7 @@ async function startServer() {
 
   app.use(express.json());
 
-  // ── Health ────────────────────────────────────────────────────────────
+  // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
     try {
       await pool.query("SELECT 1");
@@ -440,8 +440,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ status: "error", message: e.message }); }
   });
 
-  // ── Auth ──────────────────────────────────────────────────────────────
-  // loginLimiter applied here: 10 attempts per IP per 15 min
+  // ── Auth ──────────────────────────────────────────────────────────────────
   app.post("/api/login", loginLimiter, requireAuth, async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -454,7 +453,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── File proxy ────────────────────────────────────────────────────────
+  // ── File proxy ────────────────────────────────────────────────────────────
   app.get("/api/notes/:id/proxy", requireAuth, async (req, res) => {
     try {
       const note = await queryOne(
@@ -491,7 +490,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Courses ────────────────────────────────────────────────────────────
+  // ── Courses ───────────────────────────────────────────────────────────────
   app.get("/api/courses", requireAuth, async (_req, res) => {
     try {
       res.json(await query(`
@@ -532,7 +531,7 @@ async function startServer() {
     }
   );
 
-  // ── Materials ──────────────────────────────────────────────────────────
+  // ── Materials ─────────────────────────────────────────────────────────────
   app.get("/api/modules/:id/materials", requireAuth, async (req, res) => {
     try {
       res.json(await query("SELECT * FROM materials WHERE module_id = $1", [req.params.id]));
@@ -550,7 +549,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Assignments ────────────────────────────────────────────────────────
+  // ── Assignments ───────────────────────────────────────────────────────────
   app.get("/api/modules/:id/assignments", requireAuth, async (req, res) => {
     try {
       const status = (req.query.status as string) || "active";
@@ -600,7 +599,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Submissions ────────────────────────────────────────────────────────
+  // ── Submissions ───────────────────────────────────────────────────────────
   app.post(
     "/api/submissions",
     requireAuth, requireRole("student"),
@@ -623,7 +622,6 @@ async function startServer() {
     }
   );
 
-  // uploadLimiter applied: 20 uploads per IP per 24h
   app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadLimiter, uploadSubmission.array("files", 5), async (req: any, res) => {
     try {
       const { assignment_id, content = "" } = req.body;
@@ -652,7 +650,8 @@ async function startServer() {
             "INSERT INTO submission_files (submission_id,filename,original_name,file_type,storage_path) VALUES ($1,$2,$3,$4,$5)",
             [submissionId, file.originalname, file.originalname, file.mimetype, storedPath]
           );
-          savedFiles.push({ filename: file.originalname, original_name: file.originalname, storage_path: storedPath });
+          // P2-6: return only filename/type — no storage_path to client
+          savedFiles.push({ filename: file.originalname, original_name: file.originalname });
         } catch (uploadErr: any) {
           console.error(`[submissions/upload] file upload failed for ${file.originalname}:`, uploadErr.message);
           savedFiles.push({ filename: file.originalname, error: uploadErr.message });
@@ -662,9 +661,11 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P2-6: storage_path stripped — returns signed_url + proxy_url only
   app.get("/api/submissions/:id/files", requireAuth, async (req, res) => {
     try {
       const files = await query(
+        // storage_path selected internally for signed URL generation but NOT forwarded to client
         "SELECT id,filename,original_name,file_type,uploaded_at,storage_path FROM submission_files WHERE submission_id=$1",
         [req.params.id]
       );
@@ -672,7 +673,9 @@ async function startServer() {
         const signedUrl = f.storage_path
           ? await getSignedUrl(SUBMISSIONS_BUCKET, f.storage_path)
           : null;
-        return { ...f, url: signedUrl ?? null };
+        // Destructure out storage_path — never send to client
+        const { storage_path: _omit, ...safeFile } = f;
+        return { ...safeFile, url: signedUrl ?? null };
       }));
       res.json(withUrls);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -711,8 +714,7 @@ async function startServer() {
     }
   );
 
-  // ── Notes ─────────────────────────────────────────────────────────────
-  // uploadLimiter applied: 20 uploads per IP per 24h
+  // ── Notes ─────────────────────────────────────────────────────────────────
   app.post("/api/modules/:id/notes", requireAuth, requireRole("instructor", "admin"), uploadLimiter, uploadNote.single("file"), async (req: any, res) => {
     try {
       const file = req.file;
@@ -754,7 +756,7 @@ async function startServer() {
         original_name: file.originalname,
         chunk_count:   chunks.length,
         text_length:   text.length,
-        storage_path:  storedPath,
+        // P2-6: storage_path intentionally omitted from upload response
       });
     } catch (e: any) {
       console.error("[POST /api/modules/:id/notes] error:", e.message);
@@ -762,6 +764,7 @@ async function startServer() {
     }
   });
 
+  // P2-6: storage_path stripped from list response — signed_url + proxy_url only
   app.get("/api/modules/:id/notes", requireAuth, async (req, res) => {
     try {
       const notes = await query(`
@@ -777,7 +780,9 @@ async function startServer() {
       `, [req.params.id]);
       const withUrls = await Promise.all(notes.map(async (n: any) => {
         const signedUrl = n.storage_path ? await getSignedUrl(NOTES_BUCKET, n.storage_path) : null;
-        return { ...n, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
+        // Destructure out storage_path — never send to client
+        const { storage_path: _omit, ...safeNote } = n;
+        return { ...safeNote, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
       }));
       res.json(withUrls);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -793,6 +798,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // P2-6: storage_path stripped from student notes list
   app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       const notes = await query(`
@@ -811,13 +817,15 @@ async function startServer() {
       `, [req.params.id]);
       const withUrls = await Promise.all(notes.map(async (n: any) => {
         const signedUrl = n.storage_path ? await getSignedUrl(NOTES_BUCKET, n.storage_path) : null;
-        return { ...n, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
+        // Destructure out storage_path — never send to client
+        const { storage_path: _omit, ...safeNote } = n;
+        return { ...safeNote, proxy_url: `/api/notes/${n.id}/proxy`, signed_url: signedUrl };
       }));
       res.json(withUrls);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Student routes ─────────────────────────────────────────────────────
+  // ── Student routes ────────────────────────────────────────────────────────
   app.get("/api/student/:id/courses", requireAuth, requireSelfOrAdmin("id"), async (req, res) => {
     try {
       res.json(await query(`
@@ -925,7 +933,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Admin ──────────────────────────────────────────────────────────────
+  // ── Admin ─────────────────────────────────────────────────────────────────
   app.get("/api/admin/users", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       res.json(await query("SELECT id,name,email,role,active,year,major,gpa FROM users ORDER BY role,name"));
@@ -985,7 +993,7 @@ async function startServer() {
     }
   );
 
-  // P2-1: GET /api/admin/courses (was missing)
+  // P2-1: GET /api/admin/courses
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       res.json(await query(`
@@ -1140,10 +1148,10 @@ async function startServer() {
               [course_id, userRow.id]
             );
             results.push({
-              email:       trimmed,
-              student_id:  userRow.id,
-              enrolled:    r.rows.length > 0,
-              newUser:     isNewUser,
+              email:        trimmed,
+              student_id:   userRow.id,
+              enrolled:     r.rows.length > 0,
+              newUser:      isNewUser,
               tempPassword: tempPassword ?? undefined,
             });
           }
@@ -1155,7 +1163,7 @@ async function startServer() {
     }
   );
 
-  // ── Instructor ─────────────────────────────────────────────────────────
+  // ── Instructor ────────────────────────────────────────────────────────────
   app.get("/api/instructor/:id/courses", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
       res.json(await query(`
@@ -1199,8 +1207,7 @@ async function startServer() {
     }
   );
 
-  // ── AI ─────────────────────────────────────────────────────────────────
-  // aiGradeLimiter: 20 per IP per hour (more expensive than chat)
+  // ── AI ────────────────────────────────────────────────────────────────────
   app.post("/api/ai/grade", requireAuth, aiGradeLimiter, async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
@@ -1213,7 +1220,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // aiGradeLimiter: 20 per IP per hour
   app.post(
     "/api/ai/grade-pdf",
     requireAuth, requireRole("instructor", "admin"),
@@ -1271,7 +1277,6 @@ async function startServer() {
     }
   );
 
-  // aiLimiter: 30 per IP per hour
   app.post("/api/ai/chat", requireAuth, aiLimiter, async (req, res) => {
     try {
       const { question, moduleTitle, moduleId, history = [] } = req.body;
@@ -1303,7 +1308,6 @@ async function startServer() {
     }
   });
 
-  // reportLimiter: 5 per IP per hour (heavy DB aggregation + LLM)
   app.post("/api/ai/analytics-summary", requireAuth, reportLimiter, async (req, res) => {
     try {
       const { analytics } = req.body;
@@ -1325,7 +1329,7 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Static (production) ────────────────────────────────────────────────
+  // ── Static (production) ───────────────────────────────────────────────────
   if (isProduction) {
     const DIST_DIR = path.join(PROJECT_ROOT, "dist");
     app.use(express.static(DIST_DIR));
