@@ -1,7 +1,7 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-15  
-Status: **Phase 1 + Phase 2 + P3-1 + P3-3 + P3-4 fully complete. P3-2 pending.**
+Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. Only manual deployment steps remain.**
 
 ---
 
@@ -12,7 +12,6 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 + P3-4 fully complete. P3-2 pending.**
 3. [Applied Migrations](#3-applied-migrations)
 4. [Deployment Checklist](#4-deployment-checklist)
 5. [Remaining Work](#5-remaining-work)
-6. [Next Execution Order](#6-next-execution-order)
 
 ---
 
@@ -81,7 +80,7 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 + P3-4 fully complete. P3-2 pending.**
 | P2-9 | `GET /api/ready` — probes DB + Supabase Storage; returns 200 `{ status: "ready" }` or 503 `{ status: "unavailable", checks }` |
 | P2-10 | hCaptcha on login — `useCaptcha.ts` hook dynamically loads widget; `supabaseSignIn()` forwards `captchaToken`; disabled automatically when `VITE_HCAPTCHA_SITE_KEY` is not set |
 
-### Phase 3 (P3-1 + P3-3 + P3-4) ✅
+### Phase 3 (P3-1 → P3-4) ✅
 
 | # | What |
 |---|---|
@@ -89,6 +88,10 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 + P3-4 fully complete. P3-2 pending.**
 | P3-1 | `src/server/middleware/audit.ts` — `writeAudit()` fire-and-forget writer; `setAuditPool()` called at startup |
 | P3-1 | `writeAudit` wired on: `login.success`, `login.denied`, `grade.submit`, `note.delete`, `assignment.archive`, `user.create`, `user.update`, `enrollment.bulk`, `course.create`, `course.delete`, `enrollment.create`, `enrollment.delete` |
 | P3-1 | `GET /api/admin/audit-logs` — admin-only, paginated (limit/offset), filterable by `action`, `actor_user_id`, `resource_type`, `since`, `until` |
+| P3-2 | `migrations/006_create_analytics_snapshots.sql` — creates `admin_stats_snapshots` + `course_analytics_snapshots` tables with indexes |
+| P3-2 | `src/server/jobs/analyticsSnapshot.ts` — `snapshotAdminStats()` + `snapshotCourseAnalytics()`; idempotent, pruning to last 48 rows (24 h) |
+| P3-2 | `src/server/jobs/cron.ts` — `startCronJobs(pool)`: fires immediately on startup then every 30 min via `node-cron` |
+| P3-2 | `server.ts` — `SNAPSHOT_STALE_MS = 35 min` guard on both analytics routes; reads snapshot first, falls back to live query if stale |
 | P3-3 | Student `RoadmapPage.tsx` — course picker, AI generate/regenerate, milestone stepper with status cycling (pending → in_progress → completed), progress bar |
 | P3-3 | `InstructorRoadmapView.tsx` — slide-over panel on Students tab, read-only view of any student's roadmap per course, progress bar, milestone list |
 | P3-3 | `InstructorDashboard.tsx` — "Roadmap" button per student row; `StudentStat` extended with `course_id` / `course_name` |
@@ -129,15 +132,19 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 + P3-4 fully complete. P3-2 pending.**
 | 20260515143700 | fix_current_user_legacy_view_security |
 | 20260515143800 | revoke_public_execute_security_definer_functions |
 | 20260515150000 | drop_cloudinary_url_columns |
+| 006 | create_analytics_snapshots |
+| 007 | create_student_roadmaps |
+| 008 | create_notifications |
+| 009 | add_password_reset |
 
 ---
 
 ## 4. Deployment Checklist
 
-### Remaining manual steps
+### Remaining manual steps (your action required)
 
 ```bash
-# Rotate ChangeMe123! seed passwords (P2-4) — run locally
+# 1. Rotate ChangeMe123! seed passwords — run locally
 npx tsx scripts/rotate-seed-passwords.ts
 ```
 
@@ -152,17 +159,6 @@ Add to **Vercel environment variables** (Production + Preview):
 
 ## 5. Remaining Work
 
-### P3-2 — Analytics snapshots + cron 🟢
+**All code changes are complete.** No further development tasks remain.
 
-Add background cron job so dashboards read pre-aggregated data from `admin_stats_snapshots` and `course_analytics_snapshots` instead of hitting raw tables on every load.
-
----
-
-## 6. Next Execution Order
-
-| Priority | Task | Est. effort |
-|---|---|---|
-| 🟢 1 | P3-2: analytics snapshots cron aggregation job | 60 min |
-| ⏳ 2 | Run `rotate-seed-passwords.ts` locally | 2 min |
-| 🟡 3 | Enable leaked password protection (Supabase dashboard) | 1 min |
-| 🟡 4 | Enable hCaptcha + add Vercel env var | 5 min |
+The only outstanding items are the 4 manual deployment steps listed above in Section 4 — all account-level actions that require your credentials.
