@@ -627,29 +627,49 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   /**
    * AI Grade handler — uses RAG-enhanced /api/ai/grade-pdf when the submission
    * has files; falls back to text-only /api/ai/grade for text-only submissions.
-   * Persists result to DB (ai_score, ai_feedback, ai_strengths, ai_improvements).
+   *
+   * Rubric construction priority:
+   *   1. Instructor-defined rubric (a.rubric) — most accurate
+   *   2. Assignment description/instructions (a.description)
+   *   3. Generic fallback rubric
+   * Score scale always uses the real max_points, not a hardcoded 100.
    */
   const handleAiGrade = async () => {
     if (!selectedSubmission) return;
     setIsAiLoading(true); setAiResult(null);
 
+    const sub = selectedSubmission as any;
     const fileCount = submissionFileCount[selectedSubmission.id] ?? 0;
-    // Build rubric from assignment description if available, else use default
-    const rubric = (selectedSubmission as any).assignment_description
-      ? `Assignment: ${(selectedSubmission as any).assignment_title}\n\nInstructions: ${(selectedSubmission as any).assignment_description}\n\nRubric: Assess understanding of core concepts, clarity of explanation, use of examples, and conclusion quality. Score out of 100.`
-      : "Assess understanding of core concepts, clarity of explanation, use of examples, and conclusion quality. Score out of 100.";
+    const maxPts: number = sub.max_points ?? 100;
+
+    // ── Build rubric prompt ──────────────────────────────────────────────────
+    const rubricParts: string[] = [];
+    if (sub.assignment_title) rubricParts.push(`Assignment: ${sub.assignment_title}`);
+    if (sub.assignment_description?.trim()) rubricParts.push(`Instructions:\n${sub.assignment_description.trim()}`);
+    if (sub.rubric?.trim()) {
+      // Instructor provided a structured rubric — use it verbatim
+      rubricParts.push(`Rubric:\n${sub.rubric.trim()}`);
+    } else {
+      // Fallback: generic criteria
+      rubricParts.push(
+        'Rubric: Assess understanding of core concepts, clarity of explanation, use of relevant examples, depth of analysis, and conclusion quality.'
+      );
+    }
+    rubricParts.push(`Score out of ${maxPts}. Return your score as a number between 0 and ${maxPts}.`);
+    const rubric = rubricParts.join('\n\n');
+    // ────────────────────────────────────────────────────────────────────────
 
     try {
       let result: AiGradeResult;
 
       if (fileCount > 0) {
         // Full RAG-enhanced PDF grading — reads actual uploaded files from Supabase storage
-        const moduleId: number | undefined = (selectedSubmission as any).module_id ?? undefined;
+        const moduleId: number | undefined = sub.module_id ?? undefined;
         const raw = await api.aiGradePdf(selectedSubmission.id, rubric, moduleId);
         result = {
           score:            raw.score ?? 0,
           feedback:         raw.feedback ?? '',
-          strengths:        Array.isArray(raw.strengths)   ? raw.strengths   : [],
+          strengths:        Array.isArray(raw.strengths)    ? raw.strengths    : [],
           improvements:     Array.isArray(raw.improvements) ? raw.improvements : [],
           rubric_breakdown: Array.isArray(raw.rubric_breakdown) ? raw.rubric_breakdown : undefined,
           confidence:       typeof raw.confidence === 'number' ? raw.confidence : estimateConfidence(raw),
@@ -661,7 +681,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
         result = {
           score:        raw.score ?? 0,
           feedback:     raw.feedback ?? '',
-          strengths:    Array.isArray(raw.strengths)   ? raw.strengths   : [],
+          strengths:    Array.isArray(raw.strengths)    ? raw.strengths    : [],
           improvements: Array.isArray(raw.improvements) ? raw.improvements : [],
           confidence:   typeof raw.confidence === 'number' ? raw.confidence : estimateConfidence(raw),
           graded_via:   'text',
@@ -858,7 +878,10 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
           {/* ── Grading Panel ── */}
           <div className="lg:col-span-2">
             <AnimatePresence mode="wait">
-              {selectedSubmission ? (
+              {selectedSubmission ? (() => {
+                const maxPts = (selectedSubmission as any).max_points ?? 100;
+                const scoreRingPct = aiResult ? Math.round((aiResult.score / maxPts) * 100) : 0;
+                return (
                 <motion.div key={selectedSubmission.id}
                   initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
                   className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
@@ -878,6 +901,11 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                           )}
                           {(submissionFileCount[selectedSubmission.id] ?? 0) > 0 && (
                             <span className="text-[10px] text-indigo-400 font-medium">RAG-enhanced grading available</span>
+                          )}
+                          {(selectedSubmission as any).rubric?.trim() && (
+                            <span className="flex items-center gap-1 text-xs font-semibold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full border border-purple-100">
+                              <BarChart3 className="w-3 h-3" /> Custom rubric
+                            </span>
                           )}
                         </div>
                       </div>
@@ -936,15 +964,15 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                             <div className="text-center">
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-1">Score</p>
                               <p className="text-4xl font-bold text-green-800 tabular-nums">{aiResult.score}</p>
-                              <p className="text-xs text-green-600">/100</p>
-                              {/* Score ring indicator */}
+                              <p className="text-xs text-green-600">/{maxPts}</p>
+                              {/* Score ring — arc scaled to actual max_points */}
                               <div className="mt-2 mx-auto w-16">
                                 <svg viewBox="0 0 36 36" className="w-16 h-16 -rotate-90">
                                   <circle cx="18" cy="18" r="15.9" fill="none" stroke="#d1fae5" strokeWidth="3" />
                                   <circle cx="18" cy="18" r="15.9" fill="none"
-                                    stroke={aiResult.score >= 75 ? '#059669' : aiResult.score >= 55 ? '#d97706' : '#dc2626'}
+                                    stroke={scoreRingPct >= 75 ? '#059669' : scoreRingPct >= 55 ? '#d97706' : '#dc2626'}
                                     strokeWidth="3"
-                                    strokeDasharray={`${aiResult.score} 100`}
+                                    strokeDasharray={`${scoreRingPct} 100`}
                                     strokeLinecap="round"
                                   />
                                 </svg>
@@ -989,12 +1017,12 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                     {/* Manual grade inputs */}
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                       <div className="md:col-span-1">
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Grade (0–100)</label>
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Grade (0–{maxPts})</label>
                         <div className="relative">
                           <input type="number" value={grade} onChange={(e) => setGrade(Number(e.target.value))}
                             className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-2xl font-bold text-indigo-600 focus:ring-2 focus:ring-indigo-500 text-center"
-                            min="0" max="100" />
-                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">/100</span>
+                            min="0" max={maxPts} />
+                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">/{maxPts}</span>
                         </div>
                       </div>
                       <div className="md:col-span-3">
@@ -1015,7 +1043,8 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                     </div>
                   </div>
                 </motion.div>
-              ) : (
+                );
+              })() : (
                 <div className="h-full flex flex-col items-center justify-center p-12 bg-white rounded-[32px] border border-dashed border-slate-200 text-center min-h-[400px]">
                   <div className="bg-slate-50 p-6 rounded-full mb-4"><Star className="w-12 h-12 text-slate-300" /></div>
                   <h3 className="text-lg font-bold text-slate-900 mb-2">Select a submission to grade</h3>
