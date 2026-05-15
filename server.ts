@@ -776,8 +776,11 @@ async function startServer() {
   app.get("/api/instructor/submissions", requireAuth, requireRole("instructor", "admin"), async (_req, res) => {
     try {
       res.json(await query(`
-        SELECT s.*, a.title as assignment_title, a.rubric, a.max_points,
+        SELECT s.*, a.title as assignment_title, a.description as assignment_description,
+               a.rubric, a.max_points,
                u.name as student_name, c.name as course_name, c.id as course_id,
+               m.id as module_id,
+               s.ai_score, s.ai_feedback, s.ai_strengths, s.ai_improvements,
                (SELECT COUNT(*) FROM submission_files sf WHERE sf.submission_id = s.id) as file_count
         FROM submissions s
         JOIN assignments a ON s.assignment_id = a.id
