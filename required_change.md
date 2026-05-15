@@ -1,6 +1,6 @@
 # Required Changes for Learn-IT
 
-Last reviewed: 2026-05-14  
+Last reviewed: 2026-05-15  
 Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 
 ---
@@ -42,8 +42,10 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 | Static AI insight on DashboardPage | ✅ Resolved (P2-7) |
 | No bot protection on login | ✅ Resolved (P2-10) |
 | No audit trail on key admin/instructor actions | ✅ Resolved (P3-1) |
-| Seed users on shared temp password `ChangeMe123!` | ⏳ **Run at deployment** — `scripts/rotate-seed-passwords.ts` |
-| Orphaned `cloudinary_url` columns in DB | ⏳ **Run at deployment** — `scripts/run-migration.ts migrations/004_drop_cloudinary_url_columns.sql` |
+| RLS disabled on 6 new tables (audit_logs, snapshots, roadmaps, notifications) | ✅ Resolved (2026-05-15) |
+| SECURITY DEFINER view + functions exposed | ✅ Resolved (2026-05-15) |
+| Orphaned `cloudinary_url` columns in DB | ✅ Resolved (2026-05-15) |
+| Seed users on shared temp password `ChangeMe123!` | ⏳ **Run locally** — `npx tsx scripts/rotate-seed-passwords.ts` |
 
 **Supabase security advisor currently reports: 1 warning (leaked password protection — manual Auth dashboard step).**
 
@@ -71,8 +73,8 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 | P2-1 | `GET /api/admin/courses` — returns `{ id, code, name, instructor_id, instructor_name, enrollment_count, module_count }` |
 | P2-2 | Bulk-enroll hard-fails entire transaction on Auth creation error; returns `tempPassword` per new user in response |
 | P2-3 | `rateLimit.ts` — all 6 limiters: `loginLimiter`, `aiLimiter`, `aiGradeLimiter`, `uploadLimiter`, `reportLimiter`, `generalApiLimiter` |
-| P2-4 | `scripts/rotate-seed-passwords.ts` — rotates `ChangeMe123!` for all seeded Auth accounts; **run at deployment** |
-| P2-5 | `migrations/004_drop_cloudinary_url_columns.sql` + `scripts/run-migration.ts` — drops dead `cloudinary_url` columns; **run at deployment** |
+| P2-4 | `scripts/rotate-seed-passwords.ts` — rotates `ChangeMe123!` for all seeded Auth accounts; **run locally** |
+| P2-5 | `migrations/004_drop_cloudinary_url_columns.sql` — drops dead `cloudinary_url` columns — ✅ applied to prod 2026-05-15 |
 | P2-6 | `storage_path` stripped from all note/submission API responses; only `proxy_url` + `signed_url` returned |
 | P2-7 | `DashboardPage.tsx` — live AI insight via `api.getStudentAnalytics()` → `api.aiAnalyticsSummary()`; loading spinner + graceful fallback |
 | P2-8 | `GET /api/instructor/courses/:id/analytics` — extended with `students[]` array `{ student_id, name, avg_grade, submission_count, late, missed }` |
@@ -83,7 +85,7 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 
 | # | What |
 |---|---|
-| P3-1 | `audit_logs` table (`migrations/005_create_audit_logs.sql`) — append-only, indexed by `created_at`, `actor_user_id`, `(resource_type, resource_id)` |
+| P3-1 | `audit_logs` table — append-only, indexed by `created_at`, `actor_user_id`, `action` |
 | P3-1 | `src/server/middleware/audit.ts` — `writeAudit()` fire-and-forget writer; `setAuditPool()` called at startup |
 | P3-1 | `writeAudit` wired on: `login.success`, `login.denied`, `grade.submit`, `note.delete`, `assignment.archive`, `user.create`, `user.update`, `enrollment.bulk`, `course.create`, `course.delete`, `enrollment.create`, `enrollment.delete` |
 | P3-1 | `GET /api/admin/audit-logs` — admin-only, paginated (limit/offset), filterable by `action`, `actor_user_id`, `resource_type`, `since`, `until` |
@@ -92,6 +94,16 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 | P3-3 | `InstructorDashboard.tsx` — "Roadmap" button per student row; `StudentStat` extended with `course_id` / `course_name` |
 | P3-3 | `api.ts` — `getRoadmap`, `generateRoadmap`, `updateMilestoneStatus`, `deleteRoadmap` methods |
 | P3-3 | `AdminCourseManagement.tsx` — bulk-enroll now shows temp-password table with per-row + copy-all clipboard buttons |
+
+### Security Hardening (2026-05-15) ✅
+
+| Migration | What |
+|---|---|
+| `20260515140900_create_audit_logs` | audit_logs table + indexes |
+| `20260515143600_enable_rls_and_fix_security` | RLS on 6 tables + user-scoped policies |
+| `20260515143700_fix_current_user_legacy_view_security` | View → SECURITY INVOKER |
+| `20260515143800_revoke_public_execute_security_definer_functions` | Lock down SECURITY DEFINER functions |
+| `20260515150000_drop_cloudinary_url_columns` | Drop orphaned cloudinary_url columns from notes + submission_files |
 
 ---
 
@@ -107,22 +119,20 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 | 20260513144008 | create_auth_users_and_backfill_identity_map |
 | 20260513144343 | enable_rls_and_add_policies |
 | 20260513144545 | drop_password_column_and_fix_function_search_paths |
-| local | 005_create_audit_logs.sql — **run against prod DB** |
+| 20260515140900 | create_audit_logs |
+| 20260515143600 | enable_rls_and_fix_security |
+| 20260515143700 | fix_current_user_legacy_view_security |
+| 20260515143800 | revoke_public_execute_security_definer_functions |
+| 20260515150000 | drop_cloudinary_url_columns |
 
 ---
 
 ## 4. Deployment Checklist
 
-Run these **once** against the production database immediately after deployment:
+### Remaining manual steps
 
 ```bash
-# 1. Drop orphaned cloudinary_url columns (P2-5)
-npx tsx scripts/run-migration.ts migrations/004_drop_cloudinary_url_columns.sql
-
-# 2. Create audit_logs table (P3-1)
-npx tsx scripts/run-migration.ts migrations/005_create_audit_logs.sql
-
-# 3. Rotate ChangeMe123! seed passwords (P2-4)
+# Rotate ChangeMe123! seed passwords (P2-4) — run locally
 npx tsx scripts/rotate-seed-passwords.ts
 ```
 
@@ -139,12 +149,15 @@ Add to **Vercel environment variables** (Production + Preview):
 
 ### P3-2 — Analytics snapshots + cron 🟢
 
-Add `analytics_snapshots` table + background cron job so dashboards read pre-aggregated data instead of hitting raw tables on every load.
+Add background cron job so dashboards read pre-aggregated data from `admin_stats_snapshots` and `course_analytics_snapshots` instead of hitting raw tables on every load.
 
 ---
 
 ## 6. Next Execution Order
 
 | Priority | Task | Est. effort |
-|---|---|
-| 🟢 1 | P3-2: `analytics_snapshots` + cron aggregation job | 60 min |
+|---|---|---|
+| 🟢 1 | P3-2: analytics snapshots cron aggregation job | 60 min |
+| ⏳ 2 | Run `rotate-seed-passwords.ts` locally | 2 min |
+| 🟡 3 | Enable leaked password protection (Supabase dashboard) | 1 min |
+| 🟡 4 | Enable hCaptcha + add Vercel env var | 5 min |
