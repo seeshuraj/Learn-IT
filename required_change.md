@@ -1,7 +1,7 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-15  
-Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
+Status: **Phase 1 + Phase 2 + P3-1 + P3-3 + P3-4 fully complete. P3-2 pending.**
 
 ---
 
@@ -81,7 +81,7 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 | P2-9 | `GET /api/ready` — probes DB + Supabase Storage; returns 200 `{ status: "ready" }` or 503 `{ status: "unavailable", checks }` |
 | P2-10 | hCaptcha on login — `useCaptcha.ts` hook dynamically loads widget; `supabaseSignIn()` forwards `captchaToken`; disabled automatically when `VITE_HCAPTCHA_SITE_KEY` is not set |
 
-### Phase 3 (P3-1 + P3-3) ✅
+### Phase 3 (P3-1 + P3-3 + P3-4) ✅
 
 | # | What |
 |---|---|
@@ -94,6 +94,11 @@ Status: **Phase 1 + Phase 2 + P3-1 + P3-3 fully complete. P3-2 pending.**
 | P3-3 | `InstructorDashboard.tsx` — "Roadmap" button per student row; `StudentStat` extended with `course_id` / `course_name` |
 | P3-3 | `api.ts` — `getRoadmap`, `generateRoadmap`, `updateMilestoneStatus`, `deleteRoadmap` methods |
 | P3-3 | `AdminCourseManagement.tsx` — bulk-enroll now shows temp-password table with per-row + copy-all clipboard buttons |
+| P3-4 | `src/server/routes/gradingInsights.ts` — `GET /api/student/:id/grading-insights`; aggregates `ai_strengths` + `ai_improvements` across all graded submissions; returns top-8 strengths + improvements sorted by frequency with counts |
+| P3-4 | `src/server/routes/roadmaps.ts` — `POST /generate` now fetches `ai_feedback` for the course and injects recurring strengths + improvements into the LLM prompt so roadmap milestones directly address the student's graded weaknesses |
+| P3-4 | `src/client/pages/AnalyticsPage.tsx` — new "AI Grading Insights" panel: two-column strengths (emerald) / improvements (amber) pill grid with frequency counts and `Based on N graded submissions` header; renders null if no feedback yet |
+| P3-4 | `src/client/api.ts` — `getStudentGradingInsights(studentId)` method added |
+| P3-4 | `server.ts` — `createGradingInsightsRouter` imported and mounted at `app.use("/api/student", ...)` |
 
 ### Security Hardening (2026-05-15) ✅
 
