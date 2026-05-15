@@ -4,8 +4,12 @@
  * The anon key is safe to ship in the browser: it only grants access to
  * Supabase Auth (signIn / signOut / getSession). All data operations still go
  * through our Express API which uses the service-role key server-side.
+ *
+ * Singleton guard: window.__learnit_supabase__ prevents multiple GoTrueClient
+ * instances from being created when the module is evaluated more than once
+ * in the same browser context (e.g. HMR, code-splitting edge cases).
  */
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL  = (import.meta as any).env?.VITE_SUPABASE_URL  ?? '';
 const SUPABASE_ANON = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ?? '';
@@ -17,15 +21,21 @@ if (!SUPABASE_URL || !SUPABASE_ANON) {
   );
 }
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON, {
-  auth: {
-    // Persist the session in sessionStorage so it survives page refreshes
-    // but is cleared when the tab/browser is closed.
-    storage:          window.sessionStorage as any,
-    persistSession:   true,
-    autoRefreshToken: true,
-  },
-});
+declare global {
+  interface Window { __learnit_supabase__?: SupabaseClient; }
+}
+
+export const supabase: SupabaseClient =
+  window.__learnit_supabase__ ??
+  (window.__learnit_supabase__ = createClient(SUPABASE_URL, SUPABASE_ANON, {
+    auth: {
+      // Persist the session in sessionStorage so it survives page refreshes
+      // but is cleared when the tab/browser is closed.
+      storage:          window.sessionStorage as any,
+      persistSession:   true,
+      autoRefreshToken: true,
+    },
+  }));
 
 /** Returns the current Supabase access token, or null if not signed in. */
 export async function getAccessToken(): Promise<string | null> {
@@ -48,10 +58,7 @@ export async function waitForSession(
   knownToken: string,
   timeoutMs = 5000
 ): Promise<string> {
-  // Fast path: token already confirmed from sign-in response.
   if (knownToken) return knownToken;
-
-  // Fallback: poll sessionStorage until Supabase writes the session.
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { data } = await supabase.auth.getSession();

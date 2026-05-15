@@ -48,7 +48,6 @@ export default function NotesPage({ user }: Props) {
 
   useEffect(() => { if (user) loadData(); }, [user?.id]);
 
-  // Revoke blob URL when note changes to prevent memory leaks
   useEffect(() => {
     return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, [blobUrl]);
@@ -82,10 +81,8 @@ export default function NotesPage({ user }: Props) {
     }
   }
 
-  // Authenticated preview: fetch blob via api token, create object URL
   const openPreview = useCallback(async (note: Note) => {
     if (activeNote?.id === note.id) {
-      // Toggle off
       setActiveNote(null);
       if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
       return;
@@ -94,19 +91,16 @@ export default function NotesPage({ user }: Props) {
     setBlobUrl(null);
     setPreviewLoading(true);
     try {
-      // Try signed URL first (Cloudinary/S3), fall back to authenticated proxy
       let url: string;
       if (note.cloudinary_url) {
         url = note.cloudinary_url;
         setBlobUrl(url);
       } else {
-        // Use the signed-url endpoint which returns a short-lived URL
         try {
           const signed = await api.getSignedNoteUrl(note.id);
           url = signed.url;
           setBlobUrl(url);
         } catch {
-          // Final fallback: authenticated fetch → blob object URL
           const { getAccessToken } = await import('../services/supabaseClient');
           const token = await getAccessToken();
           const res = await fetch(`${BASE}/api/notes/${note.id}/proxy`, {
@@ -158,6 +152,11 @@ export default function NotesPage({ user }: Props) {
     : currentModule
       ? `${currentModule.name} · ${currentModule.course_name}`
       : 'Course Assistant';
+
+  // moduleId for RAG: prefer the active previewed note's module,
+  // otherwise use the currently selected sidebar module.
+  const chatModuleId: number | null =
+    activeNote?.module_id ?? currentModule?.id ?? null;
 
   const chatNotesContext: string = (() => {
     const contextNotes = activeNote ? [activeNote] : filteredNotes;
@@ -370,9 +369,10 @@ export default function NotesPage({ user }: Props) {
         </div>
       </div>
 
-      {/* ChatBot scoped to this page's module context */}
+      {/* ChatBot scoped to active module — moduleId enables server-side RAG */}
       <ChatBot
         moduleTitle={chatModuleTitle}
+        moduleId={chatModuleId}
         notesContext={chatNotesContext}
       />
     </div>

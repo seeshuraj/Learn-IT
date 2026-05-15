@@ -160,23 +160,33 @@ export interface ConversationTurn {
   content: string;
 }
 
+/**
+ * askModuleChatbot — sends the user question to the Express /api/ai/chat
+ * endpoint which performs vector RAG retrieval from note_chunks using the
+ * moduleId, then calls NVIDIA NIM server-side.
+ *
+ * moduleId MUST be passed for RAG to work — the backend gates retrieval on it.
+ * notesContext is used only as a client-side fallback if the backend is down.
+ */
 export async function askModuleChatbot(
   question: string,
   moduleTitle: string,
+  moduleId: number | null,
   notesContext: string,
   history: ConversationTurn[] = []
 ): Promise<string> {
   try {
-    // Route through Express /api/ai/chat so NVIDIA key stays on the server
-    const res = await api.aiChat(question, moduleTitle, null, history);
-    return (res as any)?.reply ?? (res as any)?.answer ?? String(res);
+    // Route through Express /api/ai/chat — NVIDIA key stays on the server.
+    // moduleId is required for server-side RAG retrieval from note_chunks.
+    const res = await api.aiChat(question, moduleTitle, moduleId, history);
+    // Backend returns { answer: string } — normalise here.
+    return (res as any)?.answer ?? (res as any)?.reply ?? String(res);
   } catch (backendErr: any) {
     // Backend unavailable → graceful fallback using notes context client-side
     console.warn('[aiService] backend chat failed, using client fallback:', backendErr.message);
     if (!notesContext) {
       return "I don't have any notes loaded for this module yet. Ask your instructor to upload lecture materials.";
     }
-    // Simple keyword-match fallback so the chatbot is never completely silent
     const lower = question.toLowerCase();
     const sentences = notesContext.split(/[.!?\n]+/).filter(s => s.trim().length > 20);
     const relevant = sentences.filter(s => {

@@ -11,6 +11,8 @@ import { askModuleChatbot, ConversationTurn } from "../services/aiService";
 
 interface Props {
   moduleTitle?: string;
+  /** The module's numeric DB id — required for server-side RAG retrieval. */
+  moduleId?: number | null;
   notesContext?: string;
 }
 
@@ -26,6 +28,7 @@ const WELCOME =
 
 export const ChatBot: React.FC<Props> = ({
   moduleTitle = "General Course Assistant",
+  moduleId = null,
   notesContext = "",
 }) => {
   const [open, setOpen] = useState(false);
@@ -55,7 +58,7 @@ export const ChatBot: React.FC<Props> = ({
       const history: ConversationTurn[] = messages
         .filter((m) => m.content !== WELCOME)
         .map((m) => ({ role: m.role, content: m.content }));
-      const reply = await askModuleChatbot(q, moduleTitle, notesContext, history);
+      const reply = await askModuleChatbot(q, moduleTitle, moduleId, notesContext, history);
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (e: any) {
       setMessages((prev) => [
