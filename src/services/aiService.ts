@@ -1,6 +1,8 @@
 // aiService.ts — NVIDIA NIM (OpenAI-compatible) integration for LearnIT
-// Free endpoints: https://build.nvidia.com
-// Get key: sign up at build.nvidia.com → any free model → "Get API Key"
+// AI chat goes through /api/ai/chat on our Express backend (keeps API key server-side).
+// Direct NIM calls are only used for grading (instructor only, no key exposure risk via proxy).
+
+import { api } from './api';
 
 const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
 const CHAT_MODEL = "mistralai/mistral-nemo-12b-instruct";
@@ -14,7 +16,7 @@ function isMock(): boolean {
   return !getApiKey();
 }
 
-// ─── OpenAI-compatible chat call ────────────────────────────────────────────
+// ─── OpenAI-compatible chat call (used only for grading + embeddings) ────────
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -74,7 +76,6 @@ export function cosineSim(a: number[], b: number[]): number {
 // ─── Mock responses (demo / no key) ─────────────────────────────────────────
 
 function mockChat(messages: ChatMessage[]): string {
-  const last = messages[messages.length - 1]?.content ?? "";
   const system = messages[0]?.content ?? "";
 
   if (system.includes("GRADING ASSISTANT")) {
@@ -87,15 +88,6 @@ function mockChat(messages: ChatMessage[]): string {
       strengths: ["Clear structure", "Good use of terminology", "Logical flow"],
       improvements: ["Add concrete examples", "Strengthen the conclusion", "Cite additional sources"],
     });
-  }
-  if (system.includes("NOTES ASSISTANT")) {
-    return (
-      "Based on your course notes, here is what I found:\n\n" +
-      "The key concept relates to what was covered in the notes above. " +
-      "The main points to remember are: (1) the definition and scope, " +
-      "(2) how it applies in practice, and (3) common edge cases. " +
-      "Would you like me to elaborate on any of these?"
-    );
   }
   if (system.includes("ANALYTICS SUMMARY")) {
     return (
@@ -161,7 +153,7 @@ export async function getGradingSuggestion(
   }
 }
 
-// ─── 2. NOTES-AWARE MODULE CHATBOT ───────────────────────────────────────────
+// ─── 2. NOTES-AWARE MODULE CHATBOT (routes through backend — key stays server-side) ──
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -174,29 +166,28 @@ export async function askModuleChatbot(
   notesContext: string,
   history: ConversationTurn[] = []
 ): Promise<string> {
-  const system: ChatMessage = {
-    role: "system",
-    content:
-      `You are a NOTES ASSISTANT for a university course module titled "${moduleTitle}". ` +
-      `Answer questions using ONLY the student notes below. ` +
-      `If the notes do not contain relevant information, say so clearly. ` +
-      `Be concise and cite specific parts of the notes when possible.\n\n` +
-      `--- STUDENT NOTES ---\n${notesContext.slice(0, 3000)}\n--- END NOTES ---`,
-  };
-
-  // include last 6 turns of history for context
-  const historyMsgs: ChatMessage[] = history.slice(-6).map((t) => ({
-    role: t.role,
-    content: t.content,
-  }));
-
-  const messages: ChatMessage[] = [
-    system,
-    ...historyMsgs,
-    { role: "user", content: question },
-  ];
-
-  return nimChat(messages, { temperature: 0.5, maxTokens: 800 });
+  try {
+    // Route through Express /api/ai/chat so NVIDIA key stays on the server
+    const res = await api.aiChat(question, moduleTitle, null, history);
+    return (res as any)?.reply ?? (res as any)?.answer ?? String(res);
+  } catch (backendErr: any) {
+    // Backend unavailable → graceful fallback using notes context client-side
+    console.warn('[aiService] backend chat failed, using client fallback:', backendErr.message);
+    if (!notesContext) {
+      return "I don't have any notes loaded for this module yet. Ask your instructor to upload lecture materials.";
+    }
+    // Simple keyword-match fallback so the chatbot is never completely silent
+    const lower = question.toLowerCase();
+    const sentences = notesContext.split(/[.!?\n]+/).filter(s => s.trim().length > 20);
+    const relevant = sentences.filter(s => {
+      const words = lower.split(' ').filter(w => w.length > 3);
+      return words.some(w => s.toLowerCase().includes(w));
+    });
+    if (relevant.length > 0) {
+      return `Based on your notes:\n\n${relevant.slice(0, 3).join('. ')}.`;
+    }
+    return `I found notes for this module but couldn't locate specific content matching your question. Try rephrasing or ask about a key term from the notes.`;
+  }
 }
 
 // ─── 3. STUDENT ANALYTICS AI SUMMARY ─────────────────────────────────────────

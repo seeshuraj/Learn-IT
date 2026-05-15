@@ -10,7 +10,6 @@ import {
 import { supabase } from "./services/supabaseClient";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
-import { ChatBot } from "./components/ChatBot";
 import { User } from "./types";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CoursesPage } from "./pages/CoursesPage";
@@ -139,7 +138,9 @@ const AppContent: React.FC = () => {
           </Routes>
         </main>
       </div>
-      {user?.role !== "admin" && <ChatBot moduleTitle="General Course Assistant" />}
+      {/* NOTE: ChatBot is intentionally omitted here — each page (NotesPage,
+          CourseDetailPage) mounts its own scoped ChatBot with correct module
+          context. A global ChatBot here would create a duplicate GoTrueClient. */}
     </div>
   );
 };

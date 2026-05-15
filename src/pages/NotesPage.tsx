@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { ChatBot } from '../components/ChatBot';
 import { api } from '../services/api';
 
@@ -39,17 +39,23 @@ export default function NotesPage({ user }: Props) {
   const [modules, setModules] = useState<Module[]>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
   const [activeNote, setActiveNote] = useState<Note | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const isInstructor = user?.role === 'instructor' || user?.role === 'admin';
 
   useEffect(() => { if (user) loadData(); }, [user?.id]);
 
+  // Revoke blob URL when note changes to prevent memory leaks
+  useEffect(() => {
+    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
+  }, [blobUrl]);
+
   async function loadData() {
     setLoading(true);
     try {
-      // Use authenticated api.* helpers — these inject Bearer token automatically
       const courses = await api.getStudentCourses(user.id).catch(() => []);
       const allModules: Module[] = [];
       for (const course of (Array.isArray(courses) ? courses : [])) {
@@ -74,6 +80,63 @@ export default function NotesPage({ user }: Props) {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Authenticated preview: fetch blob via api token, create object URL
+  const openPreview = useCallback(async (note: Note) => {
+    if (activeNote?.id === note.id) {
+      // Toggle off
+      setActiveNote(null);
+      if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
+      return;
+    }
+    setActiveNote(note);
+    setBlobUrl(null);
+    setPreviewLoading(true);
+    try {
+      // Try signed URL first (Cloudinary/S3), fall back to authenticated proxy
+      let url: string;
+      if (note.cloudinary_url) {
+        url = note.cloudinary_url;
+        setBlobUrl(url);
+      } else {
+        // Use the signed-url endpoint which returns a short-lived URL
+        try {
+          const signed = await api.getSignedNoteUrl(note.id);
+          url = signed.url;
+          setBlobUrl(url);
+        } catch {
+          // Final fallback: authenticated fetch → blob object URL
+          const { getAccessToken } = await import('../services/supabaseClient');
+          const token = await getAccessToken();
+          const res = await fetch(`${BASE}/api/notes/${note.id}/proxy`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          });
+          if (!res.ok) throw new Error(`Could not load file: ${res.status}`);
+          const blob = await res.blob();
+          const objUrl = URL.createObjectURL(blob);
+          setBlobUrl(objUrl);
+        }
+      }
+    } catch (e: any) {
+      setError(e.message ?? 'Could not preview this file.');
+      setActiveNote(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [activeNote, blobUrl]);
+
+  const closePreview = useCallback(() => {
+    setActiveNote(null);
+    if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
+  }, [blobUrl]);
+
+  function getDownloadUrl(note: Note): string {
+    return note.cloudinary_url || `${BASE}/uploads/notes/${note.filename}`;
+  }
+
+  function canPreview(note: Note): boolean {
+    return note.file_type === 'application/pdf' || note.file_type === 'text/plain';
   }
 
   const sidebarModules: Module[] = [
@@ -108,23 +171,10 @@ export default function NotesPage({ user }: Props) {
     if (contextNotes.length > 0) {
       return `The following notes have been uploaded for this module:\n` +
         contextNotes.map(n => `- ${n.original_name}`).join('\n') +
-        `\n\nNote: Full text content is not yet available in this session. ` +
-        `Please ask the student to describe the content or re-upload the note.`;
+        `\n\nNote: Full text content is not yet available in this session.`;
     }
     return '';
   })();
-
-  function getProxyUrl(note: Note): string {
-    return `${BASE}/api/notes/${note.id}/proxy`;
-  }
-
-  function getDownloadUrl(note: Note): string {
-    return note.cloudinary_url || `${BASE}/uploads/notes/${note.filename}`;
-  }
-
-  function canPreview(note: Note): boolean {
-    return note.file_type === 'application/pdf' || note.file_type === 'text/plain';
-  }
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-[60vh]">
@@ -153,7 +203,7 @@ export default function NotesPage({ user }: Props) {
           {sidebarModules.map(m => (
             <button
               key={m.id}
-              onClick={() => { setSelectedModuleId(m.id); setActiveNote(null); }}
+              onClick={() => { setSelectedModuleId(m.id); closePreview(); }}
               className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition ${
                 selectedModuleId === m.id
                   ? 'bg-teal-700 text-white font-semibold'
@@ -177,6 +227,7 @@ export default function NotesPage({ user }: Props) {
             </div>
           )}
 
+          {/* Authenticated PDF/text viewer */}
           {activeNote && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
@@ -185,14 +236,16 @@ export default function NotesPage({ user }: Props) {
                   {activeNote.cloudinary_url && <span className="text-xs text-teal-500 shrink-0">☁ Cloud</span>}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <a
-                    href={getProxyUrl(activeNote)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
-                  >
-                    ↗ Open
-                  </a>
+                  {blobUrl && (
+                    <a
+                      href={blobUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
+                    >
+                      ↗ Open
+                    </a>
+                  )}
                   <a
                     href={getDownloadUrl(activeNote)}
                     download={activeNote.original_name}
@@ -203,22 +256,29 @@ export default function NotesPage({ user }: Props) {
                     ↓ Download
                   </a>
                   <button
-                    onClick={() => setActiveNote(null)}
+                    onClick={closePreview}
                     className="text-slate-400 hover:text-slate-600 text-lg leading-none px-1"
                   >✕</button>
                 </div>
               </div>
-              <iframe
-                key={activeNote.id}
-                src={getProxyUrl(activeNote)}
-                className="w-full border-0"
-                style={{ height: '72vh' }}
-                title={activeNote.original_name}
-                allow="fullscreen"
-              />
+              {previewLoading ? (
+                <div className="flex items-center justify-center" style={{ height: '72vh' }}>
+                  <div className="animate-spin rounded-full h-8 w-8 border-2 border-teal-600 border-t-transparent" />
+                </div>
+              ) : blobUrl ? (
+                <iframe
+                  key={blobUrl}
+                  src={blobUrl}
+                  className="w-full border-0"
+                  style={{ height: '72vh' }}
+                  title={activeNote.original_name}
+                  allow="fullscreen"
+                />
+              ) : null}
             </div>
           )}
 
+          {/* Notes list */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-semibold text-slate-700">
@@ -269,14 +329,16 @@ export default function NotesPage({ user }: Props) {
                       )}
                       {canPreview(note) && (
                         <button
-                          onClick={() => setActiveNote(activeNote?.id === note.id ? null : note)}
+                          onClick={() => openPreview(note)}
+                          disabled={previewLoading}
                           className={`text-xs px-3 py-1.5 border rounded-lg transition font-medium ${
                             activeNote?.id === note.id
                               ? 'bg-indigo-600 text-white border-indigo-600'
                               : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
                           }`}
                         >
-                          {activeNote?.id === note.id ? '✕ Close' : '👁 Preview & Chat'}
+                          {previewLoading && activeNote?.id === note.id ? '⏳ Loading…' :
+                           activeNote?.id === note.id ? '✕ Close' : '👁 Preview & Chat'}
                         </button>
                       )}
                       <a
@@ -294,7 +356,7 @@ export default function NotesPage({ user }: Props) {
                             if (!confirm('Delete this note?')) return;
                             await api.deleteNote(note.id);
                             setNotes(prev => prev.filter(n => n.id !== note.id));
-                            if (activeNote?.id === note.id) setActiveNote(null);
+                            if (activeNote?.id === note.id) closePreview();
                           }}
                           className="text-slate-300 hover:text-red-500 transition text-lg leading-none"
                         >×</button>
@@ -308,6 +370,7 @@ export default function NotesPage({ user }: Props) {
         </div>
       </div>
 
+      {/* ChatBot scoped to this page's module context */}
       <ChatBot
         moduleTitle={chatModuleTitle}
         notesContext={chatNotesContext}
