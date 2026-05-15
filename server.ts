@@ -337,6 +337,7 @@ async function retrieveChunks(
   return scored.slice(0, topK).map(s => s.text);
 }
 
+// ── fetchWithTimeout — per-call timeout override supported ────────────────────
 async function fetchWithTimeout(
   url: string,
   opts: RequestInit,
@@ -353,6 +354,7 @@ async function fetchWithTimeout(
 
 const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
 
+// 60 s timeout for chat completions (LLM inference can be slow on first token)
 async function nimChat(
   messages: { role: string; content: string }[],
   opts: { temperature?: number; maxTokens?: number } = {}
@@ -370,7 +372,8 @@ async function nimChat(
         temperature: opts.temperature ?? 0.4,
         max_tokens:  opts.maxTokens  ?? 1024,
       }),
-    }
+    },
+    60000  // 60 s — LLM inference
   );
   if (!res.ok) {
     const errBody = await res.text();
@@ -381,6 +384,7 @@ async function nimChat(
   return data.choices?.[0]?.message?.content ?? "";
 }
 
+// 45 s timeout for embeddings (cold-start on NVIDIA can be 20-30 s)
 async function nimEmbed(
   texts: string[],
   inputType: "passage" | "query" = "passage"
@@ -398,7 +402,8 @@ async function nimEmbed(
         input_type: inputType,
         truncate:   "END",
       }),
-    }
+    },
+    45000  // 45 s — embedding cold-start
   );
   if (!res.ok) {
     const errBody = await res.text();
@@ -1104,7 +1109,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── P3-1: course.create audit ─────────────────────────────────────────────
   app.post(
     "/api/admin/courses",
     requireAuth, requireRole("admin"),
@@ -1127,7 +1131,6 @@ async function startServer() {
     }
   );
 
-  // ── P3-1: course.delete audit ─────────────────────────────────────────────
   app.delete("/api/admin/courses/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       await run("DELETE FROM enrollments WHERE course_id=$1", [req.params.id]);
@@ -1202,7 +1205,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── P3-1: enrollment.create audit ────────────────────────────────────────
   app.post(
     "/api/admin/enrollments",
     requireAuth, requireRole("admin"),
@@ -1233,7 +1235,6 @@ async function startServer() {
     }
   );
 
-  // ── P3-1: enrollment.delete audit ────────────────────────────────────────
   app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const enrollment = await queryOne(
@@ -1460,9 +1461,13 @@ async function startServer() {
         if (!fullText.trim()) return res.status(400).json({ error: "No readable content found in submission" });
         let notesContext = "";
         if (module_id) {
-          const relevantChunks = await retrieveChunks(module_id, fullText.slice(0, 500), 4);
-          if (relevantChunks.length > 0)
-            notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
+          try {
+            const relevantChunks = await retrieveChunks(module_id, fullText.slice(0, 500), 4);
+            if (relevantChunks.length > 0)
+              notesContext = `\n\nRELEVANT COURSE NOTES:\n${relevantChunks.join("\n\n---\n")}`;
+          } catch (ragErr: any) {
+            console.error("[grade-pdf] RAG retrieval failed (non-fatal):", ragErr.message);
+          }
         }
         const fallbackRubricRow = submission
           ? await queryOne("SELECT rubric FROM assignments WHERE id=(SELECT assignment_id FROM submissions WHERE id=$1)", [submission_id])
@@ -1484,31 +1489,50 @@ async function startServer() {
     }
   );
 
+  // ── /api/ai/chat — graceful RAG fallback on embedding timeout ────────────
   app.post("/api/ai/chat", requireAuth, aiLimiter, async (req, res) => {
     try {
       const { question, moduleTitle, moduleId, history = [] } = req.body;
+
       let notesContext = "No notes have been uploaded for this module yet.";
+      let ragEnabled   = false;
+
       if (moduleId) {
         try {
           const chunks = await retrieveChunks(moduleId, question, 5);
-          if (chunks.length > 0) notesContext = chunks.join("\n\n---\n");
+          if (chunks.length > 0) {
+            notesContext = chunks.join("\n\n---\n");
+            ragEnabled   = true;
+          } else {
+            notesContext = "No relevant note chunks were found for this module.";
+          }
         } catch (embErr: any) {
-          console.error("[chat] RAG retrieval failed:", embErr.message);
+          // Embedding cold-start timeout or API error — degrade gracefully,
+          // never return 500 just because RAG failed.
+          console.error("[chat] RAG retrieval failed (non-fatal), falling back to no-RAG chat:", embErr.message);
+          notesContext =
+            "Course note retrieval is temporarily unavailable. " +
+            "Please answer the student's question using general academic guidance and be transparent that notes could not be loaded.";
         }
       }
-      const answer = await nimChat([
-        {
-          role: "system",
-          content:
-            `You are a helpful STUDY ASSISTANT for the module "${moduleTitle ?? "General"}".\n` +
-            `Answer questions based on the course notes below.\n` +
-            `If the answer is not covered in the notes, say so honestly but offer general guidance.\n` +
-            `\n--- COURSE NOTES ---\n${notesContext}\n--- END NOTES ---`,
-        },
-        ...history.slice(-6),
-        { role: "user", content: question },
-      ], { temperature: 0.4, maxTokens: 800 });
-      res.json({ answer });
+
+      const answer = await nimChat(
+        [
+          {
+            role: "system",
+            content:
+              `You are a helpful STUDY ASSISTANT for the module "${moduleTitle ?? "General"}".\n` +
+              `Answer questions based on the course notes below when available.\n` +
+              `If the answer is not in the notes, say so clearly and provide best-effort general guidance.\n` +
+              `\n--- COURSE NOTES ---\n${notesContext}\n--- END NOTES ---`,
+          },
+          ...history.slice(-6),
+          { role: "user", content: question },
+        ],
+        { temperature: 0.4, maxTokens: 800 }
+      );
+
+      res.json({ answer, ragEnabled });
     } catch (e: any) {
       console.error("[/api/ai/chat] error:", e.message);
       res.status(500).json({ error: e.message });
