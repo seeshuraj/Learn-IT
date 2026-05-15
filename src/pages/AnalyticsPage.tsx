@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { TrendingUp, AlertCircle } from 'lucide-react';
 import { AIAnalyticsSummary } from '../components/AIAnalyticsSummary';
 import { StudentAnalyticsData } from '../services/aiService';
 import { api } from '../services/api';
@@ -19,6 +20,17 @@ interface AnalyticsData {
   total_submitted: number;
   total_pending: number;
   courses: CourseStats[];
+}
+
+interface GradingInsight {
+  text: string;
+  count: number;
+}
+
+interface GradingInsights {
+  totalSubmissionsWithFeedback: number;
+  strengths: GradingInsight[];
+  improvements: GradingInsight[];
 }
 
 interface Props { user: any; }
@@ -44,10 +56,102 @@ const gradeColor = (g: number | null) => {
   return 'text-red-600';
 };
 
+// ── Grading Insights Panel ────────────────────────────────────────────────────
+
+function GradingInsightsPanel({ userId }: { userId: number }) {
+  const [insights, setInsights]   = useState<GradingInsights | null>(null);
+  const [loading,  setLoading]    = useState(true);
+  const [error,    setError]      = useState('');
+
+  useEffect(() => {
+    api.getStudentGradingInsights(userId)
+      .then((d: any) => setInsights(d))
+      .catch(() => setError('Could not load grading insights.'))
+      .finally(() => setLoading(false));
+  }, [userId]);
+
+  if (loading) return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div className="h-4 w-40 bg-slate-100 rounded animate-pulse mb-4" />
+      <div className="flex gap-2 flex-wrap">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="h-7 w-28 bg-slate-100 rounded-full animate-pulse" />
+        ))}
+      </div>
+    </div>
+  );
+
+  if (error || !insights || insights.totalSubmissionsWithFeedback === 0) return null;
+
+  const hasAny = insights.strengths.length > 0 || insights.improvements.length > 0;
+  if (!hasAny) return null;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+        <TrendingUp className="w-4 h-4 text-indigo-500" />
+        <h2 className="text-sm font-semibold text-slate-800">AI Grading Insights</h2>
+        <span className="ml-auto text-xs text-slate-400">
+          Based on {insights.totalSubmissionsWithFeedback} graded submission{insights.totalSubmissionsWithFeedback !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      <div className="px-5 py-4 grid sm:grid-cols-2 gap-5">
+        {/* Strengths */}
+        {insights.strengths.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">✓ Strengths</p>
+            <div className="flex flex-wrap gap-2">
+              {insights.strengths.map((s, i) => (
+                <span
+                  key={i}
+                  title={s.count > 1 ? `Mentioned ${s.count}×` : undefined}
+                  className="inline-flex items-center gap-1 text-xs font-medium px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100"
+                >
+                  {s.text}
+                  {s.count > 1 && (
+                    <span className="text-emerald-500 text-[10px] font-bold">{s.count}×</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Improvements */}
+        {insights.improvements.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
+              <AlertCircle className="inline w-3 h-3 mr-1" />
+              Areas to Improve
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {insights.improvements.map((imp, i) => (
+                <span
+                  key={i}
+                  title={imp.count > 1 ? `Mentioned ${imp.count}×` : undefined}
+                  className="inline-flex items-center gap-1 text-xs font-medium px-3 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100"
+                >
+                  {imp.text}
+                  {imp.count > 1 && (
+                    <span className="text-amber-500 text-[10px] font-bold">{imp.count}×</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main AnalyticsPage ────────────────────────────────────────────────────────
+
 export default function AnalyticsPage({ user }: Props) {
-  const [data, setData] = useState<AnalyticsData | null>(null);
+  const [data,    setData]    = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error,   setError]   = useState('');
 
   useEffect(() => {
     if (!user) return;
@@ -82,8 +186,13 @@ export default function AnalyticsPage({ user }: Props) {
         <p className="text-slate-500 text-sm mt-1">Performance overview · {data.student_name}</p>
       </div>
 
+      {/* AI narrative summary (existing) */}
       <AIAnalyticsSummary data={aiData} autoLoad={true} />
 
+      {/* AI Grading Insights panel (NEW) */}
+      <GradingInsightsPanel userId={user.id} />
+
+      {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
           {
@@ -96,11 +205,7 @@ export default function AnalyticsPage({ user }: Props) {
             value: `${submissionRate}%`,
             color: submissionRate >= 80 ? 'text-green-600' : submissionRate >= 60 ? 'text-amber-600' : 'text-red-600',
           },
-          {
-            label: 'Submitted',
-            value: String(data.total_submitted),
-            color: 'text-slate-800',
-          },
+          { label: 'Submitted', value: String(data.total_submitted), color: 'text-slate-800' },
           {
             label: 'Pending',
             value: String(data.total_pending),
@@ -114,6 +219,7 @@ export default function AnalyticsPage({ user }: Props) {
         ))}
       </div>
 
+      {/* Course breakdown */}
       {data.courses.length === 0 ? (
         <div className="text-center py-16 text-slate-400">
           <p className="text-3xl mb-2">📊</p>

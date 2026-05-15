@@ -165,6 +165,9 @@ export const api = {
   getStudentStats:      (studentId: number) => request(`/api/student/${studentId}/stats`),
   getStudentAnalytics:  (studentId: number) => request(`/api/students/${studentId}/analytics`),
   getStudentNotes:      (studentId: number) => request(`/api/students/${studentId}/notes`),
+  // NEW: aggregated grading insights (strengths + improvements from ai_feedback)
+  getStudentGradingInsights: (studentId: number) =>
+    request(`/api/student/${studentId}/grading-insights`),
 
   // Instructor
   getInstructorCourses: (instructorId: number) =>
