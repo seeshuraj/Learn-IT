@@ -1,7 +1,7 @@
 # Required Changes for Learn-IT
 
 Last reviewed: 2026-05-15  
-Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. Only manual deployment steps remain.**
+Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. 1 manual step remaining.**
 
 ---
 
@@ -23,7 +23,7 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. O
 | `public.users.password` exposed | ✅ Resolved |
 | No auth bridge between legacy IDs and Supabase Auth | ✅ Resolved |
 | Mutable `search_path` on helper functions | ✅ Resolved |
-| Leaked password protection disabled | 🟡 Manual Auth dashboard action required |
+| Leaked password protection disabled | ⏭️ Skipped — requires Supabase Pro |
 | Raw `fetch()` calls with hardcoded URLs in frontend | ✅ Resolved |
 | `student_id` sent from client in submissions | ✅ Resolved |
 | Hardcoded mock data in InstructorDashboard | ✅ Resolved |
@@ -46,7 +46,7 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. O
 | Orphaned `cloudinary_url` columns in DB | ✅ Resolved (2026-05-15) |
 | Seed users on shared temp password `ChangeMe123!` | ⏳ **Run locally** — `npx tsx scripts/rotate-seed-passwords.ts` |
 
-**Supabase security advisor currently reports: 1 warning (leaked password protection — manual Auth dashboard step).**
+**Supabase security advisor currently reports: 1 warning (leaked password protection — requires Supabase Pro, skipped).**
 
 ---
 
@@ -141,24 +141,17 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. O
 
 ## 4. Deployment Checklist
 
-### Remaining manual steps (your action required)
-
-```bash
-# 1. Rotate ChangeMe123! seed passwords — run locally
-npx tsx scripts/rotate-seed-passwords.ts
-```
-
-Do these **once** in the Supabase Auth dashboard:
-- Authentication → Settings → Password Security → Enable **"Check passwords against HaveIBeenPwned"**
-- Authentication → Settings → Bot and Abuse Protection → Enable **hCaptcha** → paste in your **hCaptcha Secret Key**
-
-Add to **Vercel environment variables** (Production + Preview):
-- `VITE_HCAPTCHA_SITE_KEY` — from [https://dashboard.hcaptcha.com](https://dashboard.hcaptcha.com) → Settings → Sites → your site → **Site Key**
+| Step | Action | Status |
+|---|---|---|
+| 1 | Run `npx tsx scripts/rotate-seed-passwords.ts` locally | ⏳ **Pending** |
+| 2 | Enable "Check passwords against HaveIBeenPwned" (Supabase Auth dashboard) | ⏭️ Skipped — requires Supabase Pro |
+| 3 | Enable hCaptcha + paste Secret Key (Supabase Auth dashboard) | ✅ Done |
+| 4 | Add `VITE_HCAPTCHA_SITE_KEY` to Vercel environment variables | ✅ Done |
 
 ---
 
 ## 5. Remaining Work
 
-**All code changes are complete.** No further development tasks remain.
+**All code changes are complete.**
 
-The only outstanding items are the 4 manual deployment steps listed above in Section 4 — all account-level actions that require your credentials.
+The only outstanding item is **Step 1** above — run `rotate-seed-passwords.ts` once from your local terminal to rotate the `ChangeMe123!` default passwords on seeded accounts.
