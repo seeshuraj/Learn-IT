@@ -415,6 +415,11 @@ const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 async function startServer() {
   const app = express();
 
+  // Trust the first proxy hop (required on Render/Heroku for express-rate-limit
+  // to read the real client IP from X-Forwarded-For without throwing a
+  // ValidationError about the "ip" option).
+  app.set("trust proxy", 1);
+
   app.use(attachRequestId);
   app.use(requestLogger);
 
