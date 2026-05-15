@@ -48,6 +48,7 @@ import { startCronJobs } from "./src/server/jobs/cron.js";
 import { createRoadmapRouter } from "./src/server/routes/roadmaps.js";
 import { createNotificationsRouter } from "./src/server/routes/notifications.js";
 import { createAuthRouter } from "./src/server/routes/auth.js";
+import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights.js";
 import { notify } from "./src/server/lib/notify.js";
 
 dotenv.config();
@@ -456,6 +457,9 @@ async function startServer() {
 
   // ── P3-5: Auth (password reset / force-change) ────────────────────────────
   app.use("/api/auth", createAuthRouter(pool));
+
+  // ── Grading Insights (aggregated ai_feedback strengths + improvements) ────
+  app.use("/api/student", createGradingInsightsRouter(pool));
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
