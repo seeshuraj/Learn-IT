@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef } from "react";
 import { User, Submission, Course } from "../types";
-import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map } from "lucide-react";
+import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map, FileText, ChevronDown, ChevronUp, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { getGradingSuggestion, GradingSuggestion, getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
+import { getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
 import { api } from "../services/api";
 import InstructorRoadmapView from "./InstructorRoadmapView";
@@ -28,6 +28,23 @@ interface StudentStat {
   course_name?: string;
 }
 
+interface RubricBreakdown {
+  criterion: string;
+  score: number;
+  max_score: number;
+  comment: string;
+}
+
+interface AiGradeResult {
+  score: number;
+  feedback: string;
+  strengths: string[];
+  improvements: string[];
+  rubric_breakdown?: RubricBreakdown[];
+  confidence?: number; // 0-100
+  graded_via?: 'pdf' | 'text';
+}
+
 function BoldText({ text }: { text: string }) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return (
@@ -40,6 +57,22 @@ function BoldText({ text }: { text: string }) {
         )
       )}
     </>
+  );
+}
+
+function ConfidenceBadge({ confidence }: { confidence?: number }) {
+  if (confidence == null) return null;
+  const level = confidence >= 80 ? 'high' : confidence >= 55 ? 'medium' : 'low';
+  const colors: Record<string, string> = {
+    high:   'bg-emerald-100 text-emerald-700 border-emerald-200',
+    medium: 'bg-amber-100 text-amber-700 border-amber-200',
+    low:    'bg-red-100 text-red-700 border-red-200',
+  };
+  const labels: Record<string, string> = { high: 'High Confidence', medium: 'Medium Confidence', low: 'Low Confidence' };
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${colors[level]}`}>
+      <Zap className="w-2.5 h-2.5" /> {labels[level]} ({confidence}%)
+    </span>
   );
 }
 
@@ -296,6 +329,58 @@ function UploadNotesModal({ courses, onClose }: { courses: Course[]; onClose: ()
   );
 }
 
+// ─── Rubric Breakdown Panel ───────────────────────────────────────────────────
+function RubricBreakdownPanel({ breakdown }: { breakdown: RubricBreakdown[] }) {
+  const [expanded, setExpanded] = useState(true);
+  const totalScore = breakdown.reduce((s, r) => s + r.score, 0);
+  const totalMax   = breakdown.reduce((s, r) => s + r.max_score, 0);
+  return (
+    <div className="bg-white rounded-2xl border border-green-100 overflow-hidden">
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-center justify-between px-5 py-3 bg-green-50 hover:bg-green-100 transition"
+      >
+        <span className="text-[10px] font-bold text-green-700 uppercase tracking-widest flex items-center gap-2">
+          <BarChart3 className="w-3.5 h-3.5" /> Rubric Breakdown
+          <span className="ml-1 bg-green-200 text-green-800 px-1.5 py-0.5 rounded-full">{totalScore}/{totalMax}</span>
+        </span>
+        {expanded ? <ChevronUp className="w-4 h-4 text-green-600" /> : <ChevronDown className="w-4 h-4 text-green-600" />}
+      </button>
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="divide-y divide-slate-50">
+              {breakdown.map((item, i) => {
+                const pct = item.max_score > 0 ? Math.round((item.score / item.max_score) * 100) : 0;
+                const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400';
+                return (
+                  <div key={i} className="px-5 py-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold text-slate-700">{item.criterion}</span>
+                      <span className="text-xs font-bold text-slate-500 tabular-nums">{item.score}/{item.max_score}</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-1.5">
+                      <div className={`h-1.5 rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+                    </div>
+                    {item.comment && (
+                      <p className="text-[11px] text-slate-500 leading-snug">{item.comment}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── Manage Tab ───────────────────────────────────────────────────────────────
 function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
   const [courseId, setCourseId] = useState<number | ''>('');
@@ -437,7 +522,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
   const [grade, setGrade] = useState<number>(0);
   const [feedback, setFeedback] = useState("");
-  const [aiSuggestion, setAiSuggestion] = useState<GradingSuggestion | null>(null);
+  const [aiResult, setAiResult] = useState<AiGradeResult | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<"submissions" | "students" | "analytics" | "manage">("submissions");
@@ -446,8 +531,8 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [showCreateAssignment, setShowCreateAssignment] = useState(false);
   const [showUploadNotes, setShowUploadNotes] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
+  const [submissionFileCount, setSubmissionFileCount] = useState<Record<number, number>>({});
 
-  // Instructor roadmap panel state
   const [roadmapPanel, setRoadmapPanel] = useState<{
     studentName: string;
     courseId: number;
@@ -456,7 +541,19 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
   function loadSubmissions() {
     api.getInstructorSubmissions()
-      .then((d: any) => setSubmissions(Array.isArray(d) ? d : []))
+      .then((d: any) => {
+        const subs = Array.isArray(d) ? d : [];
+        setSubmissions(subs);
+        // Fetch file counts for each submission in parallel (best-effort)
+        subs.forEach((s: any) => {
+          api.getSubmissionFiles(s.id)
+            .then((files: any) => {
+              const count = Array.isArray(files) ? files.length : 0;
+              setSubmissionFileCount(prev => ({ ...prev, [s.id]: count }));
+            })
+            .catch(() => {});
+        });
+      })
       .catch(() => {});
   }
 
@@ -527,22 +624,83 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     if (activeTab === "analytics" && students.length > 0 && !classSummary) fetchClassSummary();
   }, [activeTab, students]);
 
+  /**
+   * AI Grade handler — uses RAG-enhanced /api/ai/grade-pdf when the submission
+   * has files; falls back to text-only /api/ai/grade for text-only submissions.
+   * Persists result to DB (ai_score, ai_feedback, ai_strengths, ai_improvements).
+   */
   const handleAiGrade = async () => {
     if (!selectedSubmission) return;
-    setIsAiLoading(true); setAiSuggestion(null);
+    setIsAiLoading(true); setAiResult(null);
+
+    const fileCount = submissionFileCount[selectedSubmission.id] ?? 0;
+    // Build rubric from assignment description if available, else use default
+    const rubric = (selectedSubmission as any).assignment_description
+      ? `Assignment: ${(selectedSubmission as any).assignment_title}\n\nInstructions: ${(selectedSubmission as any).assignment_description}\n\nRubric: Assess understanding of core concepts, clarity of explanation, use of examples, and conclusion quality. Score out of 100.`
+      : "Assess understanding of core concepts, clarity of explanation, use of examples, and conclusion quality. Score out of 100.";
+
     try {
-      const rubric = "Assess understanding of core concepts, clarity of explanation, use of examples, and conclusion quality.";
-      const suggestion = await getGradingSuggestion(selectedSubmission.content, rubric);
-      setAiSuggestion(suggestion);
-      toast.success("AI grading suggestion ready!");
-    } catch { toast.error("AI grading failed. Please try again."); }
-    finally { setIsAiLoading(false); }
+      let result: AiGradeResult;
+
+      if (fileCount > 0) {
+        // Full RAG-enhanced PDF grading — reads actual uploaded files from Supabase storage
+        const moduleId: number | undefined = (selectedSubmission as any).module_id ?? undefined;
+        const raw = await api.aiGradePdf(selectedSubmission.id, rubric, moduleId);
+        result = {
+          score:            raw.score ?? 0,
+          feedback:         raw.feedback ?? '',
+          strengths:        Array.isArray(raw.strengths)   ? raw.strengths   : [],
+          improvements:     Array.isArray(raw.improvements) ? raw.improvements : [],
+          rubric_breakdown: Array.isArray(raw.rubric_breakdown) ? raw.rubric_breakdown : undefined,
+          confidence:       typeof raw.confidence === 'number' ? raw.confidence : estimateConfidence(raw),
+          graded_via:       'pdf',
+        };
+      } else {
+        // Text-only fallback (legacy ephemeral route)
+        const raw = await api.aiGrade(selectedSubmission.content ?? '', rubric);
+        result = {
+          score:        raw.score ?? 0,
+          feedback:     raw.feedback ?? '',
+          strengths:    Array.isArray(raw.strengths)   ? raw.strengths   : [],
+          improvements: Array.isArray(raw.improvements) ? raw.improvements : [],
+          confidence:   typeof raw.confidence === 'number' ? raw.confidence : estimateConfidence(raw),
+          graded_via:   'text',
+        };
+      }
+
+      setAiResult(result);
+      toast.success(fileCount > 0 ? '🧠 RAG-enhanced AI grade ready!' : 'AI grading suggestion ready!');
+    } catch (err: any) {
+      toast.error(err?.message ?? 'AI grading failed. Please try again.');
+    } finally {
+      setIsAiLoading(false);
+    }
   };
 
+  /** Heuristically estimate confidence from strengths/improvements count */
+  function estimateConfidence(raw: any): number {
+    const s = (raw.strengths?.length ?? 0);
+    const i = (raw.improvements?.length ?? 0);
+    const hasBreakdown = Array.isArray(raw.rubric_breakdown) && raw.rubric_breakdown.length > 0;
+    if (hasBreakdown && s >= 2 && i >= 1) return 88;
+    if (s >= 2 && i >= 1) return 72;
+    if (s >= 1) return 58;
+    return 45;
+  }
+
   const handleAcceptAiGrade = () => {
-    if (!aiSuggestion) return;
-    setGrade(aiSuggestion.score); setFeedback(aiSuggestion.feedback);
-    toast.success("AI grade accepted — edit if needed, then publish.");
+    if (!aiResult) return;
+    setGrade(aiResult.score);
+    setFeedback(
+      aiResult.feedback +
+      (aiResult.strengths?.length
+        ? `\n\nStrengths:\n${aiResult.strengths.map(s => `• ${s}`).join('\n')}`
+        : '') +
+      (aiResult.improvements?.length
+        ? `\n\nSuggested Improvements:\n${aiResult.improvements.map(s => `• ${s}`).join('\n')}`
+        : '')
+    );
+    toast.success('AI grade accepted — edit if needed, then publish.');
   };
 
   const submitGrade = async () => {
@@ -550,10 +708,10 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     setIsSubmitting(true);
     try {
       await api.gradeSubmission(selectedSubmission.id, grade, feedback);
-      toast.success("Grade published successfully!");
+      toast.success('Grade published successfully!');
       setSubmissions(prev => prev.filter(s => s.id !== selectedSubmission.id));
-      setSelectedSubmission(null); setAiSuggestion(null);
-    } catch { toast.error("Failed to publish grade."); }
+      setSelectedSubmission(null); setAiResult(null);
+    } catch { toast.error('Failed to publish grade.'); }
     finally { setIsSubmitting(false); }
   };
 
@@ -565,7 +723,6 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     <div className="max-w-7xl mx-auto space-y-8">
       <Toaster position="top-right" />
 
-      {/* Instructor roadmap slide-over */}
       <AnimatePresence>
         {roadmapPanel && (
           <InstructorRoadmapView
@@ -630,30 +787,65 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       {activeTab === "submissions" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* ── Queue ── */}
           <div className="lg:col-span-1 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Grading Queue</h3>
               <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{submissions.length}</span>
             </div>
             <div className="space-y-3">
-              {submissions.map(sub => (
-                <button key={sub.id} onClick={() => { setSelectedSubmission(sub); setGrade(0); setFeedback(""); setAiSuggestion(null); }}
-                  className={`w-full text-left p-6 rounded-3xl border transition-all ${
-                    selectedSubmission?.id === sub.id
-                      ? "bg-white border-indigo-500 shadow-xl shadow-indigo-600/5 ring-1 ring-indigo-500"
-                      : "bg-white border-slate-100 shadow-sm hover:border-indigo-200"
-                  }`}>
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="w-10 h-10 bg-slate-100 text-slate-500 rounded-xl flex items-center justify-center font-bold text-xs">
-                      {sub.student_name.split(" ").map((n: string) => n[0]).join("")}
+              {submissions.map(sub => {
+                const fileCount = submissionFileCount[sub.id] ?? 0;
+                const hasSavedAi = !!(sub as any).ai_score;
+                return (
+                  <button key={sub.id} onClick={() => {
+                    setSelectedSubmission(sub);
+                    // Pre-populate grade/feedback from saved ai_score if exists
+                    if (hasSavedAi) {
+                      setGrade((sub as any).ai_score ?? 0);
+                      setFeedback((sub as any).ai_feedback ?? '');
+                      setAiResult({
+                        score:        (sub as any).ai_score ?? 0,
+                        feedback:     (sub as any).ai_feedback ?? '',
+                        strengths:    (sub as any).ai_strengths ?? [],
+                        improvements: (sub as any).ai_improvements ?? [],
+                        graded_via:   'pdf',
+                      });
+                    } else {
+                      setGrade(0); setFeedback(''); setAiResult(null);
+                    }
+                  }}
+                    className={`w-full text-left p-6 rounded-3xl border transition-all ${
+                      selectedSubmission?.id === sub.id
+                        ? "bg-white border-indigo-500 shadow-xl shadow-indigo-600/5 ring-1 ring-indigo-500"
+                        : "bg-white border-slate-100 shadow-sm hover:border-indigo-200"
+                    }`}>
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="w-10 h-10 bg-slate-100 text-slate-500 rounded-xl flex items-center justify-center font-bold text-xs">
+                        {sub.student_name.split(" ").map((n: string) => n[0]).join("")}
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{sub.course_name}</span>
+                        <div className="flex items-center gap-1">
+                          {fileCount > 0 && (
+                            <span className="flex items-center gap-0.5 text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">
+                              <FileText className="w-2.5 h-2.5" /> {fileCount}
+                            </span>
+                          )}
+                          {hasSavedAi && (
+                            <span className="flex items-center gap-0.5 text-[10px] font-bold text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">
+                              <Brain className="w-2.5 h-2.5" /> AI ready
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{sub.course_name}</span>
-                  </div>
-                  <h4 className="font-bold text-slate-900 text-sm mb-1">{sub.student_name}</h4>
-                  <p className="text-xs text-slate-500 mb-4">{sub.assignment_title}</p>
-                  <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Grade Now →</div>
-                </button>
-              ))}
+                    <h4 className="font-bold text-slate-900 text-sm mb-1">{sub.student_name}</h4>
+                    <p className="text-xs text-slate-500 mb-4">{sub.assignment_title}</p>
+                    <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Grade Now →</div>
+                  </button>
+                );
+              })}
               {submissions.length === 0 && (
                 <div className="p-8 text-center bg-white rounded-2xl border border-dashed border-slate-200">
                   <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
@@ -662,67 +854,114 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
               )}
             </div>
           </div>
+
+          {/* ── Grading Panel ── */}
           <div className="lg:col-span-2">
             <AnimatePresence mode="wait">
               {selectedSubmission ? (
                 <motion.div key={selectedSubmission.id}
                   initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
                   className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
-                  <div className="p-8 border-b border-slate-50 bg-slate-50/50 flex items-center justify-between">
-                    <div>
-                      <h3 className="text-2xl font-bold text-slate-900">{selectedSubmission.student_name}</h3>
-                      <p className="text-sm text-slate-500">{selectedSubmission.assignment_title}</p>
+
+                  {/* Header */}
+                  <div className="p-8 border-b border-slate-50 bg-slate-50/50">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-2xl font-bold text-slate-900">{selectedSubmission.student_name}</h3>
+                        <p className="text-sm text-slate-500">{selectedSubmission.assignment_title}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          {(submissionFileCount[selectedSubmission.id] ?? 0) > 0 && (
+                            <span className="flex items-center gap-1 text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                              <FileText className="w-3 h-3" />
+                              {submissionFileCount[selectedSubmission.id]} file{submissionFileCount[selectedSubmission.id] > 1 ? 's' : ''} attached
+                            </span>
+                          )}
+                          {(submissionFileCount[selectedSubmission.id] ?? 0) > 0 && (
+                            <span className="text-[10px] text-indigo-400 font-medium">RAG-enhanced grading available</span>
+                          )}
+                        </div>
+                      </div>
+                      <button onClick={handleAiGrade} disabled={isAiLoading}
+                        className="shrink-0 px-5 py-2.5 bg-green-700 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-green-800 transition-all shadow-lg shadow-green-700/20 disabled:opacity-50">
+                        {isAiLoading
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Grading…</>
+                          : <><Brain className="w-4 h-4" /> AI Grade{(submissionFileCount[selectedSubmission.id] ?? 0) > 0 ? ' (RAG)' : ''}</>
+                        }
+                      </button>
                     </div>
-                    <button onClick={handleAiGrade} disabled={isAiLoading}
-                      className="px-5 py-2.5 bg-green-700 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-green-800 transition-all shadow-lg shadow-green-700/20 disabled:opacity-50">
-                      {isAiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />} AI Grade
-                    </button>
                   </div>
+
                   <div className="p-8 space-y-6">
-                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
-                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Submission</h4>
-                      <p className="text-slate-700 leading-relaxed whitespace-pre-wrap text-sm">{selectedSubmission.content}</p>
-                    </div>
+                    {/* Submission content */}
+                    {selectedSubmission.content && (
+                      <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Submission Text</h4>
+                        <p className="text-slate-700 leading-relaxed whitespace-pre-wrap text-sm">{selectedSubmission.content}</p>
+                      </div>
+                    )}
+
+                    {/* AI Result Panel */}
                     <AnimatePresence>
-                      {aiSuggestion && (
+                      {aiResult && (
                         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
                           className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100 overflow-hidden">
-                          <div className="p-5 border-b border-green-100 flex items-center justify-between">
-                            <div className="flex items-center gap-2">
+
+                          {/* AI result header */}
+                          <div className="p-5 border-b border-green-100 flex items-center justify-between gap-3 flex-wrap">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <div className="bg-green-700 p-1.5 rounded-lg"><Brain className="w-3.5 h-3.5 text-white" /></div>
-                              <span className="text-sm font-bold text-green-900">AI Grading Suggestion</span>
+                              <span className="text-sm font-bold text-green-900">AI Grading Result</span>
                               <div className="flex items-center gap-1 bg-white/60 px-2 py-0.5 rounded-full border border-green-100">
                                 <Sparkles className="w-3 h-3 text-green-600" />
-                                <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">NVIDIA NIM</span>
+                                <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">
+                                  {aiResult.graded_via === 'pdf' ? 'NVIDIA NIM · RAG' : 'NVIDIA NIM'}
+                                </span>
                               </div>
+                              <ConfidenceBadge confidence={aiResult.confidence} />
                             </div>
                             <div className="flex gap-2">
                               <button onClick={handleAcceptAiGrade}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-green-700 text-white rounded-xl text-xs font-bold hover:bg-green-800 transition-all">
-                                <ThumbsUp className="w-3 h-3" /> Accept
+                                <ThumbsUp className="w-3 h-3" /> Accept & Fill
                               </button>
-                              <button onClick={handleAiGrade}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-50 transition-all">
+                              <button onClick={handleAiGrade} disabled={isAiLoading}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-50 transition-all disabled:opacity-50">
                                 <RefreshCw className="w-3 h-3" /> Re-run
                               </button>
                             </div>
                           </div>
+
+                          {/* Score + Feedback */}
                           <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-5">
                             <div className="text-center">
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-1">Score</p>
-                              <p className="text-4xl font-bold text-green-800 tabular-nums">{aiSuggestion.score}</p>
+                              <p className="text-4xl font-bold text-green-800 tabular-nums">{aiResult.score}</p>
                               <p className="text-xs text-green-600">/100</p>
+                              {/* Score ring indicator */}
+                              <div className="mt-2 mx-auto w-16">
+                                <svg viewBox="0 0 36 36" className="w-16 h-16 -rotate-90">
+                                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#d1fae5" strokeWidth="3" />
+                                  <circle cx="18" cy="18" r="15.9" fill="none"
+                                    stroke={aiResult.score >= 75 ? '#059669' : aiResult.score >= 55 ? '#d97706' : '#dc2626'}
+                                    strokeWidth="3"
+                                    strokeDasharray={`${aiResult.score} 100`}
+                                    strokeLinecap="round"
+                                  />
+                                </svg>
+                              </div>
                             </div>
                             <div className="md:col-span-2">
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-1">Feedback</p>
-                              <p className="text-sm text-green-900 leading-relaxed">{aiSuggestion.feedback}</p>
+                              <p className="text-sm text-green-900 leading-relaxed">{aiResult.feedback}</p>
                             </div>
                           </div>
+
+                          {/* Strengths & Improvements */}
                           <div className="px-5 pb-5 grid grid-cols-2 gap-4">
                             <div>
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-2">Strengths</p>
                               <ul className="space-y-1">
-                                {aiSuggestion.strengths.map((s: string, i: number) => (
+                                {aiResult.strengths.map((s: string, i: number) => (
                                   <li key={i} className="flex items-start gap-2 text-xs text-green-800"><span className="text-emerald-500 mt-0.5">✓</span> {s}</li>
                                 ))}
                               </ul>
@@ -730,15 +969,24 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                             <div>
                               <p className="text-[10px] text-green-600 uppercase font-bold tracking-widest mb-2">Improvements</p>
                               <ul className="space-y-1">
-                                {aiSuggestion.improvements.map((s: string, i: number) => (
+                                {aiResult.improvements.map((s: string, i: number) => (
                                   <li key={i} className="flex items-start gap-2 text-xs text-green-800"><span className="text-amber-500 mt-0.5">→</span> {s}</li>
                                 ))}
                               </ul>
                             </div>
                           </div>
+
+                          {/* Rubric Breakdown (only if returned by grade-pdf) */}
+                          {aiResult.rubric_breakdown && aiResult.rubric_breakdown.length > 0 && (
+                            <div className="px-5 pb-5">
+                              <RubricBreakdownPanel breakdown={aiResult.rubric_breakdown} />
+                            </div>
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>
+
+                    {/* Manual grade inputs */}
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                       <div className="md:col-span-1">
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Grade (0–100)</label>
@@ -756,8 +1004,9 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                           placeholder="Provide constructive feedback…" />
                       </div>
                     </div>
+
                     <div className="flex justify-end gap-4">
-                      <button onClick={() => { setSelectedSubmission(null); setAiSuggestion(null); }}
+                      <button onClick={() => { setSelectedSubmission(null); setAiResult(null); }}
                         className="px-8 py-3 text-sm font-bold text-slate-500 hover:text-slate-700">Skip for Now</button>
                       <button onClick={submitGrade} disabled={isSubmitting}
                         className="px-10 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50">
@@ -842,7 +1091,6 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                             {student.status}
                           </span>
                         </td>
-                        {/* View Roadmap button */}
                         <td className="px-8 py-4 text-right">
                           {student.course_id ? (
                             <button
