@@ -16,7 +16,7 @@ function isMock(): boolean {
   return !getApiKey();
 }
 
-// ─── OpenAI-compatible chat call (used only for grading + embeddings) ────────
+// ─── OpenAI-compatible chat call (used only for grading + embeddings) ────────────
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -49,7 +49,7 @@ async function nimChat(
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-// ─── OpenAI-compatible embeddings call ──────────────────────────────────────
+// ─── OpenAI-compatible embeddings call ────────────────────────────────────────
 
 export async function embedText(text: string): Promise<number[]> {
   if (isMock()) return Array.from({ length: 128 }, () => Math.random());
@@ -73,14 +73,15 @@ export function cosineSim(a: number[], b: number[]): number {
   return magA && magB ? dot / (magA * magB) : 0;
 }
 
-// ─── Mock responses (demo / no key) ─────────────────────────────────────────
+// ─── Mock responses (demo / no key) ────────────────────────────────────────────
 
-function mockChat(messages: ChatMessage[]): string {
+function mockChat(messages: ChatMessage[], maxPoints = 100): string {
   const system = messages[0]?.content ?? "";
 
   if (system.includes("GRADING ASSISTANT")) {
+    const score = Math.round(0.82 * maxPoints);
     return JSON.stringify({
-      score: 82,
+      score,
       feedback:
         "Good understanding of core concepts. The argument in section 2 is well-structured. " +
         "However, the conclusion lacks specific examples. Consider expanding on practical " +
@@ -111,7 +112,7 @@ function mockChat(messages: ChatMessage[]): string {
   return "I'm here to help! Ask me anything about your course material.";
 }
 
-// ─── 1. AI GRADING SUGGESTION ────────────────────────────────────────────────
+// ─── 1. AI GRADING SUGGESTION ─────────────────────────────────────────────────────────
 
 export interface GradingSuggestion {
   score: number;
@@ -120,32 +121,58 @@ export interface GradingSuggestion {
   improvements: string[];
 }
 
+/**
+ * getGradingSuggestion — text-only fallback grading path.
+ *
+ * @param submissionContent  Raw text of the student’s submission
+ * @param rubric             Full rubric string built by handleAiGrade in InstructorDashboard
+ * @param maxPoints          The assignment’s max_points (default 100 for safety)
+ *
+ * The system prompt explicitly states the valid score range so the model
+ * never returns a score outside [0, maxPoints].
+ * Temperature is kept low (0.2) for consistent, deterministic scoring.
+ * maxTokens is 1536 to avoid truncation on longer rubric breakdowns.
+ * Score is clamped to [0, maxPoints] as a safety net after parsing.
+ */
 export async function getGradingSuggestion(
   submissionContent: string,
-  rubric: string
+  rubric: string,
+  maxPoints = 100
 ): Promise<GradingSuggestion> {
+  if (isMock()) {
+    const raw = mockChat([{ role: 'system', content: 'GRADING ASSISTANT' }], maxPoints);
+    return JSON.parse(raw) as GradingSuggestion;
+  }
+
   const messages: ChatMessage[] = [
     {
       role: "system",
       content:
         `You are a GRADING ASSISTANT for a university LMS. ` +
-        `Respond ONLY with a valid JSON object — no markdown, no explanation. ` +
-        `JSON shape: {"score":<int 0-100>,"feedback":"<2-3 sentence feedback>",` +
+        `You will grade a student submission strictly against the provided rubric. ` +
+        `The assignment is scored out of ${maxPoints} points. ` +
+        `Your "score" field MUST be an integer between 0 and ${maxPoints} — never exceed ${maxPoints}. ` +
+        `Respond ONLY with a valid JSON object — no markdown fences, no prose outside JSON. ` +
+        `JSON shape exactly: ` +
+        `{"score":<int 0-${maxPoints}>,"feedback":"<2-3 sentences>",` +
         `"strengths":["<point>","<point>","<point>"],"improvements":["<point>","<point>"]}`,
     },
     {
       role: "user",
-      content: `RUBRIC: ${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent.slice(0, 3000)}`,
+      content: `RUBRIC:\n${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent.slice(0, 3000)}`,
     },
   ];
 
-  const raw = await nimChat(messages, { temperature: 0.3 });
+  const raw = await nimChat(messages, { temperature: 0.2, maxTokens: 1536 });
   try {
     const cleaned = raw.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned) as GradingSuggestion;
+    const parsed = JSON.parse(cleaned) as GradingSuggestion;
+    // Safety clamp: model must never return a score above maxPoints
+    parsed.score = Math.max(0, Math.min(Math.round(parsed.score), maxPoints));
+    return parsed;
   } catch {
     return {
-      score: 75,
+      score: Math.round(maxPoints * 0.75),
       feedback: raw.slice(0, 300),
       strengths: ["Submitted on time"],
       improvements: ["Review feedback carefully"],
@@ -176,13 +203,9 @@ export async function askModuleChatbot(
   history: ConversationTurn[] = []
 ): Promise<string> {
   try {
-    // Route through Express /api/ai/chat — NVIDIA key stays on the server.
-    // moduleId is required for server-side RAG retrieval from note_chunks.
     const res = await api.aiChat(question, moduleTitle, moduleId, history);
-    // Backend returns { answer: string } — normalise here.
     return (res as any)?.answer ?? (res as any)?.reply ?? String(res);
   } catch (backendErr: any) {
-    // Backend unavailable → graceful fallback using notes context client-side
     console.warn('[aiService] backend chat failed, using client fallback:', backendErr.message);
     if (!notesContext) {
       return "I don't have any notes loaded for this module yet. Ask your instructor to upload lecture materials.";
@@ -200,7 +223,7 @@ export async function askModuleChatbot(
   }
 }
 
-// ─── 3. STUDENT ANALYTICS AI SUMMARY ─────────────────────────────────────────
+// ─── 3. STUDENT ANALYTICS AI SUMMARY ──────────────────────────────────────────────────
 
 export interface StudentAnalyticsData {
   studentName: string;
@@ -226,9 +249,9 @@ export async function getAnalyticsSummary(
       role: "system",
       content:
         "You are an ANALYTICS SUMMARY assistant for a university LMS. " +
-        "Generate a concise, actionable 3-4 sentence summary. " +
-        "Focus on: strongest subject, weakest subject, late submission pattern, " +
-        "and one concrete recommendation. Use **bold** for key insights.",
+        "Generate a concise, actionable 3-4 sentence summary (no more than 80 words). " +
+        "Cover: strongest subject, weakest subject, late submission pattern, " +
+        "and one concrete recommendation. Use **bold** for key insights. Plain text only — no bullet points.",
     },
     {
       role: "user",
@@ -243,7 +266,7 @@ export async function getAnalyticsSummary(
   return nimChat(messages, { temperature: 0.4, maxTokens: 400 });
 }
 
-// ─── 4. INSTRUCTOR CLASS OVERVIEW SUMMARY ────────────────────────────────────
+// ─── 4. INSTRUCTOR CLASS OVERVIEW SUMMARY ──────────────────────────────────────────────
 
 export interface ClassOverviewData {
   courseName: string;
@@ -268,10 +291,10 @@ export async function getClassOverviewSummary(
       role: "system",
       content:
         "You are a CLASS OVERVIEW assistant for a university instructor. " +
-        "Generate a concise 3-4 sentence class health summary. " +
-        "Identify students at risk, note the strongest performer, " +
+        "Generate a concise 3-4 sentence class health summary (no more than 90 words). " +
+        "Identify students at risk by name, note the strongest performer, " +
         "highlight any module-wide weakness, and give one actionable recommendation. " +
-        "Use **bold** for names and key metrics.",
+        "Use **bold** for student names and key metrics. Plain text only — no bullet points.",
     },
     {
       role: "user",
