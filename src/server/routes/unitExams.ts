@@ -3,8 +3,7 @@
  * Handles: create exam, upload marks (CSV/XLSX), upload paper PDF,
  *          analytics for instructor, exam insights for student.
  *
- * Mount in server.ts:
- *   import { createUnitExamsRouter } from './src/server/routes/unitExams.js';
+ * Mounted in server.ts:
  *   app.use('/api/unit-exams', createUnitExamsRouter(pool, supabaseAdmin, nimChat));
  */
 
@@ -17,6 +16,7 @@ import { createClient } from '@supabase/supabase-js';
 import {
   requireAuth,
   requireRole,
+  requireSelfOrAdmin,
   AuthenticatedRequest,
 } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
@@ -28,7 +28,6 @@ const XLSX     = require('xlsx');
 const pdfParse = require('pdf-parse');
 
 const EXAM_PAPERS_BUCKET = 'learnit-exam-papers';
-const SIGNED_URL_TTL     = 3600;
 
 // ── Performance band thresholds (configurable per exam via grading_schema) ───
 function computeBand(
@@ -46,8 +45,7 @@ function normaliseKey(k: string): string {
 }
 
 // ── Parse CSV or XLSX buffer → array of row objects ──────────────────────────
-function parseSheet(buffer: Buffer, mimetype: string, originalname: string): Record<string, any>[] {
-  const ext = path.extname(originalname).toLowerCase();
+function parseSheet(buffer: Buffer, _mimetype: string, originalname: string): Record<string, any>[] {
   const wb  = XLSX.read(buffer, { type: 'buffer', raw: false });
   const ws  = wb.Sheets[wb.SheetNames[0]];
   const raw: Record<string, any>[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -65,7 +63,6 @@ async function resolveStudent(
   pool: pkg.Pool,
   row: Record<string, any>
 ): Promise<number | null> {
-  // prefer email match
   const email = row['student_email'] || row['email'] || '';
   if (email) {
     const r = await pool.query('SELECT id FROM users WHERE email=$1 AND role=$2', [email.trim(), 'student']);
@@ -79,7 +76,7 @@ async function resolveStudent(
   return null;
 }
 
-// ── Extract marks from row, fall back to 'marks' / 'marks_obtained' ──────────
+// ── Extract marks from row ────────────────────────────────────────────────────
 function extractMarks(row: Record<string, any>): number | null {
   const keys = ['marks_obtained', 'marks', 'score', 'total', 'obtained'];
   for (const k of keys) {
@@ -173,8 +170,8 @@ export function createUnitExamsRouter(
       try {
         const auth = (req as AuthenticatedRequest).auth;
         const { course_id, title, exam_date, max_marks, grading_schema } = req.body;
-        if (!course_id || !title)  return res.status(400).json({ error: 'course_id and title are required' });
-        const maxM = parseFloat(max_marks) || 100;
+        if (!course_id || !title) return res.status(400).json({ error: 'course_id and title are required' });
+        const maxM   = parseFloat(max_marks) || 100;
         const schema = grading_schema ?? { strong: 75, moderate: 50 };
         const r = await pool.query(
           `INSERT INTO unit_exams (course_id, title, exam_date, max_marks, grading_schema, created_by)
@@ -221,7 +218,6 @@ export function createUnitExamsRouter(
     async (req: any, res: Response) => {
       const examId = req.params.id;
       const auth   = (req as AuthenticatedRequest).auth;
-
       try {
         const file = req.file;
         if (!file) return res.status(400).json({ error: 'file required (CSV or XLSX)' });
@@ -242,18 +238,17 @@ export function createUnitExamsRouter(
            VALUES ($1,$2,$3,'processing',$4) RETURNING id`,
           [examId, file.originalname, importType, auth.legacyUserId]
         );
-        const importId = ir.rows[0].id;
+        const importId  = ir.rows[0].id;
+        const rows      = parseSheet(file.buffer, file.mimetype, file.originalname);
+        const schema    = exam.grading_schema as { strong: number; moderate: number };
+        const maxMarks  = parseFloat(exam.max_marks);
 
-        const rows       = parseSheet(file.buffer, file.mimetype, file.originalname);
-        const schema     = exam.grading_schema as { strong: number; moderate: number };
-        const maxMarks   = parseFloat(exam.max_marks);
-
-        const errors: any[]  = [];
+        const errors: any[]   = [];
         const inserted: any[] = [];
         let matched = 0;
 
         for (let i = 0; i < rows.length; i++) {
-          const row      = rows[i];
+          const row       = rows[i];
           const studentId = await resolveStudent(pool, row);
           const marks     = extractMarks(row);
           const topics    = extractTopicBreakdown(row);
@@ -310,12 +305,12 @@ export function createUnitExamsRouter(
         });
 
         res.json({
-          import_id:   importId,
-          rows_total:  rows.length,
+          import_id:    importId,
+          rows_total:   rows.length,
           rows_matched: matched,
           rows_failed:  errors.length,
-          errors: errors.slice(0, 20),   // cap preview at 20
-          preview: inserted.slice(0, 10),
+          errors:       errors.slice(0, 20),
+          preview:      inserted.slice(0, 10),
         });
       } catch (e: any) {
         console.error('[unit-exams/upload-marks]', e.message);
@@ -340,10 +335,8 @@ export function createUnitExamsRouter(
         const ext = path.extname(file.originalname).toLowerCase();
         if (ext !== '.pdf') return res.status(400).json({ error: 'Only PDF files accepted for exam paper' });
 
-        // Store in Supabase
         const storedPath = await uploadPaperToStorage(file.buffer, examId, file.mimetype, ext);
 
-        // Extract text
         let paperText = '';
         try {
           const parsed = await pdfParse(file.buffer);
@@ -357,7 +350,7 @@ export function createUnitExamsRouter(
           [storedPath, paperText, examId]
         );
 
-        // Async: extract topics + update DB (fire-and-forget, non-blocking)
+        // Fire-and-forget: extract topics from paper text via AI
         setImmediate(async () => {
           try {
             if (!paperText.trim()) return;
@@ -404,8 +397,8 @@ export function createUnitExamsRouter(
     requireRole('instructor', 'admin'),
     async (req: Request, res: Response) => {
       try {
-        const examId = req.params.id;
-        const exam   = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
+        const examId  = req.params.id;
+        const exam    = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
 
         const results = await q(
@@ -422,31 +415,27 @@ export function createUnitExamsRouter(
           [examId]
         );
 
-        const total    = results.length;
-        if (total === 0) {
-          return res.json({ exam, results: [], topics, stats: null });
-        }
+        const total = results.length;
+        if (total === 0) return res.json({ exam, results: [], topics, stats: null });
 
-        const marks    = results.map((r: any) => parseFloat(r.marks_obtained));
-        const pcts     = results.map((r: any) => parseFloat(r.percentage));
-        const avg      = Math.round((marks.reduce((a, b) => a + b, 0) / total) * 100) / 100;
-        const avgPct   = Math.round((pcts.reduce((a, b) => a + b, 0) / total) * 100) / 100;
-        const maxM     = Math.max(...marks);
-        const minM     = Math.min(...marks);
-        const sorted   = [...pcts].sort((a, b) => a - b);
-        const mid      = Math.floor(sorted.length / 2);
-        const median   = sorted.length % 2 !== 0
+        const marks  = results.map((r: any) => parseFloat(r.marks_obtained));
+        const pcts   = results.map((r: any) => parseFloat(r.percentage));
+        const avg    = Math.round((marks.reduce((a: number, b: number) => a + b, 0) / total) * 100) / 100;
+        const avgPct = Math.round((pcts.reduce((a: number, b: number) => a + b, 0) / total) * 100) / 100;
+        const maxM   = Math.max(...marks);
+        const minM   = Math.min(...marks);
+        const sorted = [...pcts].sort((a, b) => a - b);
+        const mid    = Math.floor(sorted.length / 2);
+        const median = sorted.length % 2 !== 0
           ? sorted[mid]
           : (sorted[mid - 1] + sorted[mid]) / 2;
 
-        const schema   = exam.grading_schema as { strong: number; moderate: number };
-        const bands    = { strong: 0, moderate: 0, weak: 0 };
+        const bands: Record<string, number> = { strong: 0, moderate: 0, weak: 0 };
         for (const r of results) {
-          const b = r.performance_band as 'strong' | 'moderate' | 'weak';
-          if (b) bands[b]++;
+          const b = r.performance_band as string;
+          if (b && b in bands) bands[b]++;
         }
 
-        // Aggregate weak/strong topics from topic_breakdown column
         const topicScores: Record<string, { total: number; count: number }> = {};
         for (const r of results) {
           if (!r.topic_breakdown) continue;
@@ -454,14 +443,13 @@ export function createUnitExamsRouter(
             ? JSON.parse(r.topic_breakdown) : r.topic_breakdown;
           for (const [t, v] of Object.entries(td)) {
             if (!topicScores[t]) topicScores[t] = { total: 0, count: 0 };
-            topicScores[t].total += v;
+            topicScores[t].total += v as number;
             topicScores[t].count += 1;
           }
         }
-        const topicAverages = Object.entries(topicScores).map(([t, { total, count }]) => ({
-          topic: t,
-          avg:   Math.round((total / count) * 100) / 100,
-        })).sort((a, b) => a.avg - b.avg);
+        const topicAverages = Object.entries(topicScores)
+          .map(([t, { total, count }]) => ({ topic: t, avg: Math.round((total / count) * 100) / 100 }))
+          .sort((a, b) => a.avg - b.avg);
 
         res.json({
           exam,
@@ -471,7 +459,7 @@ export function createUnitExamsRouter(
             total, avg, avg_pct: avgPct, max_marks: maxM, min_marks: minM, median_pct: median,
             pass_rate: Math.round(((bands.strong + bands.moderate) / total) * 100),
             bands,
-            weakest_topics:  topicAverages.slice(0, 3).map(t => t.topic),
+            weakest_topics:   topicAverages.slice(0, 3).map(t => t.topic),
             strongest_topics: topicAverages.slice(-3).reverse().map(t => t.topic),
           },
         });
@@ -480,9 +468,12 @@ export function createUnitExamsRouter(
   );
 
   // ── GET /api/unit-exams/student/:studentId/insights — student exam summary ─
+  // requireSelfOrAdmin ensures students can only read their own data.
+  // Instructors and admins can access any student.
   router.get(
     '/student/:studentId/insights',
     requireAuth,
+    requireSelfOrAdmin('studentId'),
     async (req: Request, res: Response) => {
       try {
         const studentId = req.params.studentId;
@@ -498,7 +489,6 @@ export function createUnitExamsRouter(
           [studentId]
         );
 
-        // Build per-topic weakness signal across all exams
         const weakTopics: Record<string, number> = {};
         for (const r of results) {
           if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
@@ -513,10 +503,10 @@ export function createUnitExamsRouter(
           .slice(0, 5)
           .map(([t]) => t);
 
-        const latest      = results[0] ?? null;
-        const allPcts     = results.map((r: any) => parseFloat(r.percentage)).filter(Boolean);
+        const latest     = results[0] ?? null;
+        const allPcts    = results.map((r: any) => parseFloat(r.percentage)).filter(Boolean);
         const overall_avg = allPcts.length > 0
-          ? Math.round((allPcts.reduce((a, b) => a + b, 0) / allPcts.length) * 10) / 10
+          ? Math.round((allPcts.reduce((a: number, b: number) => a + b, 0) / allPcts.length) * 10) / 10
           : null;
 
         res.json({ results, latest, overall_avg, weak_topics: topWeakTopics });
