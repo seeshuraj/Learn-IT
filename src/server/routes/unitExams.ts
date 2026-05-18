@@ -5,6 +5,11 @@
  *
  * Mounted in server.ts:
  *   app.use('/api/unit-exams', createUnitExamsRouter(pool, supabaseAdmin, nimChat));
+ *
+ * Security model:
+ *   - Instructors may only create/modify exams for courses they own.
+ *   - Students may only read their own exam insights (requireSelfOrAdmin guard).
+ *   - Admins bypass all ownership checks.
  */
 
 import { Router, Request, Response } from 'express';
@@ -20,7 +25,7 @@ import {
   AuthenticatedRequest,
 } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
-import { uploadLimiter } from '../middleware/rateLimit.js';
+import { uploadLimiter, aiGradeLimiter } from '../middleware/rateLimit.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -28,6 +33,16 @@ const XLSX     = require('xlsx');
 const pdfParse = require('pdf-parse');
 
 const EXAM_PAPERS_BUCKET = 'learnit-exam-papers';
+
+// Allowed MIME types for exam paper uploads
+const ALLOWED_PAPER_MIMES = new Set(['application/pdf']);
+const ALLOWED_SHEET_MIMES = new Set([
+  'text/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'application/octet-stream', // some browsers send this for .csv
+]);
 
 // ── Performance band thresholds (configurable per exam via grading_schema) ───
 function computeBand(
@@ -39,13 +54,13 @@ function computeBand(
   return 'weak';
 }
 
-// ── Normalise sheet header names ─────────────────────────────────────────────
+// ── Normalise sheet header names ─────────────────────────────────────────────────
 function normaliseKey(k: string): string {
   return k.trim().toLowerCase().replace(/\s+/g, '_');
 }
 
-// ── Parse CSV or XLSX buffer → array of row objects ──────────────────────────
-function parseSheet(buffer: Buffer, _mimetype: string, originalname: string): Record<string, any>[] {
+// ── Parse CSV or XLSX buffer → array of row objects ────────────────────────────
+function parseSheet(buffer: Buffer, _mimetype: string, _originalname: string): Record<string, any>[] {
   const wb  = XLSX.read(buffer, { type: 'buffer', raw: false });
   const ws  = wb.Sheets[wb.SheetNames[0]];
   const raw: Record<string, any>[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -58,7 +73,7 @@ function parseSheet(buffer: Buffer, _mimetype: string, originalname: string): Re
   });
 }
 
-// ── Resolve student_id from email or id column ───────────────────────────────
+// ── Resolve student_id from email or id column ───────────────────────────────────
 async function resolveStudent(
   pool: pkg.Pool,
   row: Record<string, any>
@@ -76,7 +91,7 @@ async function resolveStudent(
   return null;
 }
 
-// ── Extract marks from row ────────────────────────────────────────────────────
+// ── Extract marks from row ──────────────────────────────────────────────────────
 function extractMarks(row: Record<string, any>): number | null {
   const keys = ['marks_obtained', 'marks', 'score', 'total', 'obtained'];
   for (const k of keys) {
@@ -88,7 +103,7 @@ function extractMarks(row: Record<string, any>): number | null {
   return null;
 }
 
-// ── Extract optional topic breakdown from row ─────────────────────────────────
+// ── Extract optional topic breakdown from row ──────────────────────────────────────
 function extractTopicBreakdown(row: Record<string, any>): Record<string, number> | null {
   const reserved = new Set([
     'student_email','email','student_id','id',
@@ -104,7 +119,7 @@ function extractTopicBreakdown(row: Record<string, any>): Record<string, number>
   return Object.keys(topics).length > 0 ? topics : null;
 }
 
-// ── AI topic extraction from exam paper text ─────────────────────────────────
+// ── AI topic extraction from exam paper text ────────────────────────────────────
 async function extractTopicsFromPaperText(
   paperText: string,
   nimChat: (msgs: any[], opts?: any) => Promise<string>
@@ -141,7 +156,10 @@ export function createUnitExamsRouter(
   const router = Router();
 
   const mem        = multer.memoryStorage();
-  const uploadFile = multer({ storage: mem, limits: { fileSize: 20 * 1024 * 1024 } });
+  const uploadFile = multer({
+    storage: mem,
+    limits: { fileSize: 20 * 1024 * 1024 },
+  });
 
   async function q(sql: string, params: any[] = []) {
     const { rows } = await pool.query(sql, params);
@@ -150,6 +168,40 @@ export function createUnitExamsRouter(
   async function qOne(sql: string, params: any[] = []) {
     const { rows } = await pool.query(sql, params);
     return rows[0] ?? null;
+  }
+
+  /**
+   * ownsExamCourse — returns true if the instructor (or admin) has access to
+   * the course that a given unit_exam belongs to. Admins always pass.
+   */
+  async function ownsExamCourse(
+    auth: AuthenticatedRequest['auth'],
+    examId: string | number
+  ): Promise<boolean> {
+    if (auth.role === 'admin') return true;
+    const row = await qOne(
+      `SELECT ue.id FROM unit_exams ue
+       JOIN courses c ON c.id = ue.course_id
+       WHERE ue.id = $1 AND c.instructor_id = $2`,
+      [examId, auth.legacyUserId]
+    );
+    return !!row;
+  }
+
+  /**
+   * ownsCourse — returns true if the instructor owns the given course_id.
+   * Admins always pass.
+   */
+  async function ownsCourse(
+    auth: AuthenticatedRequest['auth'],
+    courseId: string | number
+  ): Promise<boolean> {
+    if (auth.role === 'admin') return true;
+    const row = await qOne(
+      'SELECT id FROM courses WHERE id=$1 AND instructor_id=$2',
+      [courseId, auth.legacyUserId]
+    );
+    return !!row;
   }
 
   async function uploadPaperToStorage(buffer: Buffer, examId: number, mime: string, ext: string): Promise<string> {
@@ -161,7 +213,7 @@ export function createUnitExamsRouter(
     return objectPath;
   }
 
-  // ── POST /api/unit-exams  — create exam metadata ──────────────────────────
+  // ── POST /api/unit-exams  — create exam metadata ────────────────────────────────
   router.post(
     '/',
     requireAuth,
@@ -171,6 +223,12 @@ export function createUnitExamsRouter(
         const auth = (req as AuthenticatedRequest).auth;
         const { course_id, title, exam_date, max_marks, grading_schema } = req.body;
         if (!course_id || !title) return res.status(400).json({ error: 'course_id and title are required' });
+
+        // Ownership: instructor must own the course
+        if (!(await ownsCourse(auth, course_id))) {
+          return res.status(403).json({ error: 'Access denied: not your course' });
+        }
+
         const maxM   = parseFloat(max_marks) || 100;
         const schema = grading_schema ?? { strong: 75, moderate: 50 };
         const r = await pool.query(
@@ -189,12 +247,20 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── GET /api/unit-exams/course/:courseId  — list exams for a course ────────
+  // ── GET /api/unit-exams/course/:courseId  — list exams for a course ────────────
   router.get(
     '/course/:courseId',
     requireAuth,
+    requireRole('instructor', 'admin'),
     async (req: Request, res: Response) => {
       try {
+        const auth = (req as AuthenticatedRequest).auth;
+
+        // Ownership: instructor may only list their own course's exams
+        if (!(await ownsCourse(auth, req.params.courseId))) {
+          return res.status(403).json({ error: 'Access denied: not your course' });
+        }
+
         const exams = await q(
           `SELECT ue.*,
                   (SELECT COUNT(*) FROM unit_exam_results r WHERE r.unit_exam_id = ue.id) AS result_count
@@ -208,7 +274,7 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── POST /api/unit-exams/:id/upload-marks  — ingest CSV / XLSX ──────────────
+  // ── POST /api/unit-exams/:id/upload-marks  — ingest CSV / XLSX ─────────────────
   router.post(
     '/:id/upload-marks',
     requireAuth,
@@ -230,6 +296,11 @@ export function createUnitExamsRouter(
 
         const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
+
+        // Ownership check
+        if (!(await ownsExamCourse(auth, examId))) {
+          return res.status(403).json({ error: 'Access denied: not your exam' });
+        }
 
         const importType = ext === '.csv' ? 'csv' : 'xlsx';
         const ir = await pool.query(
@@ -319,12 +390,14 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── POST /api/unit-exams/:id/upload-paper  — ingest exam PDF ─────────────
+  // ── POST /api/unit-exams/:id/upload-paper  — ingest exam PDF ─────────────────
+  // aiGradeLimiter applied: PDF upload triggers an LLM call for topic extraction.
   router.post(
     '/:id/upload-paper',
     requireAuth,
     requireRole('instructor', 'admin'),
     uploadLimiter,
+    aiGradeLimiter,
     uploadFile.single('file'),
     async (req: any, res: Response) => {
       const examId = req.params.id;
@@ -333,7 +406,17 @@ export function createUnitExamsRouter(
         const file = req.file;
         if (!file) return res.status(400).json({ error: 'file required (PDF)' });
         const ext = path.extname(file.originalname).toLowerCase();
-        if (ext !== '.pdf') return res.status(400).json({ error: 'Only PDF files accepted for exam paper' });
+        if (ext !== '.pdf' || !ALLOWED_PAPER_MIMES.has(file.mimetype)) {
+          return res.status(400).json({ error: 'Only PDF files accepted for exam paper' });
+        }
+
+        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
+        if (!exam) return res.status(404).json({ error: 'Exam not found' });
+
+        // Ownership check
+        if (!(await ownsExamCourse(auth, examId))) {
+          return res.status(403).json({ error: 'Access denied: not your exam' });
+        }
 
         const storedPath = await uploadPaperToStorage(file.buffer, examId, file.mimetype, ext);
 
@@ -390,7 +473,7 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── GET /api/unit-exams/:id/analytics  — instructor exam analytics ─────────
+  // ── GET /api/unit-exams/:id/analytics  — instructor exam analytics ─────────────
   router.get(
     '/:id/analytics',
     requireAuth,
@@ -398,8 +481,14 @@ export function createUnitExamsRouter(
     async (req: Request, res: Response) => {
       try {
         const examId  = req.params.id;
+        const auth    = (req as AuthenticatedRequest).auth;
         const exam    = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
+
+        // Ownership check
+        if (!(await ownsExamCourse(auth, examId))) {
+          return res.status(403).json({ error: 'Access denied: not your exam' });
+        }
 
         const results = await q(
           `SELECT r.*, u.name as student_name, u.email as student_email
@@ -467,7 +556,7 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── GET /api/unit-exams/student/:studentId/insights — student exam summary ─
+  // ── GET /api/unit-exams/student/:studentId/insights — student exam summary ───
   // requireSelfOrAdmin ensures students can only read their own data.
   // Instructors and admins can access any student.
   router.get(
@@ -514,14 +603,22 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── GET /api/unit-exams/:id  — get single exam ──────────────────────────────
+  // ── GET /api/unit-exams/:id  — get single exam ──────────────────────────────────
   router.get(
     '/:id',
     requireAuth,
+    requireRole('instructor', 'admin'),
     async (req: Request, res: Response) => {
       try {
+        const auth = (req as AuthenticatedRequest).auth;
         const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1', [req.params.id]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
+
+        // Ownership check
+        if (!(await ownsExamCourse(auth, req.params.id))) {
+          return res.status(403).json({ error: 'Access denied: not your exam' });
+        }
+
         res.json(exam);
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
