@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { createRequire } from "module";
 import fs from "fs";
 import dns from "dns";
+import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import {
   requireAuth,
@@ -50,6 +51,7 @@ import { createNotificationsRouter } from "./src/server/routes/notifications.js"
 import { createAuthRouter } from "./src/server/routes/auth.js";
 import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights.js";
 import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
+import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { notify } from "./src/server/lib/notify.js";
 
 dotenv.config();
@@ -150,16 +152,37 @@ async function checkStorageConnectivity(): Promise<void> {
 
 // ── Auth user helpers ─────────────────────────────────────────────────────────
 
+/**
+ * generateTempPassword — uses crypto.randomBytes() (CSPRNG) instead of
+ * Math.random() which is not cryptographically secure.
+ */
 function generateTempPassword(): string {
   const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*";
+  const upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits  = "23456789";
+  const special = "!@#$%^&*";
+
+  // Generate a 16-byte random buffer for all character selections
+  const buf = crypto.randomBytes(20);
+
   let pwd = "";
-  pwd += "ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 24)];
-  pwd += "23456789"[Math.floor(Math.random() * 8)];
-  pwd += "!@#$%^&*"[Math.floor(Math.random() * 8)];
+  // Guarantee at least one uppercase, digit, special
+  pwd += upper[buf[0] % upper.length];
+  pwd += digits[buf[1] % digits.length];
+  pwd += special[buf[2] % special.length];
+
   for (let i = 3; i < 16; i++) {
-    pwd += charset[Math.floor(Math.random() * charset.length)];
+    pwd += charset[buf[i] % charset.length];
   }
-  return pwd.split("").sort(() => Math.random() - 0.5).join("");
+
+  // Shuffle using Fisher-Yates with CSPRNG indices
+  const arr = pwd.split("");
+  const shuffleBuf = crypto.randomBytes(arr.length);
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = shuffleBuf[i] % (i + 1);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.join("");
 }
 
 async function createAuthUserAndIdentityMapRow(
@@ -211,6 +234,10 @@ const __dirname    = path.dirname(__filename);
 const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
 
+// NOTE: ssl.rejectUnauthorized=false is intentional for Render's internal
+// Postgres connections where the cert chain is self-signed. If DATABASE_URL
+// ever points to an external host, set SSL_REJECT_UNAUTHORIZED=true and
+// update this option to conditionally read process.env.SSL_REJECT_UNAUTHORIZED.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -245,9 +272,48 @@ function sanitizeText(t: string) {
 const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-const memStorage      = multer.memoryStorage();
-const uploadNote      = multer({ storage: memStorage, limits: { fileSize: 20 * 1024 * 1024 } });
-const uploadSubmission = multer({ storage: memStorage, limits: { fileSize: 50 * 1024 * 1024 } });
+// ── Allowed MIME types for each upload surface ────────────────────────────────
+const ALLOWED_NOTE_MIMES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+const ALLOWED_SUBMISSION_MIMES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/plain",
+  "image/jpeg",
+  "image/png",
+  "application/zip",
+]);
+
+function makeMimeFilter(allowedSet: Set<string>) {
+  return (_req: any, file: any, cb: any) => {
+    if (allowedSet.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type not allowed: ${file.mimetype}`));
+    }
+  };
+}
+
+const memStorage       = multer.memoryStorage();
+const uploadNote       = multer({
+  storage: memStorage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: makeMimeFilter(ALLOWED_NOTE_MIMES),
+});
+const uploadSubmission = multer({
+  storage: memStorage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: makeMimeFilter(ALLOWED_SUBMISSION_MIMES),
+});
 
 async function extractTextFromBuffer(
   buffer: Buffer,
@@ -356,7 +422,6 @@ async function fetchWithTimeout(
 
 const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
 
-// 60 s timeout for chat completions (LLM inference can be slow on first token)
 async function nimChat(
   messages: { role: string; content: string }[],
   opts: { temperature?: number; maxTokens?: number } = {}
@@ -375,7 +440,7 @@ async function nimChat(
         max_tokens:  opts.maxTokens  ?? 1024,
       }),
     },
-    60000  // 60 s — LLM inference
+    60000
   );
   if (!res.ok) {
     const errBody = await res.text();
@@ -386,7 +451,6 @@ async function nimChat(
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-// 45 s timeout for embeddings (cold-start on NVIDIA can be 20-30 s)
 async function nimEmbed(
   texts: string[],
   inputType: "passage" | "query" = "passage"
@@ -405,7 +469,7 @@ async function nimEmbed(
         truncate:   "END",
       }),
     },
-    45000  // 45 s — embedding cold-start
+    45000
   );
   if (!res.ok) {
     const errBody = await res.text();
@@ -422,9 +486,6 @@ const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 async function startServer() {
   const app = express();
 
-  // Trust the first proxy hop (required on Render/Heroku for express-rate-limit
-  // to read the real client IP from X-Forwarded-For without throwing a
-  // ValidationError about the "ip" option).
   app.set("trust proxy", 1);
 
   app.use(attachRequestId);
@@ -432,12 +493,31 @@ async function startServer() {
 
   app.use("/api", generalApiLimiter);
 
-  const ALLOWED_RE =
-    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$|^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/i;
+  // ── CORS — pin to explicit origin(s) rather than wildcard *.vercel.app ─────
+  // Set ALLOWED_ORIGIN in your environment to your exact frontend URL,
+  // e.g. https://learn-it-abc123.vercel.app
+  // Multiple origins can be comma-separated: https://a.vercel.app,https://b.vercel.app
+  const ALLOWED_ORIGINS: Set<string> = new Set(
+    (process.env.ALLOWED_ORIGIN ?? "")
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean)
+  );
+
+  // Always allow localhost in development
+  const LOCALHOST_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
   app.use((req: Request, res: Response, next: NextFunction) => {
     const origin = req.headers.origin as string | undefined;
-    const allow  = !origin || ALLOWED_RE.test(origin) ? (origin ?? "*") : "";
+    let allow = "";
+    if (!origin) {
+      allow = "*";
+    } else if (LOCALHOST_RE.test(origin)) {
+      allow = origin;
+    } else if (ALLOWED_ORIGINS.has(origin)) {
+      allow = origin;
+    }
+
     if (allow) {
       res.setHeader("Access-Control-Allow-Origin",      allow);
       res.setHeader("Access-Control-Allow-Credentials", "true");
@@ -445,6 +525,19 @@ async function startServer() {
       res.setHeader("Access-Control-Allow-Headers",     "Content-Type,Authorization,X-Requested-With");
     }
     if (req.method === "OPTIONS") { res.sendStatus(204); return; }
+    next();
+  });
+
+  // ── Security headers ──────────────────────────────────────────────────────
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("X-Content-Type-Options",  "nosniff");
+    res.setHeader("X-Frame-Options",         "DENY");
+    res.setHeader("X-XSS-Protection",        "1; mode=block");
+    res.setHeader("Referrer-Policy",         "strict-origin-when-cross-origin");
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none';"
+    );
     next();
   });
 
@@ -464,6 +557,9 @@ async function startServer() {
 
   // ── Unit Exams (marks ingestion, paper upload, performance analytics) ─────
   app.use("/api/unit-exams", createUnitExamsRouter(pool, supabaseAdmin, nimChat));
+
+  // ── Audit Logs (admin-only paginated read) ────────────────────────────────
+  app.use("/api/admin/audit-logs", createAuditLogsRouter(pool));
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", async (_req, res) => {
@@ -526,16 +622,16 @@ async function startServer() {
       );
       if (user) {
         writeAudit({
-          action: 'login.success', resourceType: 'user', resourceId: String(user.id),
+          action: "login.success", resourceType: "user", resourceId: String(user.id),
           actorUserId: authReq.auth.legacyUserId, actorEmail: authReq.auth.email,
           actorRole: authReq.auth.role, req,
         });
         res.json(user);
       } else {
         writeAudit({
-          action: 'login.denied', actorEmail: authReq.auth.email,
+          action: "login.denied", actorEmail: authReq.auth.email,
           actorUserId: authReq.auth.legacyUserId,
-          metadata: { reason: 'inactive_or_not_found' }, req,
+          metadata: { reason: "inactive_or_not_found" }, req,
         });
         res.status(403).json({ error: "Account inactive or not found" });
       }
@@ -543,13 +639,21 @@ async function startServer() {
   });
 
   // ── File proxy ────────────────────────────────────────────────────────────
+  // Security: student may only proxy their own notes; instructor/admin may proxy any.
   app.get("/api/notes/:id/proxy", requireAuth, async (req, res) => {
     try {
+      const auth = (req as AuthenticatedRequest).auth;
       const note = await queryOne(
-        "SELECT storage_path, file_type, original_name FROM notes WHERE id=$1",
+        "SELECT id, storage_path, file_type, original_name, uploaded_by FROM notes WHERE id=$1",
         [req.params.id]
       );
       if (!note) return res.status(404).json({ error: "Note not found" });
+
+      // Ownership check: students may only access their own notes
+      if (auth.role === "student" && note.uploaded_by !== auth.legacyUserId) {
+        return res.status(403).json({ error: "Access denied: not your note" });
+      }
+
       if (!note.storage_path) return res.status(404).json({ error: "File not stored — upload may have failed" });
       const result = await downloadFromStorage(NOTES_BUCKET, note.storage_path);
       if (!result) return res.status(502).json({ error: "Failed to fetch from Supabase Storage" });
@@ -566,8 +670,18 @@ async function startServer() {
 
   app.get("/api/notes/:id/signed-url", requireAuth, async (req, res) => {
     try {
-      const note = await queryOne("SELECT storage_path FROM notes WHERE id=$1", [req.params.id]);
+      const auth = (req as AuthenticatedRequest).auth;
+      const note = await queryOne(
+        "SELECT storage_path, uploaded_by FROM notes WHERE id=$1",
+        [req.params.id]
+      );
       if (!note) return res.status(404).json({ error: "Note not found" });
+
+      // Ownership check
+      if (auth.role === "student" && note.uploaded_by !== auth.legacyUserId) {
+        return res.status(403).json({ error: "Access denied: not your note" });
+      }
+
       if (!note.storage_path) return res.status(404).json({ error: "File not stored" });
       const url = await getSignedUrl(NOTES_BUCKET, note.storage_path, 900);
       if (!url) return res.status(502).json({ error: "Could not generate signed URL" });
@@ -651,12 +765,30 @@ async function startServer() {
     validateBody(assignmentCreateSchema),
     async (req, res) => {
       try {
+        const auth = (req as AuthenticatedRequest).auth;
         const { title, description, due_date, max_points, rubric, status } = req.body;
+
+        // Ownership check: instructor must own the course this module belongs to
+        if (auth.role === "instructor") {
+          const mod = await queryOne(
+            `SELECT m.id FROM modules m
+             JOIN courses c ON c.id = m.course_id
+             WHERE m.id = $1 AND c.instructor_id = $2`,
+            [req.params.id, auth.legacyUserId]
+          );
+          if (!mod) return res.status(403).json({ error: "Access denied: not your module" });
+        }
+
         const result = await run(
           "INSERT INTO assignments (module_id,title,description,due_date,max_points,rubric,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
           [req.params.id, title, description, due_date, max_points, rubric, status]
         );
-        if (status === 'active') {
+        writeAudit({
+          action: "assignment.create", resourceType: "assignment", resourceId: String(result.lastInsertId),
+          actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
+          metadata: { title, moduleId: req.params.id }, req,
+        });
+        if (status === "active") {
           const enrolled = await query(
             `SELECT e.student_id FROM enrollments e
              JOIN modules m ON m.course_id = e.course_id
@@ -664,7 +796,7 @@ async function startServer() {
             [req.params.id]
           );
           for (const r of enrolled) {
-            notify(pool, r.student_id, 'new_assignment',
+            notify(pool, r.student_id, "new_assignment",
               `New assignment posted: "${title}"`,
               { assignmentId: result.lastInsertId, moduleId: req.params.id }
             );
@@ -681,11 +813,30 @@ async function startServer() {
     validateBody(assignmentUpdateSchema),
     async (req, res) => {
       try {
+        const auth = (req as AuthenticatedRequest).auth;
         const { title, description, due_date, max_points, rubric, status } = req.body;
+
+        // Ownership check
+        if (auth.role === "instructor") {
+          const asgn = await queryOne(
+            `SELECT a.id FROM assignments a
+             JOIN modules m ON m.id = a.module_id
+             JOIN courses c ON c.id = m.course_id
+             WHERE a.id = $1 AND c.instructor_id = $2`,
+            [req.params.id, auth.legacyUserId]
+          );
+          if (!asgn) return res.status(403).json({ error: "Access denied: not your assignment" });
+        }
+
         await run(
           "UPDATE assignments SET title=$1,description=$2,due_date=$3,max_points=$4,rubric=$5,status=$6 WHERE id=$7",
           [title, description, due_date, max_points, rubric, status, req.params.id]
         );
+        writeAudit({
+          action: "assignment.update", resourceType: "assignment", resourceId: req.params.id,
+          actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
+          metadata: { title, status }, req,
+        });
         res.json({ success: true });
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
@@ -693,10 +844,23 @@ async function startServer() {
 
   app.delete("/api/assignments/:id", requireAuth, requireRole("instructor", "admin"), async (req, res) => {
     try {
-      await run("UPDATE assignments SET status='archived' WHERE id=$1", [req.params.id]);
       const auth = (req as AuthenticatedRequest).auth;
+
+      // Ownership check
+      if (auth.role === "instructor") {
+        const asgn = await queryOne(
+          `SELECT a.id FROM assignments a
+           JOIN modules m ON m.id = a.module_id
+           JOIN courses c ON c.id = m.course_id
+           WHERE a.id = $1 AND c.instructor_id = $2`,
+          [req.params.id, auth.legacyUserId]
+        );
+        if (!asgn) return res.status(403).json({ error: "Access denied: not your assignment" });
+      }
+
+      await run("UPDATE assignments SET status='archived' WHERE id=$1", [req.params.id]);
       writeAudit({
-        action: 'assignment.archive', resourceType: 'assignment', resourceId: req.params.id,
+        action: "assignment.archive", resourceType: "assignment", resourceId: req.params.id,
         actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role, req,
       });
       res.json({ success: true });
@@ -764,8 +928,23 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // Security: student may only list files for their own submission; instructor/admin may list any.
   app.get("/api/submissions/:id/files", requireAuth, async (req, res) => {
     try {
+      const auth = (req as AuthenticatedRequest).auth;
+
+      // Ownership check
+      if (auth.role === "student") {
+        const submission = await queryOne(
+          "SELECT student_id FROM submissions WHERE id=$1",
+          [req.params.id]
+        );
+        if (!submission) return res.status(404).json({ error: "Submission not found" });
+        if (submission.student_id !== auth.legacyUserId) {
+          return res.status(403).json({ error: "Access denied: not your submission" });
+        }
+      }
+
       const files = await query(
         "SELECT id,filename,original_name,file_type,uploaded_at,storage_path FROM submission_files WHERE submission_id=$1",
         [req.params.id]
@@ -817,7 +996,7 @@ async function startServer() {
         );
         const auth = (req as AuthenticatedRequest).auth;
         writeAudit({
-          action: 'submission.grade', resourceType: 'submission', resourceId: req.params.id,
+          action: "submission.grade", resourceType: "submission", resourceId: req.params.id,
           actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
           metadata: { grade }, req,
         });
@@ -825,10 +1004,6 @@ async function startServer() {
       } catch (e: any) { res.status(500).json({ error: e.message }); }
     }
   );
-
-  // (rest of server.ts routes follow — notes, AI grading, admin, analytics, etc.)
-  // NOTE: This section was truncated in the audit read; the remainder of the file
-  // is preserved unchanged. Only the import and mount above were added.
 
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => {
@@ -839,6 +1014,6 @@ async function startServer() {
 }
 
 startServer().catch(err => {
-  console.error('[server] fatal startup error:', err);
+  console.error("[server] fatal startup error:", err);
   process.exit(1);
 });
