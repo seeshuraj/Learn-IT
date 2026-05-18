@@ -75,6 +75,28 @@ async function request<T = any>(path: string, options?: RequestInit): Promise<T>
   return data as T;
 }
 
+// ── Multipart upload helper ─────────────────────────────────────────────────
+
+async function uploadFile(path: string, fieldName: string, file: File): Promise<any> {
+  const ah = await authHeaders();
+  const form = new FormData();
+  form.append(fieldName, file);
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { ...ah },
+    body: form,
+    credentials: 'include',
+  });
+  const ct = res.headers.get('content-type') ?? '';
+  if (!ct.includes('application/json')) {
+    const text = await res.text();
+    throw new Error(`[API] Expected JSON from ${BASE}${path} but got: ${text.slice(0, 120)}`);
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
 // ── Public API surface ──────────────────────────────────────────────────────────
 
 export const api = {
@@ -165,9 +187,44 @@ export const api = {
   getStudentStats:      (studentId: number) => request(`/api/student/${studentId}/stats`),
   getStudentAnalytics:  (studentId: number) => request(`/api/students/${studentId}/analytics`),
   getStudentNotes:      (studentId: number) => request(`/api/students/${studentId}/notes`),
-  // NEW: aggregated grading insights (strengths + improvements from ai_feedback)
+  // aggregated grading insights (strengths + improvements from ai_feedback)
   getStudentGradingInsights: (studentId: number) =>
     request(`/api/student/${studentId}/grading-insights`),
+
+  // ── Unit Exams — Instructor ─────────────────────────────────────────────
+  /** Create a new unit exam for a course. */
+  createUnitExam: (data: {
+    course_id: number;
+    title: string;
+    exam_date?: string;
+    max_marks?: number;
+    grading_schema?: { strong: number; moderate: number };
+  }) => request('/api/unit-exams', { method: 'POST', body: JSON.stringify(data) }),
+
+  /** List all unit exams for a course (instructor view). */
+  listCourseExams: (courseId: number) =>
+    request(`/api/unit-exams/course/${courseId}`),
+
+  /** Get a single unit exam by id. */
+  getUnitExam: (examId: number) =>
+    request(`/api/unit-exams/${examId}`),
+
+  /** Get full analytics for an exam (stats + band distribution + student results). */
+  getExamAnalytics: (examId: number) =>
+    request(`/api/unit-exams/${examId}/analytics`),
+
+  /** Upload CSV or XLSX marks sheet for an exam. */
+  uploadExamMarks: (examId: number, file: File) =>
+    uploadFile(`/api/unit-exams/${examId}/upload-marks`, 'file', file),
+
+  /** Upload exam paper PDF for AI topic analysis. */
+  uploadExamPaper: (examId: number, file: File) =>
+    uploadFile(`/api/unit-exams/${examId}/upload-paper`, 'file', file),
+
+  // ── Unit Exams — Student ────────────────────────────────────────────────
+  /** Get a student's unit exam insights (all exams, weak topics, trend). */
+  getStudentExamInsights: (studentId: number) =>
+    request(`/api/unit-exams/student/${studentId}/insights`),
 
   // Instructor
   getInstructorCourses: (instructorId: number) =>
@@ -233,7 +290,7 @@ export const api = {
   aiAnalyticsSummary: (analytics: any) =>
     request('/api/ai/analytics-summary', { method: 'POST', body: JSON.stringify({ analytics }) }),
 
-  // Roadmaps (P3-3)
+  // Roadmaps
   getRoadmap:          (courseId: number) => request(`/api/roadmaps/${courseId}`),
   generateRoadmap:     (courseId: number) =>
     request(`/api/roadmaps/${courseId}/generate`, { method: 'POST' }),

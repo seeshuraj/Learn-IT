@@ -26,6 +26,7 @@ import AdminCourseManagement from "./pages/AdminCourseManagement";
 import { AdminSettings } from "./pages/AdminSettings";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import RoadmapPage from "./pages/RoadmapPage";
+import AssessmentsPage from "./pages/AssessmentsPage";
 
 const API_BASE =
   (import.meta as any).env?.VITE_API_BASE_URL ||
@@ -124,6 +125,9 @@ const AppContent: React.FC = () => {
             <Route path="/assignments" element={<AssignmentsPage user={user!} />} />
             <Route path="/notes" element={<NotesPage user={user!} />} />
             <Route path="/analytics" element={<AnalyticsPage user={user!} />} />
+            {user?.role === "instructor" && (
+              <Route path="/assessments" element={<AssessmentsPage user={user!} />} />
+            )}
             {user?.role === "student" && (
               <Route path="/roadmap" element={<RoadmapPage user={user!} />} />
             )}
@@ -138,9 +142,6 @@ const AppContent: React.FC = () => {
           </Routes>
         </main>
       </div>
-      {/* NOTE: ChatBot is intentionally omitted here — each page (NotesPage,
-          CourseDetailPage) mounts its own scoped ChatBot with correct module
-          context. A global ChatBot here would create a duplicate GoTrueClient. */}
     </div>
   );
 };
