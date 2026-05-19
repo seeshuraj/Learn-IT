@@ -3,34 +3,38 @@
  * 4-step wizard for instructors:
  *   1. Create exam (title, date, max marks, grading thresholds)
  *   2. Upload marks CSV/XLSX
- *   3. Upload exam paper PDF (optional)
- *   4. Review analytics preview
+ *   3. Upload exam paper PDF (optional — triggers AI topic extraction)
+ *   4. Review analytics preview → Finish
  *
- * Usage:
- *   <ExamUploadWizard courseId={courseId} onComplete={() => refetch()} />
+ * Props:
+ *   courseId  — course to create the exam under
+ *   onClose   — called when the user dismisses without completing
+ *   onSuccess — called after finish/publish; triggers refetch in AssessmentsPage
  */
 
 import React, { useState, useRef } from 'react';
+import { X } from 'lucide-react';
 
 interface Props {
-  courseId: number;
-  onComplete?: (examId: number) => void;
+  courseId:  number;
+  onClose:   () => void;
+  onSuccess: (examId: number) => void;
 }
 
 interface ExamMeta {
-  id: number;
-  title: string;
-  max_marks: number;
+  id:             number;
+  title:          string;
+  max_marks:      number;
   grading_schema: { strong: number; moderate: number };
 }
 
 interface ImportResult {
-  import_id: number;
-  rows_total: number;
+  import_id:    number;
+  rows_total:   number;
   rows_matched: number;
-  rows_failed: number;
-  errors: any[];
-  preview: { studentId: number; marks: number; band: string; pct: number }[];
+  rows_failed:  number;
+  errors:       { row: number; reason: string }[];
+  preview:      { studentId: number; marks: number; band: string; pct: number }[];
 }
 
 const BAND_COLORS: Record<string, string> = {
@@ -45,13 +49,13 @@ const BAND_BG: Record<string, string> = {
   weak:     '#e0ced7',
 };
 
-export default function ExamUploadWizard({ courseId, onComplete }: Props) {
-  const [step,     setStep]     = useState<1 | 2 | 3 | 4>(1);
-  const [exam,     setExam]     = useState<ExamMeta | null>(null);
-  const [result,   setResult]   = useState<ImportResult | null>(null);
+export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
+  const [step,      setStep]      = useState<1 | 2 | 3 | 4>(1);
+  const [exam,      setExam]      = useState<ExamMeta | null>(null);
+  const [result,    setResult]    = useState<ImportResult | null>(null);
   const [analytics, setAnalytics] = useState<any | null>(null);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
+  const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState<string | null>(null);
 
   // Step 1 fields
   const [title,     setTitle]     = useState('');
@@ -67,7 +71,8 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
     const token = localStorage.getItem('token') ?? sessionStorage.getItem('token') ?? '';
     const res   = await fetch(url, {
       ...opts,
-      headers: { ...(opts.headers ?? {}), Authorization: `Bearer ${token}` },
+      credentials: 'include',
+      headers: { ...(opts.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -80,6 +85,12 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
     setError(null);
     setLoading(true);
     try {
+      const strong = parseFloat(strongThr);
+      const mod    = parseFloat(modThr);
+      if (mod >= strong) {
+        setError('Strong threshold must be greater than moderate threshold');
+        return;
+      }
       const data = await apiFetch('/api/unit-exams', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -88,13 +99,14 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
           title:          title.trim(),
           exam_date:      examDate || null,
           max_marks:      parseFloat(maxMarks),
-          grading_schema: { strong: parseFloat(strongThr), moderate: parseFloat(modThr) },
+          grading_schema: { strong, moderate: mod },
         }),
       });
       setExam({
-        id: data.id, title: title.trim(),
+        id: data.id,
+        title: title.trim(),
         max_marks: parseFloat(maxMarks),
-        grading_schema: { strong: parseFloat(strongThr), moderate: parseFloat(modThr) },
+        grading_schema: { strong, moderate: mod },
       });
       setStep(2);
     } catch (err: any) {
@@ -115,7 +127,7 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
     try {
       const fd = new FormData();
       fd.append('file', marksRef.current.files[0]);
-      const data = await apiFetch(`/api/unit-exams/${exam.id}/upload-marks`, {
+      const data: ImportResult = await apiFetch(`/api/unit-exams/${exam.id}/upload-marks`, {
         method: 'POST',
         body:   fd,
       });
@@ -132,6 +144,7 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
   async function handleUploadPaper(skip = false) {
     if (!exam) return;
     setError(null);
+
     if (!skip && paperRef.current?.files?.[0]) {
       setLoading(true);
       try {
@@ -145,11 +158,10 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
         setError(err.message);
         setLoading(false);
         return;
-      } finally {
-        setLoading(false);
       }
     }
-    // Load analytics preview
+
+    // Load analytics preview regardless of whether paper was uploaded
     setLoading(true);
     try {
       const data = await apiFetch(`/api/unit-exams/${exam.id}/analytics`);
@@ -162,14 +174,14 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
     }
   }
 
-  // ── Step 4: Publish / finish ─────────────────────────────────────────────
+  // ── Step 4: Finish / publish ─────────────────────────────────────────────
   function handleFinish() {
-    if (exam) onComplete?.(exam.id);
+    if (exam) onSuccess(exam.id);
   }
 
   const s: Record<string, React.CSSProperties> = {
-    wrap:    { maxWidth: 600, margin: '0 auto', fontFamily: 'inherit' },
-    stepper: { display: 'flex', gap: 8, marginBottom: 24 },
+    wrap:    { maxWidth: 600, margin: '0 auto', padding: '1.5rem', fontFamily: 'inherit' },
+    stepper: { display: 'flex', gap: 8, marginBottom: 20 },
     stepDot: (active: boolean, done: boolean) => ({
       flex: 1, height: 4, borderRadius: 2,
       background: done ? '#437a22' : active ? '#01696f' : '#dcd9d5',
@@ -182,7 +194,7 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
     lbl:     { display: 'block', fontSize: '0.875rem', fontWeight: 500, marginBottom: 4, color: '#28251d' },
     input:   { width: '100%', padding: '0.5rem 0.75rem', border: '1px solid #d4d1ca', borderRadius: 6, fontSize: '0.875rem', outline: 'none', boxSizing: 'border-box' as const },
     row:     { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
-    btn:     { padding: '0.625rem 1.25rem', background: '#01696f', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer' },
+    btn:     { padding: '0.625rem 1.25rem', background: '#01696f', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', opacity: 1 },
     ghost:   { padding: '0.625rem 1.25rem', background: 'none', color: '#7a7974', border: '1px solid #d4d1ca', borderRadius: 6, fontSize: '0.875rem', cursor: 'pointer' },
     err:     { color: '#a12c7b', fontSize: '0.8125rem', marginTop: 10 },
     band:    (b: string) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: BAND_BG[b] ?? '#eee', color: BAND_COLORS[b] ?? '#333' }),
@@ -194,9 +206,17 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
 
   return (
     <div style={s.wrap}>
+      {/* Header with close button */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <span style={{ fontWeight: 600, fontSize: '1rem', color: '#28251d' }}>New Unit Exam</span>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7a7974', padding: 4 }}>
+          <X size={18} />
+        </button>
+      </div>
+
       {/* Progress bar */}
       <div style={s.stepper}>
-        {([1,2,3,4] as const).map(n => (
+        {([1, 2, 3, 4] as const).map(n => (
           <div key={n} style={s.stepDot(step === n, step > n)} />
         ))}
       </div>
@@ -204,14 +224,20 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
         Step {step} of 4 — {['Create Exam', 'Upload Marks', 'Upload Paper', 'Review Analytics'][step - 1]}
       </p>
 
-      {/* ── Step 1 ── */}
+      {/* ── Step 1: Create exam ── */}
       {step === 1 && (
         <div style={s.card}>
           <h2 style={s.h2}>Create Unit Exam</h2>
           <form onSubmit={handleCreateExam}>
             <div style={s.group}>
               <label style={s.lbl}>Exam Title *</label>
-              <input style={s.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Unit Test 2" required />
+              <input
+                style={s.input}
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="e.g. Unit Test 2 — Data Structures"
+                required
+              />
             </div>
             <div style={{ ...s.group, ...s.row }}>
               <div>
@@ -227,10 +253,12 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
               <div>
                 <label style={s.lbl}>Strong threshold (%)</label>
                 <input style={s.input} type="number" min="1" max="100" value={strongThr} onChange={e => setStrongThr(e.target.value)} />
+                <p style={{ fontSize: '0.7rem', color: '#7a7974', marginTop: 3 }}>≥ this % = Strong</p>
               </div>
               <div>
                 <label style={s.lbl}>Moderate threshold (%)</label>
                 <input style={s.input} type="number" min="1" max="100" value={modThr} onChange={e => setModThr(e.target.value)} />
+                <p style={{ fontSize: '0.7rem', color: '#7a7974', marginTop: 3 }}>≥ this % = Moderate; below = Weak</p>
               </div>
             </div>
             {error && <p style={s.err}>{error}</p>}
@@ -241,14 +269,16 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
         </div>
       )}
 
-      {/* ── Step 2 ── */}
+      {/* ── Step 2: Upload marks ── */}
       {step === 2 && exam && (
         <div style={s.card}>
           <h2 style={s.h2}>Upload Marks — {exam.title}</h2>
           <p style={{ fontSize: '0.875rem', color: '#7a7974', marginBottom: 16 }}>
-            Upload a CSV or XLSX with columns: <code>student_email</code> (or <code>student_id</code>),
-            {' '}<code>marks_obtained</code>. Optional topic columns (e.g. <code>algebra</code>, <code>recursion</code>)
-            will be parsed as topic breakdown.
+            Upload a <strong>CSV</strong> or <strong>XLSX</strong> file.
+            Required columns: <code>student_email</code> (or <code>student_id</code>),{' '}
+            <code>marks_obtained</code>. Optional topic columns (e.g.{' '}
+            <code>recursion</code>, <code>algebra</code>) will be parsed as topic breakdown
+            and used in roadmap generation.
           </p>
           <div style={s.group}>
             <label style={s.lbl}>Marks File (.csv / .xlsx)</label>
@@ -256,7 +286,7 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
           </div>
           {error && <p style={s.err}>{error}</p>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button style={s.ghost} onClick={() => setStep(1)}>← Back</button>
+            <button style={s.ghost} onClick={() => { setStep(1); setError(null); }}>← Back</button>
             <button style={s.btn} onClick={handleUploadMarks} disabled={loading}>
               {loading ? 'Uploading…' : 'Upload & Continue →'}
             </button>
@@ -264,33 +294,43 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
         </div>
       )}
 
-      {/* ── Step 3 ── */}
+      {/* ── Step 3: Upload paper (optional) ── */}
       {step === 3 && exam && result && (
         <div style={s.card}>
           <h2 style={s.h2}>Upload Exam Paper (Optional)</h2>
-          <p style={{ fontSize: '0.875rem', color: '#7a7974', marginBottom: 12 }}>
-            Matched <strong>{result.rows_matched}</strong> of {result.rows_total} rows.
-            {result.rows_failed > 0 && (
-              <span style={{ color: '#a12c7b' }}> {result.rows_failed} rows failed — check below.</span>
-            )}
-          </p>
+          <div style={{ background: '#fff', border: '1px solid #d4d1ca', borderRadius: 6, padding: '0.75rem 1rem', marginBottom: 14 }}>
+            <p style={{ fontSize: '0.875rem', color: '#28251d', fontWeight: 500 }}>
+              Matched <strong style={{ color: '#437a22' }}>{result.rows_matched}</strong> of {result.rows_total} students.
+              {result.rows_failed > 0 && (
+                <span style={{ color: '#a12c7b' }}> {result.rows_failed} rows failed.</span>
+              )}
+            </p>
+          </div>
+
           {result.errors.length > 0 && (
-            <details style={{ marginBottom: 12 }}>
+            <details style={{ marginBottom: 14 }}>
               <summary style={{ fontSize: '0.8125rem', cursor: 'pointer', color: '#7a7974' }}>Show row errors</summary>
               <ul style={{ fontSize: '0.8125rem', color: '#a12c7b', paddingLeft: 16, marginTop: 6 }}>
-                {result.errors.map((e: any, i: number) => (
+                {result.errors.map((e, i) => (
                   <li key={i}>Row {e.row}: {e.reason}</li>
                 ))}
               </ul>
             </details>
           )}
+
+          <p style={{ fontSize: '0.875rem', color: '#7a7974', marginBottom: 12 }}>
+            Optionally upload the exam paper PDF. The AI will extract topics and weights,
+            which improves roadmap milestone targeting for students who are weak in specific areas.
+          </p>
           <div style={s.group}>
-            <label style={s.lbl}>Exam Paper PDF (used for topic analysis)</label>
+            <label style={s.lbl}>Exam Paper PDF (optional)</label>
             <input style={s.input} type="file" accept=".pdf" ref={paperRef} />
           </div>
           {error && <p style={s.err}>{error}</p>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button style={s.ghost} onClick={() => handleUploadPaper(true)} disabled={loading}>Skip →</button>
+            <button style={s.ghost} onClick={() => handleUploadPaper(true)} disabled={loading}>
+              Skip → Review
+            </button>
             <button style={s.btn} onClick={() => handleUploadPaper(false)} disabled={loading}>
               {loading ? 'Processing…' : 'Upload & Review →'}
             </button>
@@ -298,28 +338,43 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
         </div>
       )}
 
-      {/* ── Step 4 ── */}
+      {/* ── Step 4: Analytics preview ── */}
       {step === 4 && exam && analytics && (
         <div style={s.card}>
           <h2 style={s.h2}>Analytics Preview — {exam.title}</h2>
+
           {analytics.stats ? (
             <>
+              {/* KPI row */}
               <div style={s.grid3}>
-                <div style={s.stat}><div style={s.statNum}>{analytics.stats.avg_pct}%</div><div style={s.statLbl}>Average</div></div>
-                <div style={s.stat}><div style={s.statNum}>{analytics.stats.pass_rate}%</div><div style={s.statLbl}>Pass Rate</div></div>
-                <div style={s.stat}><div style={s.statNum}>{analytics.stats.total}</div><div style={s.statLbl}>Students</div></div>
+                <div style={s.stat}>
+                  <div style={s.statNum}>{analytics.stats.avg_pct}%</div>
+                  <div style={s.statLbl}>Class Average</div>
+                </div>
+                <div style={s.stat}>
+                  <div style={s.statNum}>{analytics.stats.pass_rate}%</div>
+                  <div style={s.statLbl}>Pass Rate</div>
+                </div>
+                <div style={s.stat}>
+                  <div style={s.statNum}>{analytics.stats.total}</div>
+                  <div style={s.statLbl}>Students</div>
+                </div>
               </div>
+
+              {/* Band distribution */}
               <div style={s.grid3}>
-                {(['strong','moderate','weak'] as const).map(b => (
+                {(['strong', 'moderate', 'weak'] as const).map(b => (
                   <div key={b} style={s.stat}>
                     <div style={{ ...s.statNum, color: BAND_COLORS[b] }}>{analytics.stats.bands[b]}</div>
                     <div style={s.statLbl}>{b.charAt(0).toUpperCase() + b.slice(1)}</div>
                   </div>
                 ))}
               </div>
+
+              {/* Weakest topics */}
               {analytics.stats.weakest_topics.length > 0 && (
-                <div style={{ marginBottom: 12 }}>
-                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6 }}>Weakest Topics</p>
+                <div style={{ marginBottom: 14 }}>
+                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6, color: '#7a7974' }}>Weakest Topics (used in roadmap generation)</p>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {analytics.stats.weakest_topics.map((t: string) => (
                       <span key={t} style={s.band('weak')}>{t}</span>
@@ -327,16 +382,37 @@ export default function ExamUploadWizard({ courseId, onComplete }: Props) {
                   </div>
                 </div>
               )}
+
+              {/* Strongest topics */}
+              {analytics.stats.strongest_topics?.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6, color: '#7a7974' }}>Strongest Topics</p>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {analytics.stats.strongest_topics.map((t: string) => (
+                      <span key={t} style={s.band('strong')}>{t}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <p style={{ fontSize: '0.8125rem', color: '#7a7974', marginBottom: 16 }}>
-                Median: {analytics.stats.median_pct}% | High: {analytics.stats.max_marks} | Low: {analytics.stats.min_marks}
+                Median: {analytics.stats.median_pct}% &nbsp;·&nbsp;
+                High: {analytics.stats.max_marks} &nbsp;·&nbsp;
+                Low: {analytics.stats.min_marks}
               </p>
             </>
           ) : (
             <p style={{ color: '#7a7974', marginBottom: 16 }}>No results to preview yet.</p>
           )}
-          <button style={s.btn} onClick={handleFinish}>Finish & Publish ✓</button>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={s.ghost} onClick={onClose}>Close without publishing</button>
+            <button style={s.btn} onClick={handleFinish}>Finish & Publish ✓</button>
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+export default ExamUploadWizard;

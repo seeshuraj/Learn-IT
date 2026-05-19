@@ -1,10 +1,15 @@
 /**
  * ExamPerformanceCard
- * Shows a student's unit exam results — latest score, overall average,
- * band badge, and weak topics. Designed to slot into the student dashboard.
+ * Student-facing card: shows unit exam performance summary.
+ * Used in AssessmentsPage (student role) and student dashboard.
  *
- * Usage:
- *   <ExamPerformanceCard studentId={studentId} />
+ * Props:
+ *   studentId — the logged-in student's ID
+ *
+ * API: GET /api/unit-exams/student/:studentId/insights
+ *
+ * Data shape returned:
+ *   { results, latest, overall_avg, weak_topics }
  */
 
 import React, { useEffect, useState } from 'react';
@@ -21,30 +26,43 @@ interface ExamResult {
 }
 
 interface InsightsPayload {
-  results:      ExamResult[];
-  latest:       ExamResult | null;
-  overall_avg:  number | null;
-  weak_topics:  string[];
+  results:     ExamResult[];
+  latest:      ExamResult | null;
+  overall_avg: number | null;
+  weak_topics: string[];
 }
 
 interface Props {
   studentId: number;
 }
 
-const BAND_COLOR: Record<string, string>  = { strong: '#437a22', moderate: '#d19900', weak: '#a12c7b' };
-const BAND_BG:    Record<string, string>  = { strong: '#d4dfcc', moderate: '#e9e0c6', weak: '#e0ced7' };
-const BAND_LABEL: Record<string, string>  = { strong: 'Strong', moderate: 'Moderate', weak: 'Needs Focus' };
+const BAND_COLOR: Record<string, string> = {
+  strong:   '#437a22',
+  moderate: '#d19900',
+  weak:     '#a12c7b',
+};
+const BAND_BG: Record<string, string> = {
+  strong:   '#d4dfcc',
+  moderate: '#e9e0c6',
+  weak:     '#e0ced7',
+};
+const BAND_LABEL: Record<string, string> = {
+  strong:   'Strong',
+  moderate: 'Moderate',
+  weak:     'Needs Focus',
+};
 
-export default function ExamPerformanceCard({ studentId }: Props) {
-  const [data,    setData]    = useState<InsightsPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState<string | null>(null);
+export function ExamPerformanceCard({ studentId }: Props) {
+  const [data,     setData]     = useState<InsightsPayload | null>(null);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('token') ?? sessionStorage.getItem('token') ?? '';
     fetch(`/api/unit-exams/student/${studentId}/insights`, {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then(r => r.json())
       .then(d => { if (d.error) throw new Error(d.error); setData(d); })
@@ -53,23 +71,35 @@ export default function ExamPerformanceCard({ studentId }: Props) {
   }, [studentId]);
 
   const s: Record<string, React.CSSProperties> = {
-    card:     { background: '#f9f8f5', border: '1px solid #d4d1ca', borderRadius: 10, padding: '1.25rem', fontFamily: 'inherit' },
-    header:   { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-    title:    { fontSize: '1rem', fontWeight: 600, color: '#28251d' },
-    avg:      { fontSize: '2rem', fontWeight: 700, color: '#01696f', lineHeight: 1 },
-    avgLbl:   { fontSize: '0.75rem', color: '#7a7974', marginTop: 2 },
-    band:     (b: string) => ({ display: 'inline-block', padding: '3px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: BAND_BG[b] ?? '#eee', color: BAND_COLOR[b] ?? '#333' }),
-    latest:   { background: '#fff', border: '1px solid #d4d1ca', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: 12 },
-    lKey:     { fontSize: '0.75rem', color: '#7a7974' },
-    lVal:     { fontSize: '0.9375rem', fontWeight: 600, color: '#28251d' },
-    chips:    { display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: 8 },
-    chip:     { padding: '2px 8px', borderRadius: 10, background: '#e0ced7', color: '#a12c7b', fontSize: '0.75rem', fontWeight: 500 },
-    toggle:   { background: 'none', border: 'none', cursor: 'pointer', color: '#01696f', fontSize: '0.8125rem', padding: 0, marginTop: 8 },
-    histRow:  { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #edeae5', fontSize: '0.8125rem' },
+    card:   { background: '#f9f8f5', border: '1px solid #d4d1ca', borderRadius: 10, padding: '1.25rem', fontFamily: 'inherit' },
+    header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+    title:  { fontSize: '1rem', fontWeight: 600, color: '#28251d' },
+    avg:    { fontSize: '2rem', fontWeight: 700, color: '#01696f', lineHeight: 1 },
+    avgLbl: { fontSize: '0.75rem', color: '#7a7974', marginTop: 2 },
+    band:   (b: string) => ({ display: 'inline-block', padding: '3px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: BAND_BG[b] ?? '#eee', color: BAND_COLOR[b] ?? '#333' }),
+    latest: { background: '#fff', border: '1px solid #d4d1ca', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: 12 },
+    lKey:   { fontSize: '0.75rem', color: '#7a7974' },
+    lVal:   { fontSize: '0.9375rem', fontWeight: 600, color: '#28251d' },
+    chips:  { display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: 8 },
+    chip:   { padding: '2px 8px', borderRadius: 10, background: '#e0ced7', color: '#a12c7b', fontSize: '0.75rem', fontWeight: 500 },
+    toggle: { background: 'none', border: 'none', cursor: 'pointer', color: '#01696f', fontSize: '0.8125rem', padding: 0, marginTop: 8 },
+    histRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #edeae5', fontSize: '0.8125rem' },
   };
 
-  if (loading) return <div style={s.card}><p style={{ color: '#7a7974', fontSize: '0.875rem' }}>Loading exam results…</p></div>;
-  if (error)   return <div style={s.card}><p style={{ color: '#a12c7b', fontSize: '0.875rem' }}>Could not load exam data.</p></div>;
+  if (loading) {
+    return (
+      <div style={s.card}>
+        <p style={{ color: '#7a7974', fontSize: '0.875rem' }}>Loading exam results…</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={s.card}>
+        <p style={{ color: '#a12c7b', fontSize: '0.875rem' }}>Could not load exam data.</p>
+      </div>
+    );
+  }
   if (!data || data.results.length === 0) {
     return (
       <div style={s.card}>
@@ -102,24 +132,30 @@ export default function ExamPerformanceCard({ studentId }: Props) {
             <span style={s.lKey}>{latest.exam_date ? new Date(latest.exam_date).toLocaleDateString() : ''}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={s.lVal}>{parseFloat(latest.marks_obtained).toFixed(1)} / {parseFloat(latest.max_marks).toFixed(0)}</span>
+            <span style={s.lVal}>
+              {parseFloat(latest.marks_obtained).toFixed(1)} / {parseFloat(latest.max_marks).toFixed(0)}
+            </span>
             <span style={s.lVal}>{parseFloat(latest.percentage).toFixed(1)}%</span>
           </div>
-          <div style={{ fontSize: '0.75rem', color: '#7a7974', marginTop: 2 }}>{latest.course_code} — {latest.course_name}</div>
+          <div style={{ fontSize: '0.75rem', color: '#7a7974', marginTop: 2 }}>
+            {latest.course_code} — {latest.course_name}
+          </div>
         </div>
       )}
 
-      {/* Weak topics */}
+      {/* Weak topics (consistently weak across exams) */}
       {weak_topics.length > 0 && (
         <div>
-          <p style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7a7974', marginBottom: 4 }}>Consistently Weak Topics</p>
+          <p style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7a7974', marginBottom: 4 }}>
+            Consistently Weak Topics
+          </p>
           <div style={s.chips}>
             {weak_topics.map(t => <span key={t} style={s.chip}>{t}</span>)}
           </div>
         </div>
       )}
 
-      {/* Expand to show all exams */}
+      {/* Expand to show all exams history */}
       {results.length > 1 && (
         <>
           <button style={s.toggle} onClick={() => setExpanded(x => !x)}>
@@ -141,3 +177,5 @@ export default function ExamPerformanceCard({ studentId }: Props) {
     </div>
   );
 }
+
+export default ExamPerformanceCard;

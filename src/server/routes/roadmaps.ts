@@ -1,5 +1,5 @@
 /**
- * roadmaps.ts — P3-3 (updated: grading feedback context)
+ * roadmaps.ts — P3-3 (updated: grading feedback + unit exam context)
  *
  * Mounted at /api/roadmaps by server.ts.
  *
@@ -9,9 +9,10 @@
  *   PATCH  /api/roadmaps/milestones/:id     — update a milestone's status
  *   DELETE /api/roadmaps/:courseId          — delete roadmap (cascade milestones)
  *
- * Roadmap generation now also pulls ai_feedback (strengths + improvements)
- * from graded submissions for this course and injects them into the prompt
- * so milestones directly address the student's real weaknesses.
+ * Roadmap generation pulls:
+ *   1. ai_feedback (strengths + improvements) from graded submissions
+ *   2. unit exam results (band, trend, weak topics) from unit_exam_results
+ * Both are injected into the AI prompt so milestones target real measured gaps.
  */
 
 import { Router } from 'express';
@@ -90,54 +91,71 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
       }
 
       // ─ Gather all context in parallel ────────────────────────────────────
-      const [course, modules, gradeHistory, pendingAssignments, feedbackRows] =
-        await Promise.all([
-          q1(`SELECT name, code FROM courses WHERE id = $1`, [courseId]),
+      const [
+        course,
+        modules,
+        gradeHistory,
+        pendingAssignments,
+        feedbackRows,
+        examRows,
+      ] = await Promise.all([
+        q1(`SELECT name, code FROM courses WHERE id = $1`, [courseId]),
 
-          q(`SELECT name FROM modules WHERE course_id = $1 ORDER BY display_order ASC`, [courseId]),
+        q(`SELECT name FROM modules WHERE course_id = $1 ORDER BY display_order ASC`, [courseId]),
 
-          q(
-            `SELECT a.title, s.grade, s.submitted_at, a.due_date, a.max_points,
-                    CASE
-                      WHEN a.due_date IS NOT NULL
-                       AND s.submitted_at::date > a.due_date::date THEN true
-                      ELSE false
-                    END AS late
-             FROM submissions s
-             JOIN assignments a ON s.assignment_id = a.id
-             JOIN modules m ON a.module_id = m.id
-             WHERE s.student_id = $1 AND m.course_id = $2
-             ORDER BY s.submitted_at ASC`,
-            [studentId, courseId]
-          ),
+        q(
+          `SELECT a.title, s.grade, s.submitted_at, a.due_date, a.max_points,
+                  CASE
+                    WHEN a.due_date IS NOT NULL
+                     AND s.submitted_at::date > a.due_date::date THEN true
+                    ELSE false
+                  END AS late
+           FROM submissions s
+           JOIN assignments a ON s.assignment_id = a.id
+           JOIN modules m ON a.module_id = m.id
+           WHERE s.student_id = $1 AND m.course_id = $2
+           ORDER BY s.submitted_at ASC`,
+          [studentId, courseId]
+        ),
 
-          q(
-            `SELECT a.title, a.due_date
-             FROM assignments a
-             JOIN modules m ON a.module_id = m.id
-             WHERE m.course_id = $1
-               AND a.status = 'active'
-               AND NOT EXISTS (
-                 SELECT 1 FROM submissions s
-                 WHERE s.assignment_id = a.id AND s.student_id = $2
-               )
-             ORDER BY a.due_date ASC NULLS LAST`,
-            [courseId, studentId]
-          ),
+        q(
+          `SELECT a.title, a.due_date
+           FROM assignments a
+           JOIN modules m ON a.module_id = m.id
+           WHERE m.course_id = $1
+             AND a.status = 'active'
+             AND NOT EXISTS (
+               SELECT 1 FROM submissions s
+               WHERE s.assignment_id = a.id AND s.student_id = $2
+             )
+           ORDER BY a.due_date ASC NULLS LAST`,
+          [courseId, studentId]
+        ),
 
-          // NEW: pull ai_feedback JSON from all graded submissions for this course
-          q(
-            `SELECT s.ai_feedback, a.title AS assignment_title
-             FROM submissions s
-             JOIN assignments a ON s.assignment_id = a.id
-             JOIN modules m     ON a.module_id = m.id
-             WHERE s.student_id = $1
-               AND m.course_id  = $2
-               AND s.ai_feedback IS NOT NULL
-               AND s.ai_feedback != 'null'`,
-            [studentId, courseId]
-          ),
-        ]);
+        // Grading AI feedback from submissions
+        q(
+          `SELECT s.ai_feedback, a.title AS assignment_title
+           FROM submissions s
+           JOIN assignments a ON s.assignment_id = a.id
+           JOIN modules m     ON a.module_id = m.id
+           WHERE s.student_id = $1
+             AND m.course_id  = $2
+             AND s.ai_feedback IS NOT NULL
+             AND s.ai_feedback != 'null'`,
+          [studentId, courseId]
+        ),
+
+        // Unit exam results for this course
+        q(
+          `SELECT r.marks_obtained, r.percentage, r.performance_band, r.topic_breakdown,
+                  ue.title AS exam_title, ue.exam_date, ue.max_marks
+           FROM unit_exam_results r
+           JOIN unit_exams ue ON r.unit_exam_id = ue.id
+           WHERE r.student_id = $1 AND ue.course_id = $2
+           ORDER BY ue.exam_date ASC NULLS LAST, r.created_at ASC`,
+          [studentId, courseId]
+        ),
+      ]);
 
       // ─ Aggregate strengths + improvements from AI feedback ───────────────
       const allStrengths:    string[] = [];
@@ -153,9 +171,40 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
         } catch { /* skip malformed */ }
       }
 
-      // Deduplicate and limit to top 5 of each (most signal, least prompt bloat)
       const uniqueStrengths    = [...new Set(allStrengths)].slice(0, 5);
       const uniqueImprovements = [...new Set(allImprovements)].slice(0, 5);
+
+      // ─ Aggregate unit exam weak topics + trend ───────────────────────────
+      const examWeakTopics: Record<string, number> = {};
+      for (const r of examRows) {
+        if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
+        const td: Record<string, number> =
+          typeof r.topic_breakdown === 'string'
+            ? JSON.parse(r.topic_breakdown)
+            : r.topic_breakdown;
+        for (const topic of Object.keys(td)) {
+          examWeakTopics[topic] = (examWeakTopics[topic] ?? 0) + 1;
+        }
+      }
+      const topExamWeakTopics = Object.entries(examWeakTopics)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([t]) => t);
+
+      // Determine exam trend (improving / declining / stable)
+      let examTrend = '';
+      if (examRows.length >= 2) {
+        const pcts = examRows.map((r: any) => parseFloat(r.percentage));
+        const first = pcts.slice(0, Math.ceil(pcts.length / 2));
+        const last  = pcts.slice(Math.floor(pcts.length / 2));
+        const avgFirst = first.reduce((a: number, b: number) => a + b, 0) / first.length;
+        const avgLast  = last.reduce((a: number, b: number) => a + b, 0) / last.length;
+        if (avgLast - avgFirst >= 5)        examTrend = 'improving';
+        else if (avgFirst - avgLast >= 5)   examTrend = 'declining';
+        else                                examTrend = 'stable';
+      }
+
+      const latestExam = examRows[examRows.length - 1] ?? null;
 
       // ─ Build prompt context ───────────────────────────────────────────────
       const moduleList = modules.map((m: any) => m.name).join(', ');
@@ -185,16 +234,39 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
           )
         : null;
 
-      // Build the AI-feedback section of the prompt (only if data exists)
       const feedbackSection = feedbackRows.length > 0
         ? [
             ``,
-            `AI GRADING FEEDBACK ANALYSIS (from ${feedbackRows.length} graded submission(s)):`,
+            `AI GRADING FEEDBACK (from ${feedbackRows.length} graded submission(s)):`,
             uniqueStrengths.length > 0
               ? `RECURRING STRENGTHS:\n${uniqueStrengths.map(s => `  + ${s}`).join('\n')}`
               : '',
             uniqueImprovements.length > 0
-              ? `AREAS TO IMPROVE (use these to shape milestones):\n${uniqueImprovements.map(i => `  ! ${i}`).join('\n')}`
+              ? `AREAS TO IMPROVE (shape milestones around these):\n${uniqueImprovements.map(i => `  ! ${i}`).join('\n')}`
+              : '',
+          ].filter(Boolean).join('\n')
+        : '';
+
+      // Unit exam section — only included if there are exam results
+      const examSection = examRows.length > 0
+        ? [
+            ``,
+            `UNIT EXAM RESULTS (${examRows.length} exam(s) in this course):`,
+            ...examRows.map((r: any) =>
+              `  - ${r.exam_title ?? 'Exam'}${
+                r.exam_date ? ' (' + new Date(r.exam_date).toLocaleDateString() + ')' : ''
+              }: ${parseFloat(r.percentage).toFixed(1)}% — ${r.performance_band?.toUpperCase() ?? 'N/A'}`
+            ),
+            latestExam
+              ? `LATEST EXAM BAND: ${latestExam.performance_band?.toUpperCase()}`
+              : '',
+            examTrend
+              ? `EXAM SCORE TREND: ${examTrend}`
+              : '',
+            topExamWeakTopics.length > 0
+              ? `MEASURED WEAK TOPICS (from exam topic breakdown, highest priority for milestones):\n${
+                  topExamWeakTopics.map(t => `  !! ${t}`).join('\n')
+                }`
               : '',
           ].filter(Boolean).join('\n')
         : '';
@@ -210,28 +282,33 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
         `PENDING ASSIGNMENTS:`,
         pendingLines,
         feedbackSection,
+        examSection,
       ].join('\n');
 
       // ─ Call AI ───────────────────────────────────────────────────────────
       const systemMsg = [
         'You are an academic learning path advisor AI.',
         'Given a student\'s course context and performance, generate a personalised learning roadmap.',
-        'Pay special attention to AREAS TO IMPROVE from AI grading feedback — create milestones that',
-        'directly address those specific weaknesses.',
+        'Priority order for milestone topics:',
+        '  1. MEASURED WEAK TOPICS from unit exam topic breakdown (highest signal — address these first)',
+        '  2. AREAS TO IMPROVE from AI grading feedback',
+        '  3. Pending assignments that need immediate attention',
+        '  4. Consolidation of strengths and forward advancement',
+        'If EXAM SCORE TREND is "declining", add a motivational recovery milestone early.',
         'Respond ONLY with valid JSON in this exact shape (no markdown fences):',
         '{',
         '  "title": "<short roadmap title>",',
-        '  "summary": "<2-3 sentence overview of the student\'s situation and plan, referencing strengths and improvement areas>",',
+        '  "summary": "<2-3 sentence overview referencing exam performance, trend, and key weaknesses>",',
         '  "milestones": [',
         '    {',
         '      "title": "<step title>",',
-        '      "description": "<1-2 sentence explanation of what to do and why>",',
-        '      "resource_hint": "<optional: where in the course to find help, or null>"',
+        '      "description": "<1-2 sentence explanation — be specific, reference actual topics and exam names>",',
+        '      "resource_hint": "<where in the course to find help, or null>"',
         '    }',
         '  ]',
         '}',
-        'Generate 5-8 milestones. Order them: address weaknesses first, then consolidate strengths, then advance.',
-        'Be specific and actionable. Reference actual module names, assignment titles, and improvement areas.',
+        'Generate 5-8 milestones. Reference actual module names, assignment titles, exam names, and improvement areas.',
+        'Be specific and actionable. Avoid generic advice.',
       ].join('\n');
 
       const raw = await nimChat(
