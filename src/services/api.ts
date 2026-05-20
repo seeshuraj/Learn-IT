@@ -50,29 +50,51 @@ export async function supabaseSignOut() {
 
 // ── Core fetch wrapper ──────────────────────────────────────────────────────────
 
-async function request<T = any>(path: string, options?: RequestInit): Promise<T> {
-  const ah = await authHeaders();
-  const res = await fetch(`${BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...ah,
-      ...options?.headers,
-    },
-    credentials: 'include',
-  });
+/**
+ * Retry a GET request up to `maxRetries` times when the server returns HTML
+ * instead of JSON (happens during Render cold-start while Express is booting).
+ * Only GET requests are retried — mutating requests are never retried.
+ */
+async function request<T = any>(
+  path: string,
+  options?: RequestInit,
+  maxRetries = 3,
+): Promise<T> {
+  const isGet = !options?.method || options.method.toUpperCase() === 'GET';
+  let attempt = 0;
 
-  const contentType = res.headers.get('content-type') ?? '';
-  if (!contentType.includes('application/json')) {
-    const preview = await res.text();
-    throw new Error(
-      `[API] Expected JSON from ${BASE}${path} but got: ${preview.slice(0, 120)}`
-    );
+  while (true) {
+    const ah = await authHeaders();
+    const res = await fetch(`${BASE}${path}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...ah,
+        ...options?.headers,
+      },
+      credentials: 'include',
+    });
+
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      const preview = await res.text();
+      // If this is a GET and we got HTML (likely cold-start SPA fallback), retry.
+      if (isGet && attempt < maxRetries && preview.trim().startsWith('<')) {
+        attempt++;
+        const delay = 1000 * attempt; // 1s, 2s, 3s
+        console.warn(`[API] Got HTML for ${path}, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw new Error(
+        `[API] Expected JSON from ${BASE}${path} but got: ${preview.slice(0, 120)}`
+      );
+    }
+
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
+    return data as T;
   }
-
-  const data = await res.json();
-  if (!res.ok) throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
-  return data as T;
 }
 
 // ── Multipart upload helper ─────────────────────────────────────────────────
