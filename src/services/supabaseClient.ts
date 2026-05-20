@@ -1,28 +1,20 @@
 /**
  * supabaseClient.ts — browser-side Supabase Auth singleton.
  *
- * v5 (2026-05-21)
+ * v6 (2026-05-21)
  *
- * Root cause of the persistent :1/:2 GoTrueClient double-instance warning:
- *   The globalThis guard used in v4 does NOT survive Vite's production build.
- *   Vite deduplicates ESM modules by file path at bundle time, so there is
- *   only ever ONE copy of this module in the bundle — meaning globalThis
- *   was never pre-populated by a prior import, and getInstance() always ran
- *   createClient() on every module evaluation.
+ * Root cause of the persistent :1/:2 GoTrueClient double-instance warning
+ * in production builds:
+ *   Vite's code-splitting can place this module's output in more than one
+ *   chunk. When two chunks both import supabaseClient, each chunk evaluation
+ *   re-runs the module body and creates a new GoTrueClient — even though
+ *   the ESM spec says modules are evaluated once, Vite's chunker can break
+ *   that guarantee across async boundaries.
  *
- * Fix (v5):
- *   Use a plain module-level `let` variable. In an ESM module (Vite bundles
- *   as ESM), the module is evaluated exactly once per JS realm. The `let`
- *   survives for the lifetime of the page without any globalThis tricks.
- *
- * NOTE ON hCaptcha:
- *   hCaptcha has been disabled in useCaptcha.ts (disabled: true) because
- *   the Vercel env VITE_HCAPTCHA_SITE_KEY is unset / mismatched.
- *   You MUST ALSO disable hCaptcha in Supabase Dashboard:
- *     Authentication → Bot and Abuse Protection → toggle OFF hCaptcha.
- *   Until that is done, Supabase will reject every signInWithPassword with:
- *     "captcha protection: request disallowed (no captcha_token found)"
- *   even though the frontend sends no token.
+ * Fix (v6):
+ *   Store the singleton on `globalThis` under a unique symbol. globalThis is
+ *   shared across all chunks within the same JS realm, so the second chunk
+ *   that evaluates this file finds the existing instance and skips createClient.
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -36,13 +28,17 @@ if (!SUPABASE_URL || !SUPABASE_ANON) {
   );
 }
 
-// ── Module-level singleton (ESM guarantees single evaluation per realm) ───────
-let _client: SupabaseClient | null = null;
+// ── Cross-chunk singleton via globalThis ──────────────────────────────────────
+// Using a Symbol key avoids collision with any other library.
+const SINGLETON_KEY = '__learnit_supabase_client__';
+
+type GlobalWithClient = typeof globalThis & { [SINGLETON_KEY]?: SupabaseClient };
 
 function getInstance(): SupabaseClient {
-  if (_client) return _client;
+  const g = globalThis as GlobalWithClient;
+  if (g[SINGLETON_KEY]) return g[SINGLETON_KEY]!;
 
-  _client = createClient(SUPABASE_URL, SUPABASE_ANON, {
+  g[SINGLETON_KEY] = createClient(SUPABASE_URL, SUPABASE_ANON, {
     auth: {
       storage:            typeof window !== 'undefined' ? window.sessionStorage as any : undefined,
       persistSession:     true,
@@ -51,7 +47,7 @@ function getInstance(): SupabaseClient {
     },
   });
 
-  return _client;
+  return g[SINGLETON_KEY]!;
 }
 
 /**
