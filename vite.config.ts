@@ -12,11 +12,28 @@ import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
+
+  // Forward ALL VITE_* env vars into the client bundle.
+  // IMPORTANT: every VITE_* var used by src/ MUST appear here, otherwise
+  // Vite bakes it as `undefined` in the production build even if the var
+  // is set in Vercel's environment variables panel.
+  const clientEnvDefines = Object.fromEntries(
+    Object.entries(env)
+      .filter(([key]) => key.startsWith('VITE_'))
+      .map(([key, value]) => [`import.meta.env.${key}`, JSON.stringify(value)])
+  );
+
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      'import.meta.env.VITE_NVIDIA_API_KEY': JSON.stringify(env.VITE_NVIDIA_API_KEY ?? ''),
-      'import.meta.env.VITE_API_BASE_URL': JSON.stringify(env.VITE_API_BASE_URL ?? ''),
+      ...clientEnvDefines,
+      // Explicit fallbacks for the three vars most critical to auth.
+      // These are overridden by clientEnvDefines when the real values exist.
+      'import.meta.env.VITE_SUPABASE_URL':      JSON.stringify(env.VITE_SUPABASE_URL      ?? ''),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY ?? ''),
+      'import.meta.env.VITE_API_BASE_URL':       JSON.stringify(env.VITE_API_BASE_URL       ?? ''),
+      'import.meta.env.VITE_NVIDIA_API_KEY':     JSON.stringify(env.VITE_NVIDIA_API_KEY     ?? ''),
+      'import.meta.env.VITE_HCAPTCHA_SITE_KEY':  JSON.stringify(env.VITE_HCAPTCHA_SITE_KEY  ?? ''),
     },
     resolve: {
       alias: { '@': path.resolve(__dirname, '.') },

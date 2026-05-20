@@ -1,22 +1,16 @@
 /**
  * useCaptcha.ts — hCaptcha integration hook.
  *
- * DISABLED (2026-05-20):
- *   hCaptcha is currently disabled because the site-key set in
- *   VITE_HCAPTCHA_SITE_KEY does not match the secret-key configured in
- *   Supabase Auth → Bot Protection. This mismatch produces:
+ * Currently DISABLED: captcha is bypassed (disabled: true) because
+ * VITE_HCAPTCHA_SITE_KEY is not set in Vercel env vars.
  *
- *     captcha protection: request disallowed (sitekey-secret-mismatch)
- *
- *   and causes HTTP 400 on every signInWithPassword call.
- *
- *   To re-enable:
- *     1. In hCaptcha dashboard (dashboard.hcaptcha.com), open your site.
- *     2. Copy the Site Key  → set as VITE_HCAPTCHA_SITE_KEY in Vercel env vars.
- *     3. Copy the Secret Key → paste into Supabase Dashboard:
- *        Authentication → Bot and Abuse Protection → Enable hCaptcha.
- *     4. Both keys MUST come from the same hCaptcha site entry.
- *     5. Remove the early-return below and restore the SDK loading logic.
+ * To re-enable:
+ *   1. Go to dashboard.hcaptcha.com → copy the Site Key for your site.
+ *   2. Set VITE_HCAPTCHA_SITE_KEY=<site-key> in Vercel → Environment Variables.
+ *   3. In Supabase Dashboard → Authentication → Bot and Abuse Protection,
+ *      enable hCaptcha and paste the SECRET KEY from the same hCaptcha site.
+ *   4. Both keys MUST come from the same hCaptcha site entry.
+ *   5. Replace the body of useCaptcha() below with the real SDK integration.
  */
 
 import { useRef, useState, useCallback } from 'react';
@@ -26,7 +20,7 @@ export interface UseCaptchaReturn {
   token: string | null;
   reset: () => void;
   ready: boolean;
-  /** True when captcha is not configured / disabled. */
+  /** True when captcha is not configured — login proceeds without a token. */
   disabled: boolean;
 }
 
@@ -35,7 +29,6 @@ export function useCaptcha(): UseCaptchaReturn {
   const [token]      = useState<string | null>(null);
   const reset        = useCallback(() => {}, []);
 
-  // Captcha is globally disabled until the sitekey/secret-key mismatch is
-  // resolved. Login proceeds without a captcha token.
+  // Disabled until VITE_HCAPTCHA_SITE_KEY is set and keys are matched.
   return { containerRef, token, reset, ready: true, disabled: true };
 }
