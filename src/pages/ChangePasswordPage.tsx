@@ -1,6 +1,11 @@
 import React, { useState } from "react";
 import { supabase } from "../services/supabaseClient";
 
+// Use same base as api.ts — in production VITE_API_BASE_URL points to Render
+const API_BASE =
+  (import.meta as any).env?.VITE_API_BASE_URL ||
+  "https://learn-it-3f5h.onrender.com";
+
 interface Props {
   onSuccess: () => void;
 }
@@ -25,7 +30,7 @@ const ChangePasswordPage: React.FC<Props> = ({ onSuccess }) => {
       // 2. Tell backend to clear force_password_change
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
-      const res = await fetch("/api/auth/change-password", {
+      const res = await fetch(`${API_BASE}/api/auth/change-password`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
