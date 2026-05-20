@@ -104,6 +104,9 @@ export const api = {
   login: (email: string) =>
     request('/api/login', { method: 'POST', body: JSON.stringify({ email }) }),
 
+  /** GET /api/auth/me — returns the current user's profile row */
+  getMe: () => request('/api/auth/me'),
+
   // Courses
   getCourses: () => request('/api/courses'),
   getCourseModules: (courseId: number) => request(`/api/courses/${courseId}/modules`),
@@ -181,7 +184,8 @@ export const api = {
     request(`/api/submissions/${submissionId}/files`),
   getInstructorSubmissions: () => request('/api/instructor/submissions'),
 
-  // Student
+  // Student — all resolve the student from the JWT on the server side,
+  // so the id param is kept for backwards compat with existing callers.
   getStudentCourses:    (studentId: number) => request(`/api/student/${studentId}/courses`),
   getStudentAssignments:(studentId: number) => request(`/api/student/${studentId}/assignments`),
   getStudentStats:      (studentId: number) => request(`/api/student/${studentId}/stats`),
@@ -201,6 +205,9 @@ export const api = {
     grading_schema?: { strong: number; moderate: number };
   }) => request('/api/unit-exams', { method: 'POST', body: JSON.stringify(data) }),
 
+  /** List ALL unit exams visible to the authenticated instructor. */
+  listUnitExams: () => request('/api/unit-exams'),
+
   /** List all unit exams for a course (instructor view). */
   listCourseExams: (courseId: number) =>
     request(`/api/unit-exams/course/${courseId}`),
@@ -208,6 +215,17 @@ export const api = {
   /** Get a single unit exam by id. */
   getUnitExam: (examId: number) =>
     request(`/api/unit-exams/${examId}`),
+
+  /** Preview (dry-run) CSV/XLSX marks upload. */
+  previewExamMarks: (examId: number, file: File) =>
+    uploadFile(`/api/unit-exams/${examId}/preview-marks`, 'file', file),
+
+  /** Commit a previously previewed marks import. */
+  commitExamMarks: (examId: number, importId: number) =>
+    request(`/api/unit-exams/${examId}/commit-marks`, {
+      method: 'POST',
+      body: JSON.stringify({ import_id: importId }),
+    }),
 
   /** Get full analytics for an exam (stats + band distribution + student results). */
   getExamAnalytics: (examId: number) =>
@@ -227,8 +245,11 @@ export const api = {
     request(`/api/unit-exams/student/${studentId}/insights`),
 
   // Instructor
-  getInstructorCourses: (instructorId: number) =>
-    request(`/api/instructor/${instructorId}/courses`),
+  /**
+   * GET /api/instructor/courses — returns courses owned by the
+   * authenticated instructor (resolved from JWT, no id param needed).
+   */
+  getInstructorCourses: () => request('/api/instructor/courses'),
   getCourseAnalytics: (courseId: number) =>
     request(`/api/instructor/courses/${courseId}/analytics`),
   createInstructorAssignment: (data: any) =>
