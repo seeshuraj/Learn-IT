@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { TrendingUp, TrendingDown, BarChart3, AlertCircle, FileText } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { TrendingUp, TrendingDown, BarChart3, AlertCircle, FileText, RefreshCw } from 'lucide-react';
 import { AIAnalyticsSummary } from '../components/AIAnalyticsSummary';
 import { StudentAnalyticsData } from '../services/aiService';
 import { api } from '../services/api';
@@ -56,7 +56,7 @@ const gradeColor = (g: number | null) => {
   return 'text-red-600';
 };
 
-// ── Band helpers ──────────────────────────────────────────────────────────────
+// ── Band helpers ──────────────────────────────────────────────────────────────────────
 const BAND_COLORS: Record<string, string> = {
   strong:   'bg-emerald-100 text-emerald-700 border-emerald-200',
   moderate: 'bg-amber-100   text-amber-700   border-amber-200',
@@ -81,7 +81,7 @@ function BandBadge({ band }: { band: string }) {
   );
 }
 
-// ── Grading Insights Panel ────────────────────────────────────────────────────
+// ── Grading Insights Panel ──────────────────────────────────────────────────────────────────────
 function GradingInsightsPanel({ userId }: { userId: number }) {
   const [insights, setInsights] = useState<GradingInsights | null>(null);
   const [loading,  setLoading]  = useState(true);
@@ -154,7 +154,7 @@ function GradingInsightsPanel({ userId }: { userId: number }) {
   );
 }
 
-// ── Unit Exam Section ─────────────────────────────────────────────────────────
+// ── Unit Exam Section ────────────────────────────────────────────────────────────────────────────────
 function UnitExamSection({ userId }: { userId: number }) {
   const [insights, setInsights] = useState<any>(null);
   const [loading,  setLoading]  = useState(true);
@@ -282,29 +282,43 @@ function UnitExamSection({ userId }: { userId: number }) {
   );
 }
 
-// ── Main AnalyticsPage ────────────────────────────────────────────────────────
+// ── Main AnalyticsPage ────────────────────────────────────────────────────────────────────────────
 export default function AnalyticsPage({ user }: Props) {
   const [data,    setData]    = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!user) return;
+    setLoading(true);
+    setError('');
     api.getStudentAnalytics(user.id)
       .then((d: any) => setData(d))
-      .catch(() => setError('Could not load analytics data.'))
+      .catch(() => setError('Could not load analytics. The server may still be warming up.'))
       .finally(() => setLoading(false));
-  }, [user?.id]);
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { load(); }, [load]);
 
   if (loading) return (
-    <div className="flex items-center justify-center min-h-[60vh]">
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
       <div className="animate-spin rounded-full h-8 w-8 border-2 border-teal-600 border-t-transparent" />
+      <p className="text-slate-400 text-sm">Loading analytics…</p>
     </div>
   );
 
   if (error || !data) return (
-    <div className="text-center py-20">
-      <p className="text-slate-400 text-sm">{error || 'Could not load analytics.'}</p>
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
+      <p className="text-slate-500 text-sm text-center max-w-xs">
+        {error || 'Could not load analytics.'}
+      </p>
+      <button
+        onClick={load}
+        className="inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 transition-colors"
+      >
+        <RefreshCw className="w-4 h-4" />
+        Try again
+      </button>
     </div>
   );
 
