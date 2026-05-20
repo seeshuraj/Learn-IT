@@ -1,29 +1,28 @@
 /**
  * supabaseClient.ts — browser-side Supabase Auth singleton.
  *
- * v4 (2026-05-20, DEFINITIVE) — Proxy removed.
+ * v5 (2026-05-21)
  *
- * Root cause of all prior :1/:2 GoTrueClient warnings:
- *   GoTrueClient has a lazy `_initSupabaseAuthClient` that runs on the
- *   FIRST access of `.auth`. React 18 concurrent rendering causes two
- *   components to access `supabase.auth` in the same microtask tick,
- *   before the lazy init on the first access has written back to the
- *   instance. The GoTrueClient constructor sees two concurrent init
- *   requests and warns.
+ * Root cause of the persistent :1/:2 GoTrueClient double-instance warning:
+ *   The globalThis guard used in v4 does NOT survive Vite's production build.
+ *   Vite deduplicates ESM modules by file path at bundle time, so there is
+ *   only ever ONE copy of this module in the bundle — meaning globalThis
+ *   was never pre-populated by a prior import, and getInstance() always ran
+ *   createClient() on every module evaluation.
  *
- *   The Proxy *amplified* this by deferring createClient() to the first
- *   property access — exactly the wrong time.
+ * Fix (v5):
+ *   Use a plain module-level `let` variable. In an ESM module (Vite bundles
+ *   as ESM), the module is evaluated exactly once per JS realm. The `let`
+ *   survives for the lifetime of the page without any globalThis tricks.
  *
- * Fix:
- *   1. Call getInstance() ONCE at module evaluation time (eager init).
- *      GoTrueClient fully constructs before any React render touches .auth.
- *   2. Keep the globalThis guard so a second Vite chunk importing this
- *      module still gets the same instance (no second createClient call).
- *   3. No Proxy. The exported `supabase` is the real SupabaseClient.
- *
- * The anon key is safe to ship in the browser — it only grants access to
- * Supabase Auth. All data operations go through our Express API (which
- * holds the service-role key server-side only).
+ * NOTE ON hCaptcha:
+ *   hCaptcha has been disabled in useCaptcha.ts (disabled: true) because
+ *   the Vercel env VITE_HCAPTCHA_SITE_KEY is unset / mismatched.
+ *   You MUST ALSO disable hCaptcha in Supabase Dashboard:
+ *     Authentication → Bot and Abuse Protection → toggle OFF hCaptcha.
+ *   Until that is done, Supabase will reject every signInWithPassword with:
+ *     "captcha protection: request disallowed (no captcha_token found)"
+ *   even though the frontend sends no token.
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -37,20 +36,14 @@ if (!SUPABASE_URL || !SUPABASE_ANON) {
   );
 }
 
-// ── globalThis-backed singleton ───────────────────────────────────────────────
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __learnit_supabase__: SupabaseClient | undefined;
-}
+// ── Module-level singleton (ESM guarantees single evaluation per realm) ───────
+let _client: SupabaseClient | null = null;
 
 function getInstance(): SupabaseClient {
-  if (globalThis.__learnit_supabase__) return globalThis.__learnit_supabase__;
+  if (_client) return _client;
 
-  globalThis.__learnit_supabase__ = createClient(SUPABASE_URL, SUPABASE_ANON, {
+  _client = createClient(SUPABASE_URL, SUPABASE_ANON, {
     auth: {
-      // sessionStorage instead of localStorage: scoped per-tab,
-      // cleared on tab close, safer for shared computers.
       storage:            typeof window !== 'undefined' ? window.sessionStorage as any : undefined,
       persistSession:     true,
       autoRefreshToken:   true,
@@ -58,17 +51,13 @@ function getInstance(): SupabaseClient {
     },
   });
 
-  return globalThis.__learnit_supabase__;
+  return _client;
 }
 
 /**
  * `supabase` — the real SupabaseClient instance, initialised eagerly at
  * module load time so GoTrueClient fully constructs before any React
  * component render touches `.auth`.
- *
- * The globalThis guard ensures a second Vite chunk importing this module
- * reuses the already-constructed instance rather than calling createClient
- * again.
  */
 export const supabase: SupabaseClient = getInstance();
 
