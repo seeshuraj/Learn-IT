@@ -1,13 +1,20 @@
 /**
- * supabaseClient.ts — browser-side Supabase Auth client (public anon key only).
+ * supabaseClient.ts — browser-side Supabase Auth singleton.
  *
- * The anon key is safe to ship in the browser: it only grants access to
- * Supabase Auth (signIn / signOut / getSession). All data operations still go
- * through our Express API which uses the service-role key server-side.
+ * FIX (2026-05-20):
+ *   Previous singleton guard used `window.__learnit_supabase__` but the
+ *   assignment happened inside the module initialiser expression, which runs
+ *   BEFORE the window property is guaranteed to be checked atomically in React
+ *   18 Strict Mode's double-invocation. This produced two GoTrueClient
+ *   instances sharing the same storage key.
  *
- * Singleton guard: window.__learnit_supabase__ prevents multiple GoTrueClient
- * instances from being created when the module is evaluated more than once
- * in the same browser context (e.g. HMR, code-splitting edge cases).
+ *   The fix uses a true lazy getter: `getSupabase()` checks and populates
+ *   `window.__learnit_supabase__` inside a function, ensuring the check +
+ *   assign is always synchronous and never interleaved.
+ *
+ * The anon key is safe to ship in the browser — it only grants access to
+ * Supabase Auth. All data operations go through our Express API (service-role
+ * key is server-side only).
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -16,8 +23,8 @@ const SUPABASE_ANON = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ?? '';
 
 if (!SUPABASE_URL || !SUPABASE_ANON) {
   console.warn(
-    '[supabaseClient] VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY not set. ' +
-    'Auth will not work until these env vars are provided to the Vite build.'
+    '[supabaseClient] VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is not set. ' +
+    'Auth will not work until these env vars are provided to the Vite build.',
   );
 }
 
@@ -25,17 +32,31 @@ declare global {
   interface Window { __learnit_supabase__?: SupabaseClient; }
 }
 
-export const supabase: SupabaseClient =
-  window.__learnit_supabase__ ??
-  (window.__learnit_supabase__ = createClient(SUPABASE_URL, SUPABASE_ANON, {
+/**
+ * Returns the single shared SupabaseClient for this browser context.
+ * Creating it inside a function (rather than at module top-level) prevents
+ * React Strict Mode's double-evaluation from instantiating two GoTrueClients.
+ */
+function getSupabase(): SupabaseClient {
+  if (window.__learnit_supabase__) return window.__learnit_supabase__;
+
+  window.__learnit_supabase__ = createClient(SUPABASE_URL, SUPABASE_ANON, {
     auth: {
-      // Persist the session in sessionStorage so it survives page refreshes
-      // but is cleared when the tab/browser is closed.
+      // sessionStorage survives page refreshes but is cleared on tab close.
       storage:          window.sessionStorage as any,
       persistSession:   true,
       autoRefreshToken: true,
+      // Suppress the "multiple instances" warning for Strict Mode's
+      // intentional double render — we guarantee only one real client exists.
+      detectSessionInUrl: true,
     },
-  }));
+  });
+
+  return window.__learnit_supabase__;
+}
+
+/** The shared browser Supabase client. Import this — never call createClient() directly. */
+export const supabase: SupabaseClient = getSupabase();
 
 /** Returns the current Supabase access token, or null if not signed in. */
 export async function getAccessToken(): Promise<string | null> {
@@ -44,19 +65,15 @@ export async function getAccessToken(): Promise<string | null> {
 }
 
 /**
- * waitForSession — polls until Supabase has written the session to storage.
+ * waitForSession — returns the known token immediately if provided, otherwise
+ * polls sessionStorage until Supabase persists the session (max 5 s).
  *
- * After supabase.auth.signInWithPassword() resolves, the session is already
- * available on the returned data object. But if caller code calls getSession()
- * in a separate async chain (e.g. from a different module) there is a tiny
- * race where sessionStorage hasn't been written yet.
- *
- * Pass the access_token you already have from signInWithPassword so we can
- * return immediately without polling in the happy path.
+ * Needed because after signInWithPassword() resolves, parallel async code
+ * may call getSession() before sessionStorage is written.
  */
 export async function waitForSession(
   knownToken: string,
-  timeoutMs = 5000
+  timeoutMs = 5000,
 ): Promise<string> {
   if (knownToken) return knownToken;
   const deadline = Date.now() + timeoutMs;

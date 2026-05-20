@@ -1,19 +1,16 @@
 /**
  * useCaptcha.ts — hCaptcha integration hook.
  *
- * Dynamically loads the hCaptcha script once, renders the widget into a given
- * container ref, and exposes the current verified token + a reset function.
+ * FIX (2026-05-20):
+ *   - Previous version loaded the script with `render=explicit` but called
+ *     hcaptcha.render() in `.onload`, which fires BEFORE hCaptcha's own
+ *     internal SDK is ready. This caused repeated 403 checksiteconfig requests.
+ *   - Correct approach: use the `onload` URL param so hCaptcha calls OUR
+ *     callback (window.__hcaptchaOnLoad) once it is fully ready, THEN render.
+ *   - Script singleton prevents duplicate <script> injection across HMR.
  *
- * Usage:
- *   const { containerRef, token, reset, ready } = useCaptcha();
- *   // Mount <div ref={containerRef} /> in your JSX.
- *   // Pass `token` to supabaseSignIn when submitting.
- *
- * If VITE_HCAPTCHA_SITE_KEY is not set (local dev without captcha configured),
- * the hook is a no-op: token is always null, ready is true immediately.
- * The login form must allow null token in that case.
- *
- * hCaptcha docs: https://docs.hcaptcha.com/
+ * If VITE_HCAPTCHA_SITE_KEY is not set the hook is a no-op: token is always
+ * null, disabled = true, ready = true immediately so login never blocks.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -21,63 +18,87 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 declare global {
   interface Window {
     hcaptcha: {
-      render: (container: HTMLElement, params: object) => string;
+      render: (container: HTMLElement | string, params: object) => string;
       reset:  (widgetId: string) => void;
       remove: (widgetId: string) => void;
     };
+    // Callback invoked by hCaptcha SDK once it is fully initialised.
+    __hcaptchaOnLoad?: () => void;
   }
 }
 
-const SITE_KEY = (import.meta as any).env?.VITE_HCAPTCHA_SITE_KEY as string | undefined;
-const SCRIPT_SRC = 'https://js.hcaptcha.com/1/api.js?render=explicit';
-const SCRIPT_ID  = 'hcaptcha-script';
+const SITE_KEY  = (import.meta as any).env?.VITE_HCAPTCHA_SITE_KEY as string | undefined;
+const SCRIPT_ID = 'hcaptcha-script';
 
-let scriptLoadPromise: Promise<void> | null = null;
+// Module-level promise shared across all hook instances.
+let _sdkReady: Promise<void> | null = null;
 
-function loadHCaptchaScript(): Promise<void> {
-  if (scriptLoadPromise) return scriptLoadPromise;
-  if (document.getElementById(SCRIPT_ID)) {
-    scriptLoadPromise = Promise.resolve();
-    return scriptLoadPromise;
+/**
+ * Injects the hCaptcha script exactly once and resolves when the SDK fires
+ * its `onload` callback. Safe to call multiple times — always returns the
+ * same promise.
+ */
+function loadHCaptchaSDK(): Promise<void> {
+  if (_sdkReady) return _sdkReady;
+
+  // If the script tag is already present (e.g. injected elsewhere), wait for
+  // the window callback or resolve immediately if hcaptcha already exists.
+  if (typeof window.hcaptcha !== 'undefined') {
+    _sdkReady = Promise.resolve();
+    return _sdkReady;
   }
-  scriptLoadPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.id    = SCRIPT_ID;
-    script.src   = SCRIPT_SRC;
-    script.async = true;
-    script.defer = true;
-    script.onload  = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load hCaptcha script'));
-    document.head.appendChild(script);
+
+  _sdkReady = new Promise<void>((resolve, reject) => {
+    // hCaptcha will call window.__hcaptchaOnLoad when it is fully ready.
+    window.__hcaptchaOnLoad = resolve;
+
+    if (!document.getElementById(SCRIPT_ID)) {
+      const script = document.createElement('script');
+      script.id    = SCRIPT_ID;
+      // `onload=__hcaptchaOnLoad` tells hCaptcha to invoke our callback
+      // after its internal init, not just when the <script> tag executes.
+      // `render=explicit` prevents auto-rendering of .h-captcha divs.
+      script.src   = 'https://js.hcaptcha.com/1/api.js?render=explicit&onload=__hcaptchaOnLoad';
+      script.async = true;
+      script.defer = true;
+      script.onerror = () => {
+        _sdkReady = null; // allow retry on next mount
+        reject(new Error('[useCaptcha] Failed to load hCaptcha script'));
+      };
+      document.head.appendChild(script);
+    }
+    // If the tag exists but hcaptcha is not defined yet, the onload param
+    // will still fire when the script finishes executing.
   });
-  return scriptLoadPromise;
+
+  return _sdkReady;
 }
 
 export interface UseCaptchaReturn {
   /** Attach to the container div that hCaptcha will render into. */
   containerRef: React.RefObject<HTMLDivElement>;
-  /** The verified captcha token. null until the user solves the challenge. */
+  /** Verified token. null until user solves the challenge. */
   token: string | null;
-  /** Reset the widget (call after a failed login attempt). */
+  /** Reset the widget after a failed attempt. */
   reset: () => void;
-  /** True once the widget is rendered and ready for interaction. */
+  /** True once the widget is rendered and interactive. */
   ready: boolean;
-  /** True if VITE_HCAPTCHA_SITE_KEY is not configured (dev / test mode). */
+  /** True when VITE_HCAPTCHA_SITE_KEY is not configured. */
   disabled: boolean;
 }
 
 export function useCaptcha(): UseCaptchaReturn {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef  = useRef<string | null>(null);
-  const [token, setToken]   = useState<string | null>(null);
-  const [ready, setReady]   = useState(!SITE_KEY); // immediately ready if disabled
+  const [token, setToken] = useState<string | null>(null);
+  const [ready, setReady] = useState(!SITE_KEY);
 
   const disabled = !SITE_KEY;
 
   const reset = useCallback(() => {
     setToken(null);
-    if (widgetIdRef.current && window.hcaptcha) {
-      window.hcaptcha.reset(widgetIdRef.current);
+    if (widgetIdRef.current != null && window.hcaptcha) {
+      try { window.hcaptcha.reset(widgetIdRef.current); } catch (_) {}
     }
   }, []);
 
@@ -86,32 +107,38 @@ export function useCaptcha(): UseCaptchaReturn {
 
     let unmounted = false;
 
-    loadHCaptchaScript()
+    loadHCaptchaSDK()
       .then(() => {
-        if (unmounted || !containerRef.current || widgetIdRef.current) return;
+        // Guard: component may have unmounted while SDK was loading.
+        if (unmounted || !containerRef.current) return;
+        // Guard: avoid double-rendering on React Strict Mode double-invoke.
+        if (widgetIdRef.current != null) return;
+
         widgetIdRef.current = window.hcaptcha.render(containerRef.current, {
-          sitekey:  SITE_KEY,
-          theme:    'light',
-          size:     'normal',
-          callback: (tk: string) => { if (!unmounted) setToken(tk); },
-          'expired-callback':    () => { if (!unmounted) setToken(null); },
-          'error-callback':      () => { if (!unmounted) setToken(null); },
+          sitekey:           SITE_KEY,
+          theme:             'light',
+          size:              'normal',
+          callback:          (tk: string) => { if (!unmounted) setToken(tk); },
+          'expired-callback':            () => { if (!unmounted) setToken(null); },
+          'error-callback':              () => { if (!unmounted) setToken(null); },
         });
+
         if (!unmounted) setReady(true);
       })
       .catch(err => {
-        console.error('[useCaptcha] script load error:', err);
-        // Fail open in dev — production should have a valid SITE_KEY
+        console.error('[useCaptcha] SDK load error — captcha disabled for this session:', err);
+        // Fail open so login is not permanently broken if CDN is unreachable.
         if (!unmounted) setReady(true);
       });
 
     return () => {
       unmounted = true;
-      if (widgetIdRef.current && window.hcaptcha) {
+      if (widgetIdRef.current != null && window.hcaptcha) {
         try { window.hcaptcha.remove(widgetIdRef.current); } catch (_) {}
         widgetIdRef.current = null;
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [disabled]);
 
   return { containerRef, token, reset, ready, disabled };
