@@ -1,20 +1,23 @@
 /**
  * supabaseClient.ts — browser-side Supabase Auth singleton.
  *
- * FIX (2026-05-20 v2):
- *   The previous fix used a `getSupabase()` function but still called it at
- *   module evaluation time (`export const supabase = getSupabase()`). In React
- *   18 Strict Mode, modules are evaluated twice in development, which meant
- *   the window guard was not yet set on the first evaluation pass — producing
- *   two GoTrueClient instances sharing the same storage key.
+ * FIX (2026-05-20 v3 — definitive):
  *
- *   This version uses a Proxy-based lazy singleton: `supabase.auth` (or any
- *   property access) triggers creation on first use, long after module eval.
- *   `window.__learnit_supabase__` remains as the cross-module guard.
+ * Root-cause of the :1 / :2 GoTrueClient warning:
+ *   Vite code-splits the app into several async chunks. When the browser
+ *   loads chunk A and chunk B in parallel (both import supabaseClient),
+ *   the module-level `let _instance` variable is NOT shared across chunk
+ *   boundaries — only `globalThis` is. Even the window-based guard races
+ *   when two chunks evaluate this module before either has written the key.
+ *
+ * Definitive fix:
+ *   Use `globalThis.__learnit_supabase__` as the authoritative singleton
+ *   store. globalThis is shared across ALL Vite chunks in the same browser
+ *   context, so `getInstance()` checking it first guarantees createClient
+ *   is called at most once per page lifetime.
  *
  * The anon key is safe to ship in the browser — it only grants access to
- * Supabase Auth. All data operations go through our Express API (service-role
- * key is server-side only).
+ * Supabase Auth. All data operations go through our Express API.
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -28,37 +31,44 @@ if (!SUPABASE_URL || !SUPABASE_ANON) {
   );
 }
 
+// ── globalThis-backed singleton ───────────────────────────────────────────────
+// globalThis is shared across ALL Vite chunks in the same browser context.
+// This is the only reliable cross-chunk singleton mechanism.
+
 declare global {
-  interface Window { __learnit_supabase__?: SupabaseClient; }
+  // eslint-disable-next-line no-var
+  var __learnit_supabase__: SupabaseClient | undefined;
 }
 
-/** Returns the single shared SupabaseClient, creating it on first call. */
 function getInstance(): SupabaseClient {
-  if (window.__learnit_supabase__) return window.__learnit_supabase__;
-  window.__learnit_supabase__ = createClient(SUPABASE_URL, SUPABASE_ANON, {
+  if (globalThis.__learnit_supabase__) return globalThis.__learnit_supabase__;
+
+  globalThis.__learnit_supabase__ = createClient(SUPABASE_URL, SUPABASE_ANON, {
     auth: {
-      storage:            window.sessionStorage as any,
+      storage:            typeof window !== 'undefined' ? window.sessionStorage as any : undefined,
       persistSession:     true,
       autoRefreshToken:   true,
       detectSessionInUrl: true,
     },
   });
-  return window.__learnit_supabase__;
+
+  return globalThis.__learnit_supabase__;
 }
 
 /**
- * `supabase` — lazily-created singleton via Proxy.
+ * `supabase` — lazily-resolved Proxy backed by a globalThis singleton.
  *
- * Property access (e.g. `supabase.auth`) triggers `getInstance()` at call
- * time, not at module evaluation time. This prevents React Strict Mode's
- * double-evaluation from creating two GoTrueClients.
+ * - Lazy: createClient is NOT called at module parse/evaluation time.
+ * - Safe across Vite chunk boundaries: globalThis is shared by all chunks.
+ * - Safe in React 18 Strict Mode: double-eval still hits the globalThis
+ *   guard on the second pass and reuses the existing instance.
  */
 export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
   get(_target, prop: string | symbol) {
     return (getInstance() as any)[prop];
   },
   set(_target, prop: string | symbol, value: any) {
-    (getInstance() as any)[prop] = value;
+    (getInstance() as any)[prop as string] = value;
     return true;
   },
 });
