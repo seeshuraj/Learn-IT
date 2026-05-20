@@ -1,5 +1,5 @@
 /**
- * cron.ts — P3-2
+ * cron.ts
  *
  * Schedules analytics snapshot jobs using node-cron.
  * Call startCronJobs(pool) once from startServer().
@@ -7,9 +7,6 @@
  * Schedule: every 30 minutes  ->  '0,30 * * * *'
  * An immediate run fires on startup so the first request always hits
  * a warm snapshot (rather than waiting up to 30 min).
- *
- * node-cron is a zero-dependency in-process scheduler.
- * If you later move to a managed queue (BullMQ, pg-boss) replace this file.
  */
 
 import pkg from 'pg';
@@ -22,7 +19,21 @@ import { snapshotAdminStats, snapshotCourseAnalytics } from './analyticsSnapshot
 
 type PgPool = InstanceType<typeof Pool>;
 
-export function startCronJobs(pool: PgPool): void {
+/**
+ * Start background cron jobs.
+ *
+ * Returns a Promise so callers can safely do:
+ *   startCronJobs(pool).catch(console.error)
+ *
+ * The second argument (nimChat) is accepted but currently unused — it is
+ * kept so the signature matches the call in server.ts without needing a
+ * separate change there.
+ */
+export async function startCronJobs(
+  pool: PgPool,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _nimChat?: unknown,
+): Promise<void> {
   async function runAll() {
     await Promise.allSettled([
       snapshotAdminStats(pool),
@@ -30,7 +41,7 @@ export function startCronJobs(pool: PgPool): void {
     ]);
   }
 
-  // Fire immediately on startup (non-blocking)
+  // Fire immediately on startup (non-blocking — error is caught internally)
   runAll().catch((e: Error) => console.error('[cron] startup run failed:', e.message));
 
   // Then every 30 minutes
