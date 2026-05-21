@@ -1,15 +1,22 @@
 /**
  * useCaptcha.ts — hCaptcha integration hook.
  *
- * Currently DISABLED: captcha is bypassed (disabled: true) because
- * VITE_HCAPTCHA_SITE_KEY is not set in Vercel env vars.
+ * STATUS: DISABLED — captcha is fully bypassed.
  *
- * To re-enable:
- *   1. Go to dashboard.hcaptcha.com → copy the Site Key for your site.
+ * Root cause of the `captcha protection: request disallowed (sitekey-secret-mismatch)` error:
+ *   hCaptcha is still ENABLED in Supabase Dashboard with a mismatched secret key.
+ *   Supabase rejects ALL signInWithPassword calls at the server side, even when
+ *   the frontend sends no captchaToken, if the Dashboard toggle is ON.
+ *
+ * REQUIRED ACTION (dashboard only — no code change):
+ *   Supabase Dashboard → Authentication → Bot and Abuse Protection → DISABLE hCaptcha.
+ *
+ * To re-enable captcha later:
+ *   1. Go to dashboard.hcaptcha.com → create/select a site → copy the Site Key.
  *   2. Set VITE_HCAPTCHA_SITE_KEY=<site-key> in Vercel → Environment Variables.
  *   3. In Supabase Dashboard → Authentication → Bot and Abuse Protection,
- *      enable hCaptcha and paste the SECRET KEY from the same hCaptcha site.
- *   4. Both keys MUST come from the same hCaptcha site entry.
+ *      enable hCaptcha and paste the SECRET KEY from the SAME hCaptcha site.
+ *   4. Both keys MUST come from the same hCaptcha site entry — never mix.
  *   5. Replace the body of useCaptcha() below with the real SDK integration.
  */
 
@@ -29,6 +36,7 @@ export function useCaptcha(): UseCaptchaReturn {
   const [token]      = useState<string | null>(null);
   const reset        = useCallback(() => {}, []);
 
-  // Disabled until VITE_HCAPTCHA_SITE_KEY is set and keys are matched.
+  // Disabled: no captchaToken is ever sent to supabase.auth.signInWithPassword.
+  // The Supabase Dashboard hCaptcha toggle MUST also be OFF for logins to succeed.
   return { containerRef, token, reset, ready: true, disabled: true };
 }
