@@ -140,8 +140,8 @@ async function extractTopicsFromPaperText(
     },
   ];
   try {
-    const raw = await nimChat(prompt, { temperature: 0.2, maxTokens: 512 });
-    const json = raw.replace(/```[a-z]*/gi, '').replace(/```/g, '').trim();
+    const raw    = await nimChat(prompt, { temperature: 0.2, maxTokens: 512 });
+    const json   = raw.replace(/```[a-z]*/gi, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(json);
     if (Array.isArray(parsed)) return parsed;
   } catch (_) {}
@@ -342,16 +342,17 @@ export function createUnitExamsRouter(
 
           await pool.query(
             `INSERT INTO unit_exam_results
-               (unit_exam_id, student_id, marks_obtained, performance_band, topic_breakdown, raw_row)
-             VALUES ($1,$2,$3,$4,$5,$6)
+               (unit_exam_id, student_id, marks_obtained, percentage, performance_band, topic_breakdown, raw_row)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
              ON CONFLICT (unit_exam_id, student_id)
              DO UPDATE SET
                marks_obtained   = EXCLUDED.marks_obtained,
+               percentage       = EXCLUDED.percentage,
                performance_band = EXCLUDED.performance_band,
                topic_breakdown  = EXCLUDED.topic_breakdown,
                raw_row          = EXCLUDED.raw_row,
                updated_at       = NOW()`,
-            [examId, studentId, marks, band, topics ? JSON.stringify(topics) : null, JSON.stringify(row)]
+            [examId, studentId, marks, pct, band, topics ? JSON.stringify(topics) : null, JSON.stringify(row)]
           );
           matched++;
           inserted.push({ studentId, marks, band, pct });
@@ -592,8 +593,8 @@ export function createUnitExamsRouter(
           .slice(0, 5)
           .map(([t]) => t);
 
-        const latest     = results[0] ?? null;
-        const allPcts    = results.map((r: any) => parseFloat(r.percentage)).filter(Boolean);
+        const latest      = results[0] ?? null;
+        const allPcts     = results.map((r: any) => parseFloat(r.percentage)).filter(Boolean);
         const overall_avg = allPcts.length > 0
           ? Math.round((allPcts.reduce((a: number, b: number) => a + b, 0) / allPcts.length) * 10) / 10
           : null;

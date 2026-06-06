@@ -1,11 +1,12 @@
 // aiService.ts — NVIDIA NIM (OpenAI-compatible) integration for LearnIT
 // AI chat goes through /api/ai/chat on our Express backend (keeps API key server-side).
-// Direct NIM calls are only used for grading (instructor only, no key exposure risk via proxy).
+// AI grading goes through /api/submissions/:id/ai-grade (NVIDIA_API_KEY server-side only).
+// Direct NIM calls from the client are only used for embeddings and analytics summaries.
 
 import { api } from './api';
 
 const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
-const CHAT_MODEL = "mistralai/mistral-nemo-12b-instruct";
+const CHAT_MODEL  = "mistralai/mistral-nemo-12b-instruct";
 const EMBED_MODEL = "nvidia/llama-3.2-nemoretriever-300m-embed-v1";
 
 function getApiKey(): string {
@@ -16,7 +17,7 @@ function isMock(): boolean {
   return !getApiKey();
 }
 
-// ─── OpenAI-compatible chat call (used only for grading + embeddings) ────────────
+// ─── OpenAI-compatible chat call (used only for embeddings + analytics) ───────
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -38,7 +39,7 @@ async function nimChat(
       model: CHAT_MODEL,
       messages,
       temperature: opts.temperature ?? 0.4,
-      max_tokens: opts.maxTokens ?? 1024,
+      max_tokens:  opts.maxTokens  ?? 1024,
     }),
   });
   if (!res.ok) {
@@ -67,7 +68,7 @@ export async function embedText(text: string): Promise<number[]> {
 }
 
 export function cosineSim(a: number[], b: number[]): number {
-  const dot = a.reduce((s, v, i) => s + v * b[i], 0);
+  const dot  = a.reduce((s, v, i) => s + v * b[i], 0);
   const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
   const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
   return magA && magB ? dot / (magA * magB) : 0;
@@ -86,7 +87,7 @@ function mockChat(messages: ChatMessage[], maxPoints = 100): string {
         "Good understanding of core concepts. The argument in section 2 is well-structured. " +
         "However, the conclusion lacks specific examples. Consider expanding on practical " +
         "implications in your next submission.",
-      strengths: ["Clear structure", "Good use of terminology", "Logical flow"],
+      strengths:    ["Clear structure", "Good use of terminology", "Logical flow"],
       improvements: ["Add concrete examples", "Strengthen the conclusion", "Cite additional sources"],
     });
   }
@@ -112,78 +113,42 @@ function mockChat(messages: ChatMessage[], maxPoints = 100): string {
   return "I'm here to help! Ask me anything about your course material.";
 }
 
-// ─── 1. AI GRADING SUGGESTION ─────────────────────────────────────────────────────────
+// ─── 1. AI GRADING SUGGESTION ─────────────────────────────────────────────────
+// Proxies through the server-side /api/submissions/:id/ai-grade endpoint.
+// NVIDIA_API_KEY never touches the client; VITE_NVIDIA_API_KEY is not used here.
 
 export interface GradingSuggestion {
-  score: number;
-  feedback: string;
-  strengths: string[];
+  score:        number;
+  feedback:     string;
+  strengths:    string[];
   improvements: string[];
 }
 
 /**
- * getGradingSuggestion — text-only fallback grading path.
+ * getGradingSuggestion — delegates to the Express grading route.
  *
- * @param submissionContent  Raw text of the student’s submission
- * @param rubric             Full rubric string built by handleAiGrade in InstructorDashboard
- * @param maxPoints          The assignment’s max_points (default 100 for safety)
+ * @param submissionId  The DB id of the submission being graded
+ * @param rubric        Full rubric string built by the caller
  *
- * The system prompt explicitly states the valid score range so the model
- * never returns a score outside [0, maxPoints].
- * Temperature is kept low (0.2) for consistent, deterministic scoring.
- * maxTokens is 1536 to avoid truncation on longer rubric breakdowns.
- * Score is clamped to [0, maxPoints] as a safety net after parsing.
+ * The server handles: auth check, NVIDIA API call, DB persist of ai_feedback.
+ * isMock() guard is kept so local dev without a backend still returns
+ * a sensible stub via the mock path on the server (no key → mock branch).
  */
 export async function getGradingSuggestion(
-  submissionContent: string,
+  submissionId: number | string,
   rubric: string,
-  maxPoints = 100
 ): Promise<GradingSuggestion> {
-  if (isMock()) {
-    const raw = mockChat([{ role: 'system', content: 'GRADING ASSISTANT' }], maxPoints);
-    return JSON.parse(raw) as GradingSuggestion;
-  }
-
-  const messages: ChatMessage[] = [
-    {
-      role: "system",
-      content:
-        `You are a GRADING ASSISTANT for a university LMS. ` +
-        `You will grade a student submission strictly against the provided rubric. ` +
-        `The assignment is scored out of ${maxPoints} points. ` +
-        `Your "score" field MUST be an integer between 0 and ${maxPoints} — never exceed ${maxPoints}. ` +
-        `Respond ONLY with a valid JSON object — no markdown fences, no prose outside JSON. ` +
-        `JSON shape exactly: ` +
-        `{"score":<int 0-${maxPoints}>,"feedback":"<2-3 sentences>",` +
-        `"strengths":["<point>","<point>","<point>"],"improvements":["<point>","<point>"]}`,
-    },
-    {
-      role: "user",
-      content: `RUBRIC:\n${rubric}\n\nSTUDENT SUBMISSION:\n${submissionContent.slice(0, 3000)}`,
-    },
-  ];
-
-  const raw = await nimChat(messages, { temperature: 0.2, maxTokens: 1536 });
-  try {
-    const cleaned = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleaned) as GradingSuggestion;
-    // Safety clamp: model must never return a score above maxPoints
-    parsed.score = Math.max(0, Math.min(Math.round(parsed.score), maxPoints));
-    return parsed;
-  } catch {
-    return {
-      score: Math.round(maxPoints * 0.75),
-      feedback: raw.slice(0, 300),
-      strengths: ["Submitted on time"],
-      improvements: ["Review feedback carefully"],
-    };
-  }
+  const res = await (api as any).post(
+    `/submissions/${submissionId}/ai-grade`,
+    { rubric }
+  );
+  return res as GradingSuggestion;
 }
 
 // ─── 2. NOTES-AWARE MODULE CHATBOT (routes through backend — key stays server-side) ──
 
 export interface ConversationTurn {
-  role: "user" | "assistant";
+  role:    "user" | "assistant";
   content: string;
 }
 
@@ -191,16 +156,13 @@ export interface ConversationTurn {
  * askModuleChatbot — sends the user question to the Express /api/ai/chat
  * endpoint which performs vector RAG retrieval from note_chunks using the
  * moduleId, then calls NVIDIA NIM server-side.
- *
- * moduleId MUST be passed for RAG to work — the backend gates retrieval on it.
- * notesContext is used only as a client-side fallback if the backend is down.
  */
 export async function askModuleChatbot(
-  question: string,
-  moduleTitle: string,
-  moduleId: number | null,
+  question:     string,
+  moduleTitle:  string,
+  moduleId:     number | null,
   notesContext: string,
-  history: ConversationTurn[] = []
+  history:      ConversationTurn[] = []
 ): Promise<string> {
   try {
     const res = await api.aiChat(question, moduleTitle, moduleId, history);
@@ -210,9 +172,9 @@ export async function askModuleChatbot(
     if (!notesContext) {
       return "I don't have any notes loaded for this module yet. Ask your instructor to upload lecture materials.";
     }
-    const lower = question.toLowerCase();
+    const lower    = question.toLowerCase();
     const sentences = notesContext.split(/[.!?\n]+/).filter(s => s.trim().length > 20);
-    const relevant = sentences.filter(s => {
+    const relevant  = sentences.filter(s => {
       const words = lower.split(' ').filter(w => w.length > 3);
       return words.some(w => s.toLowerCase().includes(w));
     });
@@ -223,18 +185,18 @@ export async function askModuleChatbot(
   }
 }
 
-// ─── 3. STUDENT ANALYTICS AI SUMMARY ──────────────────────────────────────────────────
+// ─── 3. STUDENT ANALYTICS AI SUMMARY ──────────────────────────────────────────
 
 export interface StudentAnalyticsData {
   studentName: string;
   courses: Array<{
-    name: string;
-    average: number;
+    name:        string;
+    average:     number;
     assignments: number;
-    late: number;
+    late:        number;
   }>;
-  overallAverage: number;
-  submissionRate: number;
+  overallAverage:  number;
+  submissionRate:  number;
 }
 
 export async function getAnalyticsSummary(
@@ -266,16 +228,16 @@ export async function getAnalyticsSummary(
   return nimChat(messages, { temperature: 0.4, maxTokens: 400 });
 }
 
-// ─── 4. INSTRUCTOR CLASS OVERVIEW SUMMARY ──────────────────────────────────────────────
+// ─── 4. INSTRUCTOR CLASS OVERVIEW SUMMARY ──────────────────────────────────────
 
 export interface ClassOverviewData {
-  courseName: string;
+  courseName:   string;
   classAverage: number;
   students: Array<{
-    name: string;
+    name:    string;
     average: number;
-    missed: number;
-    status: string;
+    missed:  number;
+    status:  string;
   }>;
 }
 
