@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     define: {
       ...clientEnvDefines,
-      // Explicit fallbacks for the three vars most critical to auth.
+      // Explicit fallbacks for the vars most critical to auth.
       // These are overridden by clientEnvDefines when the real values exist.
       'import.meta.env.VITE_SUPABASE_URL':      JSON.stringify(env.VITE_SUPABASE_URL      ?? ''),
       'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY ?? ''),
@@ -37,6 +37,24 @@ export default defineConfig(({ mode }) => {
     },
     resolve: {
       alias: { '@': path.resolve(__dirname, '.') },
+    },
+    build: {
+      // Raise the chunk size warning threshold slightly (default 500 kB)
+      chunkSizeWarningLimit: 600,
+      rollupOptions: {
+        output: {
+          // Split the monolithic bundle into focused, cacheable chunks.
+          // This also resolves the supabaseClient dynamic/static import conflict
+          // by forcing supabase into its own isolated chunk.
+          manualChunks: {
+            'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+            'ui-vendor':    ['framer-motion', 'motion', 'lucide-react', 'recharts'],
+            'supabase':     ['@supabase/supabase-js'],
+            'utils':        ['zod', 'clsx', 'tailwind-merge', 'sonner'],
+            'markdown':     ['react-markdown'],
+          },
+        },
+      },
     },
     server: {
       port: 5173,

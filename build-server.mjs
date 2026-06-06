@@ -8,7 +8,7 @@ await build({
   entryPoints: ['server.ts'],
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node22',        // Render ships Node 24; node22 is the closest stable esbuild target
   format: 'esm',
   outfile: 'dist-server/server.js',
   // Keep ALL node_modules external — many are CJS and use dynamic require() internally
