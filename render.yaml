@@ -2,14 +2,34 @@ services:
   - type: web
     name: learnit-api
     runtime: node
-    buildCommand: npm install && npm run build 2>/dev/null || npm install
-    startCommand: node --import tsx/esm server.ts
+    buildCommand: npm install && npm run build
+    startCommand: node dist-server/server.js
+    healthCheckPath: /api/health
+    numInstances: 2
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
+      # ── Database ────────────────────────────────────────────────────────
+      - key: DATABASE_URL
+        sync: false
+      # ── Supabase ──────────────────────────────────────────────────────
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # ── Auth / JWT ───────────────────────────────────────────────────
+      - key: JWT_SECRET
+        sync: false
+      # ── AI / Nvidia ───────────────────────────────────────────────────
       - key: NVIDIA_API_KEY
         sync: false
+      # ── CORS ─────────────────────────────────────────────────────────────
       - key: CORS_ORIGIN
         sync: false
+      # ── Optional: Redis for distributed rate limiting (Sprint 6) ────────
+      # - key: REDIS_URL
+      #   sync: false

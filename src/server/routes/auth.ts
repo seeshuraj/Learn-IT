@@ -14,19 +14,24 @@
 import { Router } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
+/**
+ * Module-level singleton — created once per process, never per-request.
+ * Eliminates the "Multiple GoTrueClient instances" browser-console warning
+ * and avoids redundant HTTP connections when running with numInstances > 1.
+ */
+const supabaseAdmin: SupabaseClient = createClient(
+  process.env.SUPABASE_URL ?? '',
+  process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } }
+);
+
 export function createAuthRouter(pool: PgPool): Router {
   const router = Router();
-
-  const supabaseAdmin = createClient(
-    process.env.SUPABASE_URL ?? '',
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
 
   async function q(sql: string, params: any[] = []) {
     const { rows } = await pool.query(sql, params);
