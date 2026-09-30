@@ -42,9 +42,9 @@ const STATS = [
 ];
 
 const DEMO_ROLES = [
-  { role: 'Student', email: 'sarah@learnit.edu', color: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100', desc: 'View courses, submit assignments, chat with notes, track analytics' },
-  { role: 'Instructor', email: 'instructor@learnit.edu', color: 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100', desc: 'Manage modules, grade with AI assistance, view class analytics' },
-  { role: 'Admin', email: 'admin@learnit.edu', color: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100', desc: 'Manage users, courses, enrollments, system settings' },
+  { role: 'Student', email: 'sarah@LearnIT Analytics.edu', color: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100', desc: 'View courses, submit assignments, chat with notes, track analytics' },
+  { role: 'Instructor', email: 'instructor@LearnIT Analytics.edu', color: 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100', desc: 'Manage modules, grade with AI assistance, view class analytics' },
+  { role: 'Admin', email: 'admin@LearnIT Analytics.edu', color: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100', desc: 'Manage users, courses, enrollments, system settings' },
 ];
 
 export default function LandingPage() {
@@ -61,7 +61,7 @@ export default function LandingPage() {
               <text x="7" y="29" fontFamily="Georgia,serif" fontSize="24" fontWeight="bold" fill="white">L</text>
               <circle cx="29" cy="12" r="5" fill="#4f98a3" opacity="0.9"/>
             </svg>
-            <span className="text-lg font-bold text-slate-800 tracking-tight">LearnIT</span>
+            <span className="text-lg font-bold text-slate-800 tracking-tight">LearnIT Analytics</span>
           </div>
           <div className="flex items-center gap-3">
             <a
@@ -93,7 +93,7 @@ export default function LandingPage() {
             <span className="text-teal-700">why</span>{' '}they're struggling
           </h1>
           <p className="text-xl text-slate-500 max-w-2xl mx-auto mb-10">
-            Universities use LMSs that only track grades. LearnIT uses AI to explain them —
+            Universities use LMSs that only track grades. LearnIT Analytics uses AI to explain them —
             grounding every grade, every chatbot answer, and every progress summary in real course material.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
@@ -234,7 +234,7 @@ export default function LandingPage() {
               <rect width="40" height="40" rx="9" fill="#01696f"/>
               <text x="7" y="29" fontFamily="Georgia,serif" fontSize="24" fontWeight="bold" fill="white">L</text>
             </svg>
-            <span className="font-bold text-slate-700">LearnIT</span>
+            <span className="font-bold text-slate-700">LearnIT Analytics</span>
           </div>
           <p className="text-slate-400 text-xs text-center">
             Built with NVIDIA NIM · React · Express · SQLite<br/>
