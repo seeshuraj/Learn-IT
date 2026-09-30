@@ -241,7 +241,7 @@ export default function LandingPage() {
 </p>
           <p className="text-slate-400 text-xs text-center">
             Built with NVIDIA NIM · React · Express · SQLite<br/>
-            <a href="https://github.com/seeshuraj/Learn-IT" className="underline hover:text-slate-600" target="_blank" rel="noopener noreferrer">github.com/seeshuraj/Learn-IT</a>
+            contact@learnitanalytics.com
           </p>
         </div>
       </footer>
