@@ -230,10 +230,11 @@ export default function LandingPage() {
       <footer className="py-10 px-6 border-t border-slate-200 bg-white">
         <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <svg viewBox="0 0 40 40" className="w-6 h-6" fill="none">
-              <rect width="40" height="40" rx="9" fill="#01696f"/>
-              <text x="7" y="29" fontFamily="Georgia,serif" fontSize="24" fontWeight="bold" fill="white">L</text>
-            </svg>
+            <img
+                src="/favicon.svg"
+                alt="LearnIT logo"
+                className="w-6 h-6"
+            />
             <span className="font-bold text-slate-700">LearnIT Analytics</span>
           </div>
           <p className="text-slate-400 text-xs text-center">
