@@ -233,7 +233,7 @@ export default function LandingPage() {
             <img
                 src="/favicon.svg"
                 alt="LearnIT logo"
-                className="w-6 h-6"
+                className="w-8 h-8"
             />
             <span className="font-bold text-slate-700">LearnIT Analytics</span>
           </div>
