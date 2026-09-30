@@ -42,9 +42,9 @@ const STATS = [
 ];
 
 const DEMO_ROLES = [
-  { role: 'Student', email: 'sarah@learnitanalytics.edu', color: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100', desc: 'View courses, submit assignments, chat with notes, track analytics' },
-  { role: 'Instructor', email: 'instructor@learnitanalytics.edu', color: 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100', desc: 'Manage modules, grade with AI assistance, view class analytics' },
-  { role: 'Admin', email: 'admin@learnitanalytics.edu', color: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100', desc: 'Manage users, courses, enrollments, system settings' },
+  { role: 'Student', email: 'sarah@learnit.edu', color: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100', desc: 'View courses, submit assignments, chat with notes, track analytics' },
+  { role: 'Instructor', email: 'instructor@learnit.edu', color: 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100', desc: 'Manage modules, grade with AI assistance, view class analytics' },
+  { role: 'Admin', email: 'admin@learnit.edu', color: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100', desc: 'Manage users, courses, enrollments, system settings' },
 ];
 
 export default function LandingPage() {
