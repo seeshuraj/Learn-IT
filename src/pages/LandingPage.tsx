@@ -93,7 +93,7 @@ export default function LandingPage() {
             <span className="text-teal-700">why</span>{' '}they're struggling
           </h1>
           <p className="text-xl text-slate-500 max-w-2xl mx-auto mb-10">
-            Universities use LMSs that only track grades. LearnIT Analytics uses AI to explain them —
+            Universities use LMSs that only track grades. LearnIT Analytics uses AI to explain them -
             grounding every grade, every chatbot answer, and every progress summary in real course material.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
@@ -131,7 +131,7 @@ export default function LandingPage() {
       <section className="py-24 px-6">
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-14">
-            <h2 className="text-3xl font-bold text-slate-900 mb-3">Everything a modern LMS needs — plus AI</h2>
+            <h2 className="text-3xl font-bold text-slate-900 mb-3">Everything a modern LMS needs - plus AI</h2>
             <p className="text-slate-500 max-w-xl mx-auto">Three high-value AI surfaces layered on a solid LMS foundation.</p>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -188,7 +188,7 @@ export default function LandingPage() {
               { step: '02', title: 'Student submits (text or file)', detail: 'Students submit assignments as typed text or uploaded PDF/DOCX. Files are parsed server-side for full text extraction.' },
               { step: '03', title: 'AI suggests score + feedback', detail: 'NVIDIA NIM (Mistral Large) analyses the submission against the rubric and returns a suggested score, 3 strengths, and 2 improvements.' },
               { step: '04', title: 'Instructor accepts or edits', detail: 'The instructor sees the AI suggestion alongside the original submission. One click to accept, or edit before saving. Every acceptance is logged for traction metrics.' },
-              { step: '05', title: 'Student sees personalised feedback', detail: 'The graded submission, feedback, and AI analytics summary appear on the student\'s dashboard — with context about exactly what to improve.' },
+              { step: '05', title: 'Student sees personalised feedback', detail: 'The graded submission, feedback, and AI analytics summary appear on the student\'s dashboard - with context about exactly what to improve.' },
             ].map(s => (
               <div key={s.step} className="flex gap-5 bg-white border border-slate-200 rounded-2xl p-6">
                 <div className="text-2xl font-extrabold text-teal-200 w-12 shrink-0">{s.step}</div>
@@ -243,7 +243,6 @@ export default function LandingPage() {
             Built with NVIDIA NIM · React · Express · SQLite<br/>
             <a href="https://github.com/seeshuraj/Learn-IT" className="underline hover:text-slate-600" target="_blank" rel="noopener noreferrer">github.com/seeshuraj/Learn-IT</a>
           </p>
-          <p className="text-slate-400 text-xs">MIT License</p>
         </div>
       </footer>
     </div>
