@@ -5,7 +5,7 @@ const FEATURES = [
   {
     icon: '🎯',
     title: 'AI Grading Assistant',
-    desc: 'LLM-powered score + structured feedback for every submission. Instructors accept or edit — saving hours per week.',
+    desc: 'LLM-powered score + structured feedback for every submission. Instructors accept or edit - saving hours per week.',
   },
   {
     icon: '💬',
@@ -15,12 +15,12 @@ const FEATURES = [
   {
     icon: '📊',
     title: 'Student Analytics',
-    desc: 'Per-course grade trends, late submission tracking, and an AI-written personalised progress summary — so students know exactly where to focus.',
+    desc: 'Per-course grade trends, late submission tracking, and an AI-written personalised progress summary - so students know exactly where to focus.',
   },
   {
     icon: '🏫',
     title: 'Full LMS Backbone',
-    desc: 'Courses, modules, assignments, file uploads, enrollment management, instructor and admin dashboards — all in one place.',
+    desc: 'Courses, modules, assignments, file uploads, enrollment management, instructor and admin dashboards - all in one place.',
   },
   {
     icon: '🔒',
