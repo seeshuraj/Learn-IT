@@ -42,9 +42,9 @@ const STATS = [
 ];
 
 const DEMO_ROLES = [
-  { role: 'Student', email: 'sarah@LearnIT.edu', color: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100', desc: 'View courses, submit assignments, chat with notes, track analytics' },
-  { role: 'Instructor', email: 'instructor@LearnIT.edu', color: 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100', desc: 'Manage modules, grade with AI assistance, view class analytics' },
-  { role: 'Admin', email: 'admin@LearnIT.edu', color: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100', desc: 'Manage users, courses, enrollments, system settings' },
+  { role: 'Student', email: 'sarah@learnitanalytics.edu', color: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100', desc: 'View courses, submit assignments, chat with notes, track analytics' },
+  { role: 'Instructor', email: 'instructor@learnitanalytics.edu', color: 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100', desc: 'Manage modules, grade with AI assistance, view class analytics' },
+  { role: 'Admin', email: 'admin@learnitanalytics.edu', color: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100', desc: 'Manage users, courses, enrollments, system settings' },
 ];
 
 export default function LandingPage() {
@@ -235,8 +235,10 @@ export default function LandingPage() {
                 alt="LearnIT logo"
                 className="w-8 h-8"
             />
-            <span className="font-bold text-slate-700">LearnIT Analytics</span>
           </div>
+          <p className="text-slate-400 text-xs">
+  © 2026 Learnit Analytics Private Limited. All rights reserved.
+</p>
           <p className="text-slate-400 text-xs text-center">
             Built with NVIDIA NIM · React · Express · SQLite<br/>
             <a href="https://github.com/seeshuraj/Learn-IT" className="underline hover:text-slate-600" target="_blank" rel="noopener noreferrer">github.com/seeshuraj/Learn-IT</a>
