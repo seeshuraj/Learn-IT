@@ -56,11 +56,11 @@ export default function LandingPage() {
       <nav className="fixed top-0 w-full z-50 bg-white/90 backdrop-blur border-b border-slate-100">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <svg viewBox="0 0 40 40" className="w-8 h-8" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect width="40" height="40" rx="9" fill="#01696f"/>
-              <text x="7" y="29" fontFamily="Georgia,serif" fontSize="24" fontWeight="bold" fill="white">L</text>
-              <circle cx="29" cy="12" r="5" fill="#4f98a3" opacity="0.9"/>
-            </svg>
+            <img
+                src="/favicon.svg"
+                alt="LearnIT logo"
+                className="w-6 h-6"
+            />
             <span className="text-lg font-bold text-slate-800 tracking-tight">LearnIT Analytics</span>
           </div>
           <div className="flex items-center gap-3">
