@@ -440,7 +440,12 @@ async function nimEmbed(
   inputType: "passage" | "query" = "passage"
 ): Promise<number[][]> {
   const key = process.env.NVIDIA_API_KEY;
-  if (!key) return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
+  if (!key) {
+    // Random vectors would be stored and silently corrupt retrieval for these
+    // notes, so production fails loudly instead (callers treat it as non-fatal).
+    if (isProduction) throw new Error("NVIDIA_API_KEY is not set; cannot generate embeddings");
+    return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
+  }
   const res = await fetchWithTimeout(
     "https://integrate.api.nvidia.com/v1/embeddings",
     {
@@ -654,7 +659,7 @@ async function startServer() {
   app.get("/api/courses/:id/modules", requireAuth, validateParams(routeParamId), async (req, res) => {
     try {
       const modules = await query(
-        "SELECT * FROM modules WHERE course_id=$1 ORDER BY position,id",
+        "SELECT * FROM modules WHERE course_id=$1 ORDER BY display_order, id",
         [req.params.id]
       );
       res.json(modules);
@@ -698,17 +703,17 @@ async function startServer() {
       let notes;
       if (authReq.auth.role === "student") {
         notes = await query(
-          `SELECT n.*, u.name AS uploader_name
+          `SELECT n.*, u.name AS uploader_name, (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id)::int AS chunk_count
            FROM notes n LEFT JOIN users u ON n.uploaded_by = u.id
            WHERE n.module_id=$1 AND n.uploaded_by=$2
-           ORDER BY n.created_at DESC`,
+           ORDER BY n.uploaded_at DESC`,
           [req.params.id, authReq.auth.legacyUserId]
         );
       } else {
         notes = await query(
-          `SELECT n.*, u.name AS uploader_name
+          `SELECT n.*, u.name AS uploader_name, (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id)::int AS chunk_count
            FROM notes n LEFT JOIN users u ON n.uploaded_by = u.id
-           WHERE n.module_id=$1 ORDER BY n.created_at DESC`,
+           WHERE n.module_id=$1 ORDER BY n.uploaded_at DESC`,
           [req.params.id]
         );
       }
@@ -730,11 +735,15 @@ async function startServer() {
 
       const extractedText = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
 
+      // student_id keeps its legacy meaning (set only for a student's own
+      // notes); uploaded_by records the uploader for every note.
       const note = await queryOne(
-        `INSERT INTO notes (module_id, uploaded_by, title, file_type, file_size, storage_path, original_name, content)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-        [moduleId, userId, file.originalname, file.mimetype,
-         file.size, objectPath, file.originalname, extractedText.slice(0, 5000)]
+        `INSERT INTO notes (module_id, uploaded_by, student_id, filename, original_name,
+                            file_type, file_size, storage_path, content_text)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [moduleId, userId, authReq.auth.role === "student" ? userId : null,
+         path.basename(objectPath), file.originalname, file.mimetype,
+         file.size, objectPath, extractedText.slice(0, 5000)]
       );
 
       if (extractedText.trim().length > 50) {
@@ -790,10 +799,11 @@ async function startServer() {
 
   app.post("/api/modules/:id/assignments", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(assignmentCreateSchema), async (req, res) => {
     try {
-      const { title, description, due_date, max_score } = req.body;
+      const { title, description, due_date, max_points, rubric, status } = req.body;
       const assignment = await queryOne(
-        "INSERT INTO assignments (module_id,title,description,due_date,max_score) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-        [req.params.id, title, description, due_date, max_score]
+        `INSERT INTO assignments (module_id, title, description, due_date, max_points, rubric, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [req.params.id, title, description, due_date, max_points, rubric, status]
       );
       res.status(201).json(assignment);
     } catch (e: any) { sendServerError(res, e); }
@@ -801,10 +811,20 @@ async function startServer() {
 
   app.put("/api/assignments/:id", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(assignmentUpdateSchema), async (req, res) => {
     try {
-      const { title, description, due_date, max_score } = req.body;
+      // Partial update: omitted fields keep their value (previously they were
+      // overwritten with NULL).
+      const { title, description, due_date, max_points, rubric, status } = req.body;
       const assignment = await queryOne(
-        "UPDATE assignments SET title=$1,description=$2,due_date=$3,max_score=$4 WHERE id=$5 RETURNING *",
-        [title, description, due_date, max_score, req.params.id]
+        `UPDATE assignments SET
+           title       = COALESCE($1, title),
+           description = COALESCE($2, description),
+           due_date    = COALESCE($3, due_date),
+           max_points  = COALESCE($4, max_points),
+           rubric      = COALESCE($5, rubric),
+           status      = COALESCE($6, status)
+         WHERE id = $7 RETURNING *`,
+        [title ?? null, description ?? null, due_date ?? null, max_points ?? null,
+         rubric ?? null, status ?? null, req.params.id]
       );
       if (!assignment) return res.status(404).json({ error: "Assignment not found" });
       res.json(assignment);
@@ -852,9 +872,9 @@ async function startServer() {
         const objectPath = `submissions/${authReq.auth.legacyUserId}/${assignmentId}/${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
         await uploadToStorage(SUBMISSIONS_BUCKET, objectPath, file.buffer, file.mimetype);
         const fileRecord = await queryOne(
-          `INSERT INTO submission_files (submission_id, original_name, file_type, file_size, storage_path)
-           VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-          [sub.id, file.originalname, file.mimetype, file.size, objectPath]
+          `INSERT INTO submission_files (submission_id, filename, original_name, file_type, file_size, storage_path)
+           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+          [sub.id, path.basename(objectPath), file.originalname, file.mimetype, file.size, objectPath]
         );
         fileRecords.push(fileRecord);
       }
@@ -946,10 +966,11 @@ async function startServer() {
 
   app.post("/api/instructor/assignments", requireAuth, requireRole("instructor","admin"), validateBody(instructorAssignmentCreateSchema), async (req, res) => {
     try {
-      const { module_id, title, description, due_date, max_score } = req.body;
+      const { module_id, title, description, due_date, max_points, rubric, status } = req.body;
       const assignment = await queryOne(
-        "INSERT INTO assignments (module_id,title,description,due_date,max_score) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-        [module_id, title, description, due_date, max_score]
+        `INSERT INTO assignments (module_id, title, description, due_date, max_points, rubric, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [module_id, title, description, due_date, max_points, rubric, status]
       );
       res.status(201).json(assignment);
     } catch (e: any) { sendServerError(res, e); }
@@ -1021,12 +1042,12 @@ async function startServer() {
   app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin(), async (req, res) => {
     try {
       const notes = await query(
-        `SELECT n.*, m.name AS module_name, c.name AS course_name
+        `SELECT n.*, m.name AS module_name, c.name AS course_name, (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id)::int AS chunk_count
          FROM notes n
          JOIN modules m ON n.module_id=m.id
          JOIN courses c ON m.course_id=c.id
          WHERE n.uploaded_by=$1
-         ORDER BY n.created_at DESC`,
+         ORDER BY n.uploaded_at DESC`,
         [req.params.id]
       );
       res.json(notes);
@@ -1069,10 +1090,21 @@ async function startServer() {
 
   app.put("/api/admin/users/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), validateBody(adminUserUpdateSchema), async (req, res) => {
     try {
-      const { name, email, role, active, year, major, gpa } = req.body;
+      // Partial update: omitted fields keep their value (previously they were
+      // overwritten with NULL, e.g. gpa on every edit since the schema omits it).
+      const { name, email, role, active, year, major } = req.body;
       const user = await queryOne(
-        "UPDATE users SET name=$1,email=$2,role=$3,active=$4,year=$5,major=$6,gpa=$7 WHERE id=$8 RETURNING *",
-        [name, email, role, active, year ?? null, major ?? null, gpa ?? null, req.params.id]
+        `UPDATE users SET
+           name   = COALESCE($1, name),
+           email  = COALESCE($2, email),
+           role   = COALESCE($3, role),
+           active = COALESCE($4, active),
+           year   = COALESCE($5, year),
+           major  = COALESCE($6, major)
+         WHERE id = $7
+         RETURNING id, name, email, role, active, year, major, gpa`,
+        [name ?? null, email ?? null, role ?? null, active ?? null,
+         year ?? null, major ?? null, req.params.id]
       );
       if (!user) return res.status(404).json({ error: "User not found" });
       res.json(user);
@@ -1129,10 +1161,10 @@ async function startServer() {
 
   app.post("/api/admin/courses", requireAuth, requireRole("admin"), validateBody(courseCreateSchema), async (req, res) => {
     try {
-      const { name, description, instructor_id, credits, semester } = req.body;
+      const { code, name, instructor_id } = req.body;
       const course = await queryOne(
-        "INSERT INTO courses (name,description,instructor_id,credits,semester) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-        [name, description, instructor_id ?? null, credits ?? null, semester ?? null]
+        "INSERT INTO courses (code, name, instructor_id) VALUES ($1,$2,$3) RETURNING *",
+        [code, name, instructor_id]
       );
       res.status(201).json(course);
     } catch (e: any) { sendServerError(res, e); }
@@ -1197,30 +1229,51 @@ async function startServer() {
   });
 
   // ── AI ────────────────────────────────────────────────────────────────────
+  // Parse a model reply into a grading suggestion. Returns null when the reply
+  // is not usable; callers must surface that as an error, never invent a grade.
+  function parseGradingSuggestion(reply: string, maxPoints: number) {
+    try {
+      const json = JSON.parse(reply.match(/\{[\s\S]*\}/)?.[0] ?? reply);
+      const raw = Number(json.score ?? json.grade);
+      if (!Number.isFinite(raw)) return null;
+      const list = (v: unknown) => (Array.isArray(v) ? v.filter(x => typeof x === "string").slice(0, 10) : []);
+      return {
+        score:        Math.max(0, Math.min(Math.round(raw), maxPoints)),
+        feedback:     typeof json.feedback === "string" ? json.feedback.slice(0, 5000) : "",
+        strengths:    list(json.strengths),
+        improvements: list(json.improvements),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // Text-only suggestion; nothing is persisted.
   app.post("/api/ai/grade", requireAuth, requireRole("instructor","admin"), aiLimiter, async (req, res) => {
     try {
       const { submissionContent, rubric } = req.body;
-      const prompt = `You are a university grading assistant. Grade the following student submission based on the rubric provided.\n\nRubric:\n${rubric}\n\nSubmission:\n${submissionContent}\n\nProvide:\n1. A numerical grade (0-100)\n2. Detailed feedback\n3. Strengths\n4. Areas for improvement\n\nRespond in JSON format: {"grade": number, "feedback": string, "strengths": string[], "improvements": string[]}`;
+      const prompt = `You are a university grading assistant. Grade the following student submission based on the rubric provided.\n\nRubric:\n${rubric}\n\nSubmission:\n${submissionContent}\n\nRespond in JSON format only: {"score": number 0-100, "feedback": string, "strengths": string[], "improvements": string[]}`;
       const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024 });
-      let result;
-      try {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        result = JSON.parse(jsonMatch?.[0] ?? response);
-      } catch {
-        result = { grade: 75, feedback: response, strengths: [], improvements: [] };
-      }
+      const result = parseGradingSuggestion(response, 100);
+      if (!result) return res.status(502).json({ error: "The AI response could not be read. Please try again or grade manually." });
       res.json(result);
     } catch (e: any) { sendServerError(res, e); }
   });
 
+  // RAG-assisted suggestion from the submitted files. Saved as an AI draft on
+  // the submission (ai_score / ai_feedback); the final grade is only ever set
+  // by an instructor through POST /api/submissions/:id/grade.
   app.post("/api/ai/grade-pdf", requireAuth, requireRole("instructor","admin"), aiGradeLimiter, validateBody(gradePdfSchema), async (req, res) => {
     try {
       const { submission_id, rubric, module_id } = req.body;
       const sub = await queryOne(
-        "SELECT * FROM submissions WHERE id=$1",
+        `SELECT s.*, a.max_points
+         FROM submissions s JOIN assignments a ON a.id = s.assignment_id
+         WHERE s.id = $1`,
         [submission_id]
       );
       if (!sub) return res.status(404).json({ error: "Submission not found" });
+      const maxPoints = Number(sub.max_points) > 0 ? Number(sub.max_points) : 100;
 
       const files = await query(
         "SELECT * FROM submission_files WHERE submission_id=$1",
@@ -1231,7 +1284,7 @@ async function startServer() {
       for (const file of files) {
         const result = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
         if (result) {
-          const extracted = await extractTextFromBuffer(result.buffer, file.content_type ?? file.file_type, file.original_name);
+          const extracted = await extractTextFromBuffer(result.buffer, file.file_type, file.original_name);
           if (extracted) content += "\n" + extracted;
         }
       }
@@ -1242,37 +1295,21 @@ async function startServer() {
         if (chunks.length) context = "\n\nRelevant course material:\n" + chunks.join("\n---\n");
       }
 
-      const prompt = `You are a university grading assistant.${context}\n\nRubric:\n${rubric}\n\nStudent submission:\n${content.slice(0, 4000)}\n\nProvide JSON: {"grade": number, "feedback": string, "strengths": string[], "improvements": string[]}`;
+      const prompt = `You are a university grading assistant.${context}\n\nRubric:\n${rubric}\n\nStudent submission:\n${content.slice(0, 4000)}\n\nThe submission is scored out of ${maxPoints}. Respond with JSON only: {"score": integer 0-${maxPoints}, "feedback": string, "strengths": string[], "improvements": string[]}`;
       const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024 });
-      let result;
-      try {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        result = JSON.parse(jsonMatch?.[0] ?? response);
-      } catch {
-        result = { grade: 75, feedback: response, strengths: [], improvements: [] };
-      }
+      const result = parseGradingSuggestion(response, maxPoints);
+      if (!result) return res.status(502).json({ error: "The AI response could not be read. Please try again or grade manually." });
 
       await run(
-        "UPDATE submissions SET grade=$1,feedback=$2,graded_at=NOW() WHERE id=$3",
-        [result.grade, result.feedback, submission_id]
+        "UPDATE submissions SET ai_score=$1, ai_feedback=$2, updated_at=NOW() WHERE id=$3",
+        [result.score, JSON.stringify(result), submission_id]
       );
-
-      if (sub.student_id) {
-        await queryOne(
-          `INSERT INTO ai_feedback (submission_id, student_id, grade, feedback, strengths, improvements)
-           VALUES ($1,$2,$3,$4,$5,$6)
-           ON CONFLICT (submission_id) DO UPDATE
-             SET grade=EXCLUDED.grade, feedback=EXCLUDED.feedback,
-                 strengths=EXCLUDED.strengths, improvements=EXCLUDED.improvements,
-                 created_at=NOW()`,
-          [
-            submission_id, sub.student_id, result.grade, result.feedback,
-            JSON.stringify(result.strengths ?? []),
-            JSON.stringify(result.improvements ?? []),
-          ]
-        );
-        notify(pool, sub.student_id, "grade_posted", `Your submission has been graded: ${result.grade}`, { submission_id, grade: result.grade });
-      }
+      writeAudit({
+        action: "submission.ai_draft", resourceType: "submission", resourceId: String(submission_id),
+        actorUserId: (req as AuthenticatedRequest).auth.legacyUserId,
+        actorRole: (req as AuthenticatedRequest).auth.role,
+        metadata: { ai_score: result.score, max_points: maxPoints }, req,
+      });
 
       res.json(result);
     } catch (e: any) { sendServerError(res, e); }
@@ -1365,10 +1402,10 @@ async function startServer() {
   app.get("/api/admin/stats/snapshot", requireAuth, requireRole("admin"), async (_req, res) => {
     try {
       const row = await queryOne(
-        "SELECT * FROM admin_stats_snapshots ORDER BY created_at DESC LIMIT 1"
+        "SELECT * FROM admin_stats_snapshots ORDER BY snapshotted_at DESC LIMIT 1"
       );
       if (!row) return res.status(404).json({ error: "No snapshot available" });
-      const age = Date.now() - new Date(row.created_at).getTime();
+      const age = Date.now() - new Date(row.snapshotted_at).getTime();
       res.json({ ...row, stale: age > SNAPSHOT_STALE_MS });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1376,11 +1413,11 @@ async function startServer() {
   app.get("/api/instructor/courses/:id/analytics/snapshot", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), async (req, res) => {
     try {
       const row = await queryOne(
-        "SELECT * FROM course_analytics_snapshots WHERE course_id=$1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM course_analytics_snapshots WHERE course_id=$1 ORDER BY snapshotted_at DESC LIMIT 1",
         [req.params.id]
       );
       if (!row) return res.status(404).json({ error: "No snapshot available" });
-      const age = Date.now() - new Date(row.created_at).getTime();
+      const age = Date.now() - new Date(row.snapshotted_at).getTime();
       res.json({ ...row, stale: age > SNAPSHOT_STALE_MS });
     } catch (e: any) { sendServerError(res, e); }
   });
