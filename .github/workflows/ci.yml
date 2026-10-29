@@ -38,8 +38,15 @@ jobs:
       - name: Client env and provider-call guard
         run: npm run check:client-env
 
+      # Full compiler output is also emitted as one annotation: GitHub caps
+      # per-error annotations at 10 per step, which hides later errors.
       - name: Typecheck (server)
-        run: npm run typecheck
+        run: |
+          if ! npm run typecheck > tsc.log 2>&1; then
+            cat tsc.log
+            node -e 'const l=require("fs").readFileSync("tsc.log","utf8").split("\n").filter(x=>/error TS/.test(x));console.log(`::error title=tsc (${l.length} errors)::`+l.slice(0,80).join("%0A"))'
+            exit 1
+          fi
 
       - name: Build (client + server bundle)
         run: npm run build

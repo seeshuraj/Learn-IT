@@ -392,9 +392,9 @@ async function retrieveChunks(
 
 async function fetchWithTimeout(
   url: string,
-  opts: RequestInit,
+  opts: globalThis.RequestInit,
   timeoutMs = 25000
-): Promise<Response> {
+): Promise<globalThis.Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

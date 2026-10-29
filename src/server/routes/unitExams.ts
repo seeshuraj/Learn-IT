@@ -17,7 +17,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import { createRequire } from 'module';
 import path from 'path';
-import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   requireAuth,
   requireRole,
@@ -152,7 +152,8 @@ async function extractTopicsFromPaperText(
 
 export function createUnitExamsRouter(
   pool: pkg.Pool,
-  supabaseAdmin: ReturnType<typeof createClient>,
+  // Only Storage is used; typing just that keeps any client generics compatible.
+  supabaseAdmin: Pick<SupabaseClient, 'storage'>,
   nimChat: (msgs: any[], opts?: any) => Promise<string>
 ): Router {
   const router = Router();
@@ -208,7 +209,7 @@ export function createUnitExamsRouter(
 
   async function uploadPaperToStorage(buffer: Buffer, examId: number, mime: string, ext: string): Promise<string> {
     const objectPath = `exam-papers/${examId}/${Date.now()}${ext}`;
-    const { error } = await (supabaseAdmin.storage as any)
+    const { error } = await supabaseAdmin.storage
       .from(EXAM_PAPERS_BUCKET)
       .upload(objectPath, buffer, { contentType: mime, upsert: true });
     if (error) throw new Error(`Storage upload failed: ${error.message}`);
