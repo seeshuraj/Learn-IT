@@ -7,13 +7,15 @@
     "dev": "concurrently -k -n API,VITE -c cyan,magenta \"cross-env NODE_ENV=development tsx server.ts\" \"vite\"",
     "server": "cross-env NODE_ENV=development tsx server.ts",
     "client": "vite",
+    "prebuild": "node scripts/check-client-env.mjs",
     "build": "vite build && node build-server.mjs",
     "build:server": "node build-server.mjs",
     "preview": "vite preview",
     "start": "cross-env NODE_ENV=production node dist-server/server.js",
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
-    "typecheck": "tsc --noEmit -p tsconfig.server.json"
+    "typecheck": "tsc --noEmit -p tsconfig.server.json",
+    "check:client-env": "node scripts/check-client-env.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",

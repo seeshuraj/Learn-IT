@@ -93,3 +93,38 @@ export const gradePdfSchema = z.object({
   rubric:        z.string().max(10000).optional(),
   module_id:     positiveId.optional(),
 });
+
+// ── AI summaries ──────────────────────────────────────────────────────────
+// Strict and bounded: these payloads are interpolated into LLM prompts, so
+// unknown fields are rejected and every string and array has a hard cap.
+const shortText = z.string().trim().min(1).max(120);
+// Coerced: pg returns AVG/COUNT as strings, which the client passes through.
+const percent   = z.coerce.number().finite().min(0).max(100);
+const count     = z.coerce.number().int().min(0).max(10000);
+
+export const analyticsSummarySchema = z.object({
+  analytics: z.object({
+    studentName:    shortText,
+    overallAverage: percent,
+    submissionRate: percent,
+    courses: z.array(z.object({
+      name:        shortText,
+      average:     percent,
+      assignments: count,
+      late:        count,
+    }).strict()).max(50),
+  }).strict(),
+}).strict();
+
+export const classOverviewSummarySchema = z.object({
+  overview: z.object({
+    courseName:   z.string().trim().min(1).max(500),
+    classAverage: percent,
+    students: z.array(z.object({
+      name:    shortText,
+      average: percent,
+      missed:  count,
+      status:  z.string().trim().max(40),
+    }).strict()).max(500),
+  }).strict(),
+}).strict();
