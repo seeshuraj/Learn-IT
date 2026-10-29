@@ -22,8 +22,13 @@ export default defineConfig(({ mode }) => {
   // Vite inlines every VITE_* variable wherever code reads `import.meta.env`
   // as a whole object, so an allowlisted `define` alone is not enough: a stray
   // VITE_* secret in the environment would still ship. Fail the build instead.
+  // VITE_VERCEL_* are non-secret system variables (commit SHA, branch URL, …)
+  // that Vercel injects into every Vite build; they are not ours to remove.
   const forbidden = Object.keys(env).filter(
-    (key) => key.startsWith('VITE_') && !CLIENT_ENV_ALLOWLIST.includes(key),
+    (key) =>
+      key.startsWith('VITE_') &&
+      !key.startsWith('VITE_VERCEL_') &&
+      !CLIENT_ENV_ALLOWLIST.includes(key),
   );
   if (forbidden.length > 0) {
     throw new Error(
