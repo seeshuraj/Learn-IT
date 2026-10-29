@@ -16,6 +16,8 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import { createClient } from '@supabase/supabase-js';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
+import { sendServerError } from '../lib/httpErrors.js';
+import { log } from '../lib/log.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
@@ -50,7 +52,7 @@ export function createAuthRouter(pool: PgPool): Router {
       if (!user) return res.status(404).json({ error: 'User not found' });
       res.json(user);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -64,7 +66,7 @@ export function createAuthRouter(pool: PgPool): Router {
       );
       res.json({ forceChange: row?.force_password_change ?? false });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -93,8 +95,13 @@ export function createAuthRouter(pool: PgPool): Router {
         [user.id]
       );
 
-      const isDev = process.env.NODE_ENV !== 'production';
-      if (isDev) {
+      // Returning the token is only for local development, and only when
+      // explicitly enabled: a non-production NODE_ENV alone must never expose
+      // it, or any misconfigured deploy hands out account takeovers.
+      const returnTokenForLocalDev =
+        process.env.NODE_ENV !== 'production' &&
+        process.env.AUTH_DEV_RETURN_RESET_TOKEN === 'true';
+      if (returnTokenForLocalDev) {
         return res.json({
           message: 'Reset token issued (dev mode — token returned directly).',
           token: row.token,
@@ -102,10 +109,12 @@ export function createAuthRouter(pool: PgPool): Router {
         });
       }
 
-      console.log(`[auth] reset token for ${email}: ${row.token}`);
+      // TODO(email): deliver the reset link by email. Until an email provider
+      // is configured, production resets are issued but not delivered.
+      log.info('password reset token issued', { userId: user.id });
       res.json({ message: 'If that email exists, a reset link has been issued.' });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -135,7 +144,7 @@ export function createAuthRouter(pool: PgPool): Router {
         { password: newPassword }
       );
       if (authErr)
-        return res.status(500).json({ error: `Auth update failed: ${authErr.message}` });
+        return sendServerError(res, authErr);
 
       await pool.query(
         `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`,
@@ -150,7 +159,7 @@ export function createAuthRouter(pool: PgPool): Router {
 
       res.json({ success: true, message: 'Password updated successfully.' });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -175,7 +184,7 @@ export function createAuthRouter(pool: PgPool): Router {
         { password: newPassword }
       );
       if (authErr)
-        return res.status(500).json({ error: `Auth update failed: ${authErr.message}` });
+        return sendServerError(res, authErr);
 
       await pool.query(
         `UPDATE user_identity_map
@@ -186,7 +195,7 @@ export function createAuthRouter(pool: PgPool): Router {
 
       res.json({ success: true, message: 'Password changed successfully.' });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 

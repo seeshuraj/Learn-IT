@@ -18,6 +18,7 @@ import {
   requireAuth,
   AuthenticatedRequest,
 } from '../middleware/auth.js';
+import { sendServerError } from '../lib/httpErrors.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
@@ -54,7 +55,7 @@ export function createNotificationsRouter(pool: PgPool): Router {
 
       res.json(rows);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -69,7 +70,7 @@ export function createNotificationsRouter(pool: PgPool): Router {
       );
       res.json({ count: parseInt(row?.count) || 0 });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -94,7 +95,7 @@ export function createNotificationsRouter(pool: PgPool): Router {
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -112,7 +113,7 @@ export function createNotificationsRouter(pool: PgPool): Router {
 
       res.json({ success: true, marked: result.rowCount ?? 0 });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -126,7 +127,7 @@ export function createNotificationsRouter(pool: PgPool): Router {
       );
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 

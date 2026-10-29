@@ -56,6 +56,8 @@ import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
 import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { createGradingRouter } from "./src/server/routes/grading.js";
 import { notify } from "./src/server/lib/notify.js";
+import { sendServerError } from './src/server/lib/httpErrors.js';
+import { log, errorFields } from './src/server/lib/log.js';
 
 dotenv.config();
 validateEnv();
@@ -86,7 +88,7 @@ async function uploadToStorage(
     .upload(objectPath, buffer, { contentType: mimetype, upsert: true });
 
   if (error) {
-    console.error(`[Storage] upload FAILED (${bucket}/${objectPath})`, {
+    log.error("storage upload failed", { bucket, objectPath,
       message: error.message,
       name: (error as any).name ?? "StorageError",
       statusCode: (error as any).statusCode,
@@ -94,7 +96,7 @@ async function uploadToStorage(
     throw new Error(`Storage upload failed: ${error.message}`);
   }
 
-  console.log(`[Storage] uploaded → ${bucket}/${objectPath}`);
+  log.info("storage upload ok", { bucket, objectPath });
   return objectPath;
 }
 
@@ -108,7 +110,7 @@ async function getSignedUrl(
     .from(bucket)
     .createSignedUrl(objectPath, ttl);
   if (error) {
-    console.error(`[Storage] signed URL error (${bucket}/${objectPath}):`, error.message);
+    log.error("storage signed URL failed", { bucket, objectPath, ...errorFields(error) });
     return null;
   }
   return data.signedUrl;
@@ -121,7 +123,7 @@ async function downloadFromStorage(
   if (!objectPath) return null;
   const { data, error } = await supabaseAdmin.storage.from(bucket).download(objectPath);
   if (error || !data) {
-    console.error(`[Storage] download error (${bucket}/${objectPath}):`, error?.message);
+    log.error("storage download failed", { bucket, objectPath, ...errorFields(error) });
     return null;
   }
   const buf = Buffer.from(await data.arrayBuffer());
@@ -131,25 +133,17 @@ async function downloadFromStorage(
 async function deleteFromStorage(bucket: string, objectPath: string): Promise<void> {
   if (!objectPath) return;
   const { error } = await supabaseAdmin.storage.from(bucket).remove([objectPath]);
-  if (error) console.error(`[Storage] delete error (${bucket}/${objectPath}):`, error.message);
-  else console.log(`[Storage] deleted ${bucket}/${objectPath}`);
+  if (error) log.error("storage delete failed", { bucket, objectPath, ...errorFields(error) });
+  else log.info("storage delete ok", { bucket, objectPath });
 }
 
 async function checkStorageConnectivity(): Promise<void> {
-  const testKey = `_healthcheck/${Date.now()}.txt`;
-  try {
-    const { error: upErr } = await supabaseAdmin.storage
-      .from(NOTES_BUCKET)
-      .upload(testKey, Buffer.from("ping"), { contentType: "text/plain", upsert: true });
-    if (upErr) throw upErr;
-    await supabaseAdmin.storage.from(NOTES_BUCKET).remove([testKey]);
-    console.log("[Storage] connectivity OK — learnit-notes bucket reachable");
-  } catch (e: any) {
-    console.error("[Storage] CONNECTIVITY FAIL — check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY", {
-      message: e.message,
-      name: e.name,
-      statusCode: e.statusCode,
-    });
+  // Read-only probe: must not write objects on every boot.
+  const { error } = await supabaseAdmin.storage.getBucket(NOTES_BUCKET);
+  if (error) {
+    log.error("storage connectivity check failed; check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY", errorFields(error));
+  } else {
+    log.info("storage connectivity ok", { bucket: NOTES_BUCKET });
   }
 }
 
@@ -197,10 +191,10 @@ async function createAuthUserAndIdentityMapRow(
 
   if (authErr) {
     if (authErr.message.includes("already registered") || authErr.message.includes("already been registered")) {
-      console.warn(`[Auth] user already exists for ${email} — skipping Auth creation`);
+      log.warn("auth user already exists; skipping auth creation", { legacyUserId });
       return null;
     }
-    console.error(`[Auth] createUser FAILED for ${email}:`, authErr.message);
+    log.error("auth createUser failed", { legacyUserId, ...errorFields(authErr) });
     throw new Error(`Supabase Auth createUser failed: ${authErr.message}`);
   }
 
@@ -216,7 +210,7 @@ async function createAuthUserAndIdentityMapRow(
     [legacyUserId, authUserId, role]
   );
 
-  console.log(`[Auth] created Auth user ${authUserId} → legacy ${legacyUserId} (${email}) [force_password_change=true]`);
+  log.info("auth user created", { authUserId, legacyUserId });
   return { authUserId, tempPassword };
 }
 
@@ -326,7 +320,7 @@ async function extractTextFromBuffer(
     }
     return "";
   } catch (e) {
-    console.error("[extractTextFromBuffer] error:", e);
+    log.error("text extraction failed", errorFields(e));
     return "";
   }
 }
@@ -348,7 +342,7 @@ async function extractText(filePath: string, mimetype: string): Promise<string> 
     }
     return "";
   } catch (e) {
-    console.error("[extractText] error:", e);
+    log.error("text extraction failed", errorFields(e));
     return "";
   }
 }
@@ -398,9 +392,9 @@ async function retrieveChunks(
 
 async function fetchWithTimeout(
   url: string,
-  opts: RequestInit,
+  opts: globalThis.RequestInit,
   timeoutMs = 25000
-): Promise<Response> {
+): Promise<globalThis.Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -434,7 +428,7 @@ async function nimChat(
   );
   if (!res.ok) {
     const errBody = await res.text();
-    console.error(`[nimChat] ${res.status}:`, errBody);
+    log.error("nim chat request failed", { status: res.status });
     throw new Error(`NVIDIA NIM ${res.status}: ${errBody}`);
   }
   const data = await res.json() as any;
@@ -463,7 +457,7 @@ async function nimEmbed(
   );
   if (!res.ok) {
     const errBody = await res.text();
-    console.error(`[nimEmbed] ${res.status}:`, errBody);
+    log.error("nim embed request failed", { status: res.status });
     throw new Error(`NVIDIA Embed ${res.status}: ${errBody}`);
   }
   const data = await res.json() as any;
@@ -559,35 +553,23 @@ async function startServer() {
   });
 
   // ── Readiness probe ───────────────────────────────────────────────────────
+  // Readiness: cheap dependency checks with no side effects. Error details go
+  // to the log only; the response says which dependency failed, not why.
   app.get("/api/ready", async (_req, res) => {
-    const checks: Record<string, { ok: boolean; error?: string }> = {
-      db:      { ok: false },
-      storage: { ok: false },
-    };
-
+    const checks: Record<string, { ok: boolean }> = { db: { ok: false }, storage: { ok: false } };
     try {
       await pool.query("SELECT 1");
       checks.db.ok = true;
-    } catch (e: any) {
-      checks.db.error = e.message;
+    } catch (e) {
+      log.warn("readiness: db check failed", errorFields(e));
     }
-
-    if (SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
-      const testKey = `_healthcheck/ready-${Date.now()}.txt`;
-      try {
-        const { error: upErr } = await supabaseAdmin.storage
-          .from(NOTES_BUCKET)
-          .upload(testKey, Buffer.from("ready"), { contentType: "text/plain", upsert: true });
-        if (upErr) throw upErr;
-        await supabaseAdmin.storage.from(NOTES_BUCKET).remove([testKey]);
-        checks.storage.ok = true;
-      } catch (e: any) {
-        checks.storage.error = e.message;
-      }
-    } else {
-      checks.storage.error = "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured";
+    try {
+      const { error } = await supabaseAdmin.storage.getBucket(NOTES_BUCKET);
+      if (error) throw error;
+      checks.storage.ok = true;
+    } catch (e) {
+      log.warn("readiness: storage check failed", errorFields(e));
     }
-
     const allOk = Object.values(checks).every(c => c.ok);
     res.status(allOk ? 200 : 503).json({
       status: allOk ? "ready" : "unavailable",
@@ -619,7 +601,7 @@ async function startServer() {
         });
         res.status(403).json({ error: "Account inactive or not found" });
       }
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── File proxy ────────────────────────────────────────────────────────────
@@ -640,7 +622,7 @@ async function startServer() {
       res.setHeader("Content-Type", result.contentType);
       res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(note.original_name ?? "file")}"`);
       res.send(result.buffer);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Signed URL ────────────────────────────────────────────────────────────
@@ -658,7 +640,7 @@ async function startServer() {
       const url = await getSignedUrl(NOTES_BUCKET, note.storage_path);
       if (!url) return res.status(404).json({ error: "Could not generate signed URL" });
       res.json({ url });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Courses ───────────────────────────────────────────────────────────────
@@ -666,7 +648,7 @@ async function startServer() {
     try {
       const courses = await query("SELECT * FROM courses ORDER BY name");
       res.json(courses);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/courses/:id/modules", requireAuth, validateParams(routeParamId), async (req, res) => {
@@ -676,7 +658,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(modules);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/courses/:id/modules", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(moduleCreateSchema), async (req, res) => {
@@ -687,7 +669,7 @@ async function startServer() {
         [req.params.id, name, content]
       );
       res.status(201).json(mod);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Modules ───────────────────────────────────────────────────────────────
@@ -695,7 +677,7 @@ async function startServer() {
     try {
       const materials = await query("SELECT * FROM materials WHERE module_id=$1", [req.params.id]);
       res.json(materials);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/modules/:id/materials", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), async (req, res) => {
@@ -706,7 +688,7 @@ async function startServer() {
         [req.params.id, title, type, size]
       );
       res.status(201).json(mat);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Notes ─────────────────────────────────────────────────────────────────
@@ -731,7 +713,7 @@ async function startServer() {
         );
       }
       res.json(notes);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/modules/:id/notes", requireAuth, uploadLimiter, validateParams(routeParamId), uploadNote.single("file"), async (req, res) => {
@@ -768,13 +750,13 @@ async function startServer() {
               );
             }
           } catch (embErr) {
-            console.error("[Notes] embedding failed (non-fatal):", embErr);
+            log.error("note embedding failed (non-fatal)", { noteId: note.id, ...errorFields(embErr) });
           }
         }
       }
 
       res.status(201).json(note);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.delete("/api/notes/:id", requireAuth, validateParams(routeParamId), async (req, res) => {
@@ -792,7 +774,7 @@ async function startServer() {
       await run("DELETE FROM note_chunks WHERE note_id=$1", [note.id]);
       await run("DELETE FROM notes WHERE id=$1", [note.id]);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Assignments ───────────────────────────────────────────────────────────
@@ -803,7 +785,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(assignments);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/modules/:id/assignments", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(assignmentCreateSchema), async (req, res) => {
@@ -814,7 +796,7 @@ async function startServer() {
         [req.params.id, title, description, due_date, max_score]
       );
       res.status(201).json(assignment);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.put("/api/assignments/:id", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(assignmentUpdateSchema), async (req, res) => {
@@ -826,7 +808,7 @@ async function startServer() {
       );
       if (!assignment) return res.status(404).json({ error: "Assignment not found" });
       res.json(assignment);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.delete("/api/assignments/:id", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), async (req, res) => {
@@ -834,7 +816,7 @@ async function startServer() {
       const { changes } = await run("DELETE FROM assignments WHERE id=$1", [req.params.id]);
       if (!changes) return res.status(404).json({ error: "Assignment not found" });
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Submissions ───────────────────────────────────────────────────────────
@@ -848,7 +830,7 @@ async function startServer() {
       );
       notify(pool, authReq.auth.legacyUserId, "submission_received", "Your submission was received.");
       res.status(201).json(sub);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/submissions/upload", requireAuth, uploadLimiter, uploadSubmission.array("files", 5), async (req, res) => {
@@ -878,7 +860,7 @@ async function startServer() {
       }
 
       res.status(201).json({ ...sub, files: fileRecords });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/submissions/:id/files", requireAuth, validateParams(routeParamId), async (req, res) => {
@@ -894,7 +876,7 @@ async function startServer() {
         }))
       );
       res.json(withUrls);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/submissions/:id/grade", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(gradeSchema), async (req, res) => {
@@ -909,7 +891,7 @@ async function startServer() {
         notify(pool, sub.student_id, "grade_posted", `Your submission has been graded: ${grade}`, { submission_id: sub.id, grade });
       }
       res.json(sub);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Instructor ────────────────────────────────────────────────────────────
@@ -927,7 +909,7 @@ async function startServer() {
          ORDER BY s.submitted_at DESC`
       );
       res.json(subs);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/instructor/courses", requireAuth, requireRole("instructor","admin"), async (req, res) => {
@@ -938,7 +920,7 @@ async function startServer() {
         [authReq.auth.legacyUserId]
       );
       res.json(courses);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), async (req, res) => {
@@ -959,7 +941,7 @@ async function startServer() {
         enrollment_count: Number(enrollmentCount?.count ?? 0),
         avg_grade: avgGrade?.avg ? Number(avgGrade.avg).toFixed(1) : null,
       });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/instructor/assignments", requireAuth, requireRole("instructor","admin"), validateBody(instructorAssignmentCreateSchema), async (req, res) => {
@@ -970,7 +952,7 @@ async function startServer() {
         [module_id, title, description, due_date, max_score]
       );
       res.status(201).json(assignment);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Student ───────────────────────────────────────────────────────────────
@@ -983,7 +965,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(courses);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/student/:id/assignments", requireAuth, requireSelfOrAdmin(), async (req, res) => {
@@ -1000,7 +982,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(assignments);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/student/:id/stats", requireAuth, requireSelfOrAdmin(), async (req, res) => {
@@ -1016,7 +998,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(stats);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/students/:id/analytics", requireAuth, requireSelfOrAdmin(), async (req, res) => {
@@ -1033,7 +1015,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(submissions);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin(), async (req, res) => {
@@ -1048,7 +1030,7 @@ async function startServer() {
         [req.params.id]
       );
       res.json(notes);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── Admin ─────────────────────────────────────────────────────────────────
@@ -1056,7 +1038,7 @@ async function startServer() {
     try {
       const users = await query("SELECT id,name,email,role,active,year,major,gpa FROM users ORDER BY name");
       res.json(users);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/admin/users", requireAuth, requireRole("admin"), validateBody(adminUserCreateSchema), async (req, res) => {
@@ -1082,7 +1064,7 @@ async function startServer() {
       } finally {
         client.release();
       }
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.put("/api/admin/users/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), validateBody(adminUserUpdateSchema), async (req, res) => {
@@ -1094,7 +1076,7 @@ async function startServer() {
       );
       if (!user) return res.status(404).json({ error: "User not found" });
       res.json(user);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/admin/stats", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -1111,7 +1093,7 @@ async function startServer() {
         submissions: Number(submissions?.count ?? 0),
         enrollments: Number(enrollments?.count ?? 0),
       });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/admin/settings", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -1120,7 +1102,7 @@ async function startServer() {
       const obj: Record<string, string> = {};
       settings.forEach((s: any) => { obj[s.key] = s.value; });
       res.json(obj);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/admin/settings", requireAuth, requireRole("admin"), validateBody(settingsSchema), async (req, res) => {
@@ -1131,7 +1113,7 @@ async function startServer() {
         [key, value]
       );
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -1142,7 +1124,7 @@ async function startServer() {
          ORDER BY c.name`
       );
       res.json(courses);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/admin/courses", requireAuth, requireRole("admin"), validateBody(courseCreateSchema), async (req, res) => {
@@ -1153,7 +1135,7 @@ async function startServer() {
         [name, description, instructor_id ?? null, credits ?? null, semester ?? null]
       );
       res.status(201).json(course);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.delete("/api/admin/courses/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), async (req, res) => {
@@ -1161,7 +1143,7 @@ async function startServer() {
       const { changes } = await run("DELETE FROM courses WHERE id=$1", [req.params.id]);
       if (!changes) return res.status(404).json({ error: "Course not found" });
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/admin/enrollments/:courseId", requireAuth, requireRole("admin"), async (req, res) => {
@@ -1173,7 +1155,7 @@ async function startServer() {
         [req.params.courseId]
       );
       res.json(enrollments);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/admin/enrollments", requireAuth, requireRole("admin"), validateBody(enrollmentCreateSchema), async (req, res) => {
@@ -1185,7 +1167,7 @@ async function startServer() {
       );
       notify(pool, student_id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
       res.status(201).json(enrollment ?? { message: "Already enrolled" });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/admin/bulk-enroll", requireAuth, requireRole("admin"), validateBody(bulkEnrollSchema), async (req, res) => {
@@ -1203,7 +1185,7 @@ async function startServer() {
         results.push({ email, status: enrollment ? "enrolled" : "already_enrolled" });
       }
       res.json(results);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), async (req, res) => {
@@ -1211,7 +1193,7 @@ async function startServer() {
       const { changes } = await run("DELETE FROM enrollments WHERE id=$1", [req.params.id]);
       if (!changes) return res.status(404).json({ error: "Enrollment not found" });
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // ── AI ────────────────────────────────────────────────────────────────────
@@ -1228,7 +1210,7 @@ async function startServer() {
         result = { grade: 75, feedback: response, strengths: [], improvements: [] };
       }
       res.json(result);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/ai/grade-pdf", requireAuth, requireRole("instructor","admin"), aiGradeLimiter, validateBody(gradePdfSchema), async (req, res) => {
@@ -1293,7 +1275,7 @@ async function startServer() {
       }
 
       res.json(result);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/ai/chat", requireAuth, aiLimiter, async (req, res) => {
@@ -1318,7 +1300,7 @@ async function startServer() {
 
       const answer = await nimChat(messages, { temperature: 0.5, maxTokens: 512 });
       res.json({ answer });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // Prompts live server-side; the client sends only validated, bounded data.
@@ -1348,7 +1330,7 @@ async function startServer() {
         },
       ], { temperature: 0.4, maxTokens: 400 });
       res.json({ summary });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.post("/api/ai/class-overview-summary", requireAuth, requireRole("instructor","admin"), aiLimiter, validateBody(classOverviewSummarySchema), async (req, res) => {
@@ -1377,7 +1359,7 @@ async function startServer() {
         },
       ], { temperature: 0.4, maxTokens: 400 });
       res.json({ summary });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/admin/stats/snapshot", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -1388,7 +1370,7 @@ async function startServer() {
       if (!row) return res.status(404).json({ error: "No snapshot available" });
       const age = Date.now() - new Date(row.created_at).getTime();
       res.json({ ...row, stale: age > SNAPSHOT_STALE_MS });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   app.get("/api/instructor/courses/:id/analytics/snapshot", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), async (req, res) => {
@@ -1400,7 +1382,7 @@ async function startServer() {
       if (!row) return res.status(404).json({ error: "No snapshot available" });
       const age = Date.now() - new Date(row.created_at).getTime();
       res.json({ ...row, stale: age > SNAPSHOT_STALE_MS });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { sendServerError(res, e); }
   });
 
   // The frontend is served by Vercel; this service is API-only.
@@ -1409,14 +1391,14 @@ async function startServer() {
   });
 
   const PORT = Number(process.env.PORT ?? 10000);
-  app.listen(PORT, () => console.log(`[server] listening on port ${PORT}`));
+  app.listen(PORT, () => log.info("server listening", { port: PORT }));
 
   // Run startup tasks after the server is already listening
-  checkStorageConnectivity().catch(console.error);
-  startCronJobs(pool, nimChat).catch(console.error);
+  checkStorageConnectivity().catch(e => log.error("storage connectivity check crashed", errorFields(e)));
+  startCronJobs(pool, nimChat).catch(e => log.error("cron startup failed", errorFields(e)));
 }
 
 startServer().catch(e => {
-  console.error("[server] fatal startup error:", e);
+  log.error("fatal startup error", errorFields(e));
   process.exit(1);
 });

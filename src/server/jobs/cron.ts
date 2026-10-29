@@ -16,6 +16,7 @@ const require = createRequire(import.meta.url);
 const cron = require('node-cron');
 
 import { snapshotAdminStats, snapshotCourseAnalytics } from './analyticsSnapshot.js';
+import { log, errorFields } from '../lib/log.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
@@ -42,12 +43,12 @@ export async function startCronJobs(
   }
 
   // Fire immediately on startup (non-blocking — error is caught internally)
-  runAll().catch((e: Error) => console.error('[cron] startup run failed:', e.message));
+  runAll().catch((e: Error) => log.error('cron startup run failed', errorFields(e)));
 
   // Then every 30 minutes
   cron.schedule('0,30 * * * *', () => {
-    runAll().catch((e: Error) => console.error('[cron] scheduled run failed:', e.message));
+    runAll().catch((e: Error) => log.error('cron scheduled run failed', errorFields(e)));
   });
 
-  console.log('[cron] analytics snapshot job registered (every 30 min)');
+  log.info('cron registered', { job: 'analytics-snapshot', schedule: '0,30 * * * *' });
 }

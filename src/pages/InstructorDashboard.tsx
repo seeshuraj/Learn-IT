@@ -468,7 +468,6 @@ function ManageTab({ courses, user }: { courses: Course[]; user: User }) {
                         <p className="text-xs text-slate-400 mt-0.5">
                           {uploadedAt ? new Date(uploadedAt).toLocaleDateString() : ''}
                           {note.chunk_count ? ` · ${note.chunk_count} chunks` : ''}
-                          {note.cloudinary_url ? ' · ☁ Cloud' : ' · 💾 Local'}
                         </p>
                       </div>
                       <button onClick={() => handleDeleteNote(note.id, displayName)} disabled={deletingNoteId === note.id}

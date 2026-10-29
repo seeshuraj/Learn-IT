@@ -17,7 +17,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import { createRequire } from 'module';
 import path from 'path';
-import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   requireAuth,
   requireRole,
@@ -26,6 +26,8 @@ import {
 } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { uploadLimiter, aiGradeLimiter } from '../middleware/rateLimit.js';
+import { sendServerError } from '../lib/httpErrors.js';
+import { log, errorFields } from '../lib/log.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -150,7 +152,8 @@ async function extractTopicsFromPaperText(
 
 export function createUnitExamsRouter(
   pool: pkg.Pool,
-  supabaseAdmin: ReturnType<typeof createClient>,
+  // Only Storage is used; typing just that keeps any client generics compatible.
+  supabaseAdmin: Pick<SupabaseClient, 'storage'>,
   nimChat: (msgs: any[], opts?: any) => Promise<string>
 ): Router {
   const router = Router();
@@ -206,7 +209,7 @@ export function createUnitExamsRouter(
 
   async function uploadPaperToStorage(buffer: Buffer, examId: number, mime: string, ext: string): Promise<string> {
     const objectPath = `exam-papers/${examId}/${Date.now()}${ext}`;
-    const { error } = await (supabaseAdmin.storage as any)
+    const { error } = await supabaseAdmin.storage
       .from(EXAM_PAPERS_BUCKET)
       .upload(objectPath, buffer, { contentType: mime, upsert: true });
     if (error) throw new Error(`Storage upload failed: ${error.message}`);
@@ -243,7 +246,7 @@ export function createUnitExamsRouter(
           metadata: { course_id, title }, req,
         });
         res.status(201).json({ id: examId });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -270,7 +273,7 @@ export function createUnitExamsRouter(
           [req.params.courseId]
         );
         res.json(exams);
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -385,8 +388,8 @@ export function createUnitExamsRouter(
           preview:      inserted.slice(0, 10),
         });
       } catch (e: any) {
-        console.error('[unit-exams/upload-marks]', e.message);
-        res.status(500).json({ error: e.message });
+        log.error('unit exam marks upload failed', errorFields(e));
+        sendServerError(res, e);
       }
     }
   );
@@ -452,7 +455,7 @@ export function createUnitExamsRouter(
               [examId]
             );
           } catch (e: any) {
-            console.error('[unit-exams/upload-paper] async analysis error:', e.message);
+            log.error('unit exam paper analysis failed', errorFields(e));
             await pool.query(
               `UPDATE unit_exams SET analysis_status='failed', updated_at=NOW() WHERE id=$1`,
               [examId]
@@ -468,8 +471,8 @@ export function createUnitExamsRouter(
 
         res.json({ success: true, text_length: paperText.length, analysis_status: 'processing' });
       } catch (e: any) {
-        console.error('[unit-exams/upload-paper]', e.message);
-        res.status(500).json({ error: e.message });
+        log.error('unit exam paper upload failed', errorFields(e));
+        sendServerError(res, e);
       }
     }
   );
@@ -553,7 +556,7 @@ export function createUnitExamsRouter(
             strongest_topics: topicAverages.slice(-3).reverse().map(t => t.topic),
           },
         });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -600,7 +603,7 @@ export function createUnitExamsRouter(
           : null;
 
         res.json({ results, latest, overall_avg, weak_topics: topWeakTopics });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -621,7 +624,7 @@ export function createUnitExamsRouter(
         }
 
         res.json(exam);
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 

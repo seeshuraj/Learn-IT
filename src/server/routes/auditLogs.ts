@@ -17,6 +17,8 @@ import { Router, Request, Response } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { sendServerError } from '../lib/httpErrors.js';
+import { log, errorFields } from '../lib/log.js';
 
 export function createAuditLogsRouter(pool: InstanceType<typeof Pool>): Router {
   const router = Router();
@@ -88,8 +90,8 @@ export function createAuditLogsRouter(pool: InstanceType<typeof Pool>): Router {
         rows:   rows.rows,
       });
     } catch (e: any) {
-      console.error('[GET /api/admin/audit-logs] error:', e.message);
-      res.status(500).json({ error: e.message });
+      log.error('audit log query failed', errorFields(e));
+      sendServerError(res, e);
     }
   });
 

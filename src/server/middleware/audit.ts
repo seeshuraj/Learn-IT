@@ -21,6 +21,7 @@
 
 import { Request } from 'express';
 import pkg from 'pg';
+import { log, errorFields } from '../lib/log.js';
 const { Pool } = pkg;
 
 export interface AuditEntry {
@@ -42,7 +43,7 @@ export function setAuditPool(pool: InstanceType<typeof Pool>): void {
 
 export function writeAudit(entry: AuditEntry): void {
   if (!_pool) {
-    console.warn('[audit] pool not initialised — call setAuditPool() at startup');
+    log.warn('audit pool not initialised; call setAuditPool() at startup');
     return;
   }
 
@@ -76,6 +77,6 @@ export function writeAudit(entry: AuditEntry): void {
       ]
     )
     .catch((err: Error) => {
-      console.error('[audit] write failed (non-fatal):', err.message);
+      log.error('audit write failed (non-fatal)', { action: entry.action, ...errorFields(err) });
     });
 }
