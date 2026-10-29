@@ -1,0 +1,2 @@
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS storage_path TEXT;
+ALTER TABLE submission_files ADD COLUMN IF NOT EXISTS storage_path TEXT;
