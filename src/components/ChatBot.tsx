@@ -55,9 +55,12 @@ export const ChatBot: React.FC<Props> = ({
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
     try {
+      // The API accepts at most 20 prior turns of up to 4000 chars each;
+      // recent context is what matters and it bounds token cost.
       const history: ConversationTurn[] = messages
         .filter((m) => m.content !== WELCOME)
-        .map((m) => ({ role: m.role, content: m.content }));
+        .slice(-20)
+        .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
       const reply = await askModuleChatbot(q, moduleTitle, moduleId, notesContext, history);
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (e: any) {

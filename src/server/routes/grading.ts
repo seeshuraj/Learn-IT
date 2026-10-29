@@ -20,6 +20,7 @@ import {
 } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { aiGradeLimiter } from '../middleware/rateLimit.js';
+import { loadSubmissionForCaller } from '../lib/access.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
 
@@ -91,15 +92,13 @@ export function createGradingRouter(pool: pkg.Pool): Router {
         if (!rubric) return res.status(400).json({ error: 'rubric is required' });
 
         // Fetch the submission
-        const { rows } = await pool.query(
-          `SELECT s.*, a.max_points
-           FROM submissions s
-           JOIN assignments a ON a.id = s.assignment_id
-           WHERE s.id = $1`,
-          [submissionId]
+        // Only staff of the submission's course may run AI grading on it.
+        const submission = await loadSubmissionForCaller(
+          pool,
+          { legacyUserId: auth.legacyUserId, role: auth.role },
+          Number(submissionId),
+          'grade',
         );
-        const submission = rows[0];
-        if (!submission) return res.status(404).json({ error: 'Submission not found' });
 
         const maxPoints = parseInt(submission.max_points ?? '100', 10);
         const content   = submission.content ?? '';
