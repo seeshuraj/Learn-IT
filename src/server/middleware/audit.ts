@@ -62,7 +62,7 @@ export function writeAudit(entry: AuditEntry): void {
       `INSERT INTO audit_logs
          (action, resource_type, resource_id,
           actor_user_id, actor_email, actor_role,
-          metadata, ip_address, request_id)
+          metadata, ip, request_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [
         entry.action,

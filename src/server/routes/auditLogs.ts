@@ -70,7 +70,7 @@ export function createAuditLogsRouter(pool: InstanceType<typeof Pool>): Router {
       const [rows, countRow] = await Promise.all([
         pool.query(
           `SELECT id, created_at, actor_user_id, actor_email, actor_role,
-                  action, resource_type, resource_id, metadata, ip_address, request_id
+                  action, resource_type, resource_id, metadata, ip AS ip_address, request_id
            FROM audit_logs
            ${where}
            ORDER BY created_at DESC

@@ -107,7 +107,10 @@ export function createGradingRouter(pool: pkg.Pool): Router {
         let result;
 
         if (!getApiKey()) {
-          // No key — return mock for local dev
+          // Never present invented grades as AI output outside local development.
+          if (process.env.NODE_ENV === 'production') {
+            return res.status(503).json({ error: 'AI grading is not configured.' });
+          }
           result = mockGrade(maxPoints);
         } else {
           const messages: ChatMessage[] = [
@@ -139,9 +142,9 @@ export function createGradingRouter(pool: pkg.Pool): Router {
         // Persist ai_feedback immediately
         await pool.query(
           `UPDATE submissions
-           SET ai_feedback = $1, updated_at = NOW()
-           WHERE id = $2`,
-          [JSON.stringify(result), submissionId]
+           SET ai_score = $1, ai_feedback = $2, updated_at = NOW()
+           WHERE id = $3`,
+          [result.score, JSON.stringify(result), submissionId]
         );
 
         writeAudit({
