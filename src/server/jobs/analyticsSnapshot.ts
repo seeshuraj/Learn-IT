@@ -2,7 +2,7 @@
  * analyticsSnapshot.ts — P3-2
  *
  * Two exported functions:
- *   snapshotAdminStats(pool)     — writes one row to admin_stats_snapshots
+ *   snapshotAdminStats(pool)     — writes one row per institution to admin_stats_snapshots
  *   snapshotCourseAnalytics(pool) — writes one row per active course to
  *                                    course_analytics_snapshots
  *
@@ -16,47 +16,39 @@ const { Pool } = pkg;
 
 type PgPool = InstanceType<typeof Pool>;
 
-// ── Admin global stats ────────────────────────────────────────────────────────
+// ── Admin stats, one row per active institution ──────────────────────────────
 
 export async function snapshotAdminStats(pool: PgPool): Promise<void> {
   try {
-    const { rows } = await pool.query(`
+    // One set-based statement per run: compute every institution's counts and
+    // insert them together, so institutions never see a partial cycle.
+    const { rowCount } = await pool.query(`
+      INSERT INTO admin_stats_snapshots
+        (institution_id, active_users, total_courses, average_grade, total_notes, total_submissions)
       SELECT
-        (SELECT COUNT(*) FROM users      WHERE active = 1)              AS active_users,
-        (SELECT COUNT(*) FROM courses    WHERE archived = 0)            AS total_courses,
-        COALESCE(
-          (SELECT AVG(grade) FROM submissions WHERE grade IS NOT NULL),
-          0
-        )                                                               AS average_grade,
-        (SELECT COUNT(*) FROM notes)                                    AS total_notes,
-        (SELECT COUNT(*) FROM submissions)                              AS total_submissions
+        i.id,
+        (SELECT COUNT(*) FROM institution_members im JOIN users u ON u.id = im.user_id
+          WHERE im.institution_id = i.id AND im.status = 'active' AND u.active = 1),
+        (SELECT COUNT(*) FROM courses c WHERE c.institution_id = i.id AND c.archived = 0),
+        ROUND(COALESCE((SELECT AVG(s.grade) FROM submissions s
+                         WHERE s.institution_id = i.id AND s.grade IS NOT NULL), 0)),
+        (SELECT COUNT(*) FROM notes n       WHERE n.institution_id = i.id),
+        (SELECT COUNT(*) FROM submissions s WHERE s.institution_id = i.id)
+      FROM institutions i
+      WHERE i.status = 'active'
     `);
 
-    const r = rows[0];
-    await pool.query(
-      `INSERT INTO admin_stats_snapshots
-         (active_users, total_courses, average_grade, total_notes, total_submissions)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [
-        parseInt(r.active_users)      || 0,
-        parseInt(r.total_courses)     || 0,
-        Math.round(parseFloat(r.average_grade) || 0),
-        parseInt(r.total_notes)       || 0,
-        parseInt(r.total_submissions) || 0,
-      ]
-    );
-
-    // Prune: keep only the last 48 rows (24 h at 30-min cadence)
+    // Prune: keep the last 48 rows per institution (24 h at 30-min cadence)
     await pool.query(`
-      DELETE FROM admin_stats_snapshots
-      WHERE id NOT IN (
-        SELECT id FROM admin_stats_snapshots
-        ORDER BY snapshotted_at DESC
-        LIMIT 48
-      )
+      DELETE FROM admin_stats_snapshots a
+      USING (
+        SELECT id, row_number() OVER (PARTITION BY institution_id ORDER BY snapshotted_at DESC) AS rn
+        FROM admin_stats_snapshots
+      ) ranked
+      WHERE a.id = ranked.id AND ranked.rn > 48
     `);
 
-    log.info('snapshot written', { table: 'admin_stats_snapshots' });
+    log.info('snapshot written', { table: 'admin_stats_snapshots', institutions: rowCount ?? 0 });
   } catch (err: any) {
     log.error('snapshotAdminStats failed (non-fatal)', errorFields(err));
   }

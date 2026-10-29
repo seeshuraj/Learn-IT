@@ -76,18 +76,25 @@ function parseSheet(buffer: Buffer, _mimetype: string, _originalname: string): R
 }
 
 // ── Resolve student_id from email or id column ───────────────────────────────────
+// Only active students of the exam's institution can be matched.
+const STUDENT_IN_INSTITUTION = `
+  SELECT u.id FROM users u
+  JOIN institution_members im ON im.user_id = u.id
+  WHERE im.institution_id = $2 AND im.role = 'student' AND im.status = 'active'`;
+
 async function resolveStudent(
   pool: pkg.Pool,
-  row: Record<string, any>
+  row: Record<string, any>,
+  institutionId: string
 ): Promise<number | null> {
   const email = row['student_email'] || row['email'] || '';
   if (email) {
-    const r = await pool.query('SELECT id FROM users WHERE email=$1 AND role=$2', [email.trim(), 'student']);
+    const r = await pool.query(`${STUDENT_IN_INSTITUTION} AND u.email = $1`, [String(email).trim(), institutionId]);
     if (r.rows[0]) return r.rows[0].id;
   }
-  const sid = row['student_id'] || row['id'] || '';
-  if (sid) {
-    const r = await pool.query('SELECT id FROM users WHERE id=$1 AND role=$2', [sid, 'student']);
+  const sid = Number(row['student_id'] || row['id'] || '');
+  if (Number.isInteger(sid) && sid > 0) {
+    const r = await pool.query(`${STUDENT_IN_INSTITUTION} AND u.id = $1`, [sid, institutionId]);
     if (r.rows[0]) return r.rows[0].id;
   }
   return null;
@@ -175,34 +182,35 @@ export function createUnitExamsRouter(
 
   /**
    * ownsExamCourse — returns true if the instructor (or admin) has access to
-   * the course that a given unit_exam belongs to. Admins always pass.
+   * the course that a given unit_exam belongs to. Admins pass for any exam
+   * in their own institution.
    */
   async function ownsExamCourse(
     auth: AuthenticatedRequest['auth'],
     examId: string | number
   ): Promise<boolean> {
-    if (auth.role === 'admin') return true;
     const row = await qOne(
       `SELECT ue.id FROM unit_exams ue
        JOIN courses c ON c.id = ue.course_id
-       WHERE ue.id = $1 AND c.instructor_id = $2`,
-      [examId, auth.legacyUserId]
+       WHERE ue.id = $1 AND ue.institution_id = $2
+         AND ($3::text = 'admin' OR c.instructor_id = $4)`,
+      [examId, auth.institutionId, auth.role, auth.legacyUserId]
     );
     return !!row;
   }
 
   /**
    * ownsCourse — returns true if the instructor owns the given course_id.
-   * Admins always pass.
+   * Admins pass for any course in their own institution.
    */
   async function ownsCourse(
     auth: AuthenticatedRequest['auth'],
     courseId: string | number
   ): Promise<boolean> {
-    if (auth.role === 'admin') return true;
     const row = await qOne(
-      'SELECT id FROM courses WHERE id=$1 AND instructor_id=$2',
-      [courseId, auth.legacyUserId]
+      `SELECT id FROM courses
+       WHERE id = $1 AND institution_id = $2 AND ($3::text = 'admin' OR instructor_id = $4)`,
+      [courseId, auth.institutionId, auth.role, auth.legacyUserId]
     );
     return !!row;
   }
@@ -297,7 +305,7 @@ export function createUnitExamsRouter(
           return res.status(400).json({ error: 'Only .csv, .xlsx, .xls files are accepted' });
         }
 
-        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
+        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1 AND institution_id=$2', [examId, auth.institutionId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
 
         // Ownership check
@@ -323,7 +331,7 @@ export function createUnitExamsRouter(
 
         for (let i = 0; i < rows.length; i++) {
           const row       = rows[i];
-          const studentId = await resolveStudent(pool, row);
+          const studentId = await resolveStudent(pool, row, exam.institution_id);
           const marks     = extractMarks(row);
           const topics    = extractTopicBreakdown(row);
 
@@ -414,7 +422,7 @@ export function createUnitExamsRouter(
           return res.status(400).json({ error: 'Only PDF files accepted for exam paper' });
         }
 
-        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
+        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1 AND institution_id=$2', [examId, auth.institutionId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
 
         // Ownership check
@@ -486,7 +494,7 @@ export function createUnitExamsRouter(
       try {
         const examId  = req.params.id;
         const auth    = (req as AuthenticatedRequest).auth;
-        const exam    = await qOne('SELECT * FROM unit_exams WHERE id=$1', [examId]);
+        const exam    = await qOne('SELECT * FROM unit_exams WHERE id=$1 AND institution_id=$2', [examId, auth.institutionId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
 
         // Ownership check
@@ -615,7 +623,7 @@ export function createUnitExamsRouter(
     async (req: Request, res: Response) => {
       try {
         const auth = (req as AuthenticatedRequest).auth;
-        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1', [req.params.id]);
+        const exam = await qOne('SELECT * FROM unit_exams WHERE id=$1 AND institution_id=$2', [req.params.id, auth.institutionId]);
         if (!exam) return res.status(404).json({ error: 'Exam not found' });
 
         // Ownership check

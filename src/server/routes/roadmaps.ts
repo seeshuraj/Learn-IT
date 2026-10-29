@@ -53,8 +53,8 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
 
       const roadmap = await q1(
         `SELECT * FROM student_roadmaps
-         WHERE student_id = $1 AND course_id = $2`,
-        [studentId, courseId]
+         WHERE student_id = $1 AND course_id = $2 AND institution_id = $3`,
+        [studentId, courseId, (req as AuthenticatedRequest).auth.institutionId]
       );
 
       if (!roadmap) {
@@ -85,8 +85,8 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
       const enrollment = await q1(
         `SELECT e.id FROM enrollments e
          JOIN courses c ON e.course_id = c.id
-         WHERE e.student_id = $1 AND e.course_id = $2 AND c.archived = 0`,
-        [studentId, courseId]
+         WHERE e.student_id = $1 AND e.course_id = $2 AND e.institution_id = $3 AND c.archived = 0`,
+        [studentId, courseId, (req as AuthenticatedRequest).auth.institutionId]
       );
       if (!enrollment) {
         return res.status(403).json({ error: 'Not enrolled in this course.' });
@@ -427,8 +427,8 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
       const studentId = (req as AuthenticatedRequest).auth.legacyUserId;
       const courseId  = req.params.courseId;
       await pool.query(
-        `DELETE FROM student_roadmaps WHERE student_id = $1 AND course_id = $2`,
-        [studentId, courseId]
+        `DELETE FROM student_roadmaps WHERE student_id = $1 AND course_id = $2 AND institution_id = $3`,
+        [studentId, courseId, (req as AuthenticatedRequest).auth.institutionId]
       );
       res.json({ success: true });
     } catch (e: any) {

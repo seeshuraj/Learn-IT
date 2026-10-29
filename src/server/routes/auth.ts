@@ -43,11 +43,15 @@ export function createAuthRouter(pool: PgPool): Router {
   // Returns the authenticated user's profile row from the users table.
   router.get('/me', requireAuth, async (req, res) => {
     try {
-      const userId = (req as AuthenticatedRequest).auth.legacyUserId;
+      // Role and institution come from the resolved membership, not users.role.
+      const { legacyUserId, role, institutionId } = (req as AuthenticatedRequest).auth;
       const user = await q1(
-        `SELECT id, name, email, role, active, year, major, gpa
-         FROM users WHERE id = $1`,
-        [userId]
+        `SELECT u.id, u.name, u.email, $2::text AS role, u.active, u.year, u.major, u.gpa,
+                i.id AS institution_id, i.name AS institution_name
+         FROM users u
+         JOIN institutions i ON i.id = $3
+         WHERE u.id = $1`,
+        [legacyUserId, role, institutionId]
       );
       if (!user) return res.status(404).json({ error: 'User not found' });
       res.json(user);

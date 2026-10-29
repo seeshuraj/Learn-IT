@@ -2,7 +2,8 @@
  * auth.ts — server-side Supabase Auth middleware (P1-4)
  *
  * Every protected route passes through one of these middleware functions.
- * Role and userId are ALWAYS resolved from the database via user_identity_map —
+ * userId, institution and role are ALWAYS resolved from the database
+ * (user_identity_map → the user's single active institution_members row) —
  * never trusted from the client request body, query string, or JWT metadata.
  *
  * Usage:
@@ -33,12 +34,21 @@ async function dbQuery(sql: string, params: unknown[] = []) {
   return rows;
 }
 
+export type MemberRole = 'student' | 'instructor' | 'institution_admin' | 'institution_owner';
+
+/** Institution roles collapse onto the three API roles used by requireRole. */
+export function apiRoleOf(memberRole: MemberRole): 'student' | 'instructor' | 'admin' {
+  return memberRole === 'institution_admin' || memberRole === 'institution_owner' ? 'admin' : memberRole;
+}
+
 // ── Extended request type ────────────────────────────────────────────────────
 export interface AuthenticatedRequest extends Request {
   auth: {
     authUserId: string;       // Supabase Auth UUID (from getUser())
     legacyUserId: number;     // public.users integer PK
     role: 'student' | 'instructor' | 'admin';
+    memberRole: MemberRole;   // institution_members.role (admin vs owner kept distinct)
+    institutionId: string;    // the caller's active institution
     email: string;
   };
 }
@@ -52,7 +62,8 @@ export interface AuthenticatedRequest extends Request {
  *    Supabase Auth to verify the token and check session validity.
  *    This is the ONLY safe way to verify a user server-side.
  *    getClaims() / JWT decode is NOT used here — it does not detect revoked sessions.
- * 3. Resolves legacyUserId and role from public.user_identity_map.
+ * 3. Resolves legacyUserId from public.user_identity_map, then the caller's
+ *    single active membership in an active institution. No membership → 403.
  * 4. Attaches result to req.auth.
  */
 export async function requireAuth(
@@ -75,24 +86,37 @@ export async function requireAuth(
     return;
   }
 
-  // Resolve identity from our bridge table — never trust JWT app_metadata.role
-  const rows = await dbQuery(
-    `SELECT uim.legacy_user_id, uim.role
-     FROM public.user_identity_map uim
-     WHERE uim.auth_user_id = $1 AND uim.is_active = true`,
-    [user.id]
-  );
+  // Resolve identity and tenant from the DB — never trust JWT app_metadata.
+  // The partial unique index on institution_members guarantees ≤ 1 active row.
+  let rows: any[];
+  try {
+    rows = await dbQuery(
+      `SELECT uim.legacy_user_id, im.role, im.institution_id
+       FROM public.user_identity_map uim
+       JOIN public.institution_members im
+         ON im.user_id = uim.legacy_user_id AND im.status = 'active'
+       JOIN public.institutions i
+         ON i.id = im.institution_id AND i.status = 'active'
+       WHERE uim.auth_user_id = $1 AND uim.is_active = true`,
+      [user.id]
+    );
+  } catch (err) {
+    next(err);
+    return;
+  }
 
   if (!rows.length) {
-    res.status(403).json({ error: 'User not provisioned in this application' });
+    res.status(403).json({ error: 'No active institution membership for this account' });
     return;
   }
 
   (req as AuthenticatedRequest).auth = {
-    authUserId:   user.id,
-    legacyUserId: rows[0].legacy_user_id,
-    role:         rows[0].role,
-    email:        user.email ?? '',
+    authUserId:    user.id,
+    legacyUserId:  rows[0].legacy_user_id,
+    role:          apiRoleOf(rows[0].role),
+    memberRole:    rows[0].role,
+    institutionId: rows[0].institution_id,
+    email:         user.email ?? '',
   };
 
   next();
@@ -127,26 +151,46 @@ export function requireRole(
  * requireSelfOrAdmin(paramName)
  *
  * Ensures the route param (default 'id') matches the caller's legacyUserId,
- * OR the caller is an admin. Prevents student A reading student B's data
- * even if both are authenticated.
+ * OR the caller is an admin of the institution the target user belongs to.
+ * Prevents student A reading student B's data, and an admin of college A
+ * reading a student of college B (reported as 404).
  *
  * Example: GET /api/student/:id/stats
  *   → only the student themselves OR an admin can call this.
  */
 export function requireSelfOrAdmin(paramName = 'id') {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const auth = (req as AuthenticatedRequest).auth;
     if (!auth) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
-    if (
-      auth.role === 'admin' ||
-      String(auth.legacyUserId) === req.params[paramName]
-    ) {
+    const target = req.params[paramName];
+    if (String(auth.legacyUserId) === target) {
       next();
       return;
     }
-    res.status(403).json({ error: 'Access denied: not your resource' });
+    if (auth.role !== 'admin') {
+      res.status(403).json({ error: 'Access denied: not your resource' });
+      return;
+    }
+    if (!/^\d+$/.test(target ?? '')) {
+      res.status(400).json({ error: 'Invalid user id' });
+      return;
+    }
+    try {
+      const rows = await dbQuery(
+        `SELECT 1 FROM public.institution_members
+         WHERE user_id = $1 AND institution_id = $2 AND status <> 'removed'`,
+        [Number(target), auth.institutionId]
+      );
+      if (!rows.length) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      next();
+    } catch (err) {
+      next(err);
+    }
   };
 }

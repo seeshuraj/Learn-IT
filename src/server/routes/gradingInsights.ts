@@ -38,9 +38,10 @@ export function createGradingInsightsRouter(pool: PgPool): Router {
          JOIN modules m     ON a.module_id = m.id
          JOIN courses c     ON m.course_id = c.id
          WHERE s.student_id = $1
+           AND s.institution_id = $2
            AND s.ai_feedback IS NOT NULL
            AND s.ai_feedback != 'null'`,
-        [studentId]
+        [studentId, (req as AuthenticatedRequest).auth.institutionId]
       );
 
       // Tally frequency of each strength and improvement string
