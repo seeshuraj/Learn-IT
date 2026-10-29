@@ -6,9 +6,12 @@
  * submission. Every route that takes a resource id must call one of them
  * before reading or writing that resource.
  *
- * Rules (single institution until the tenancy migration lands):
- *   admin       — everything
- *   instructor  — courses where courses.instructor_id = them
+ * Every rule is confined to the caller's institution (req.auth.institutionId,
+ * resolved from their active institution_members row). A row in another
+ * institution is reported as 404, never 403, so ids cannot be probed.
+ *
+ *   admin       — everything in their institution
+ *   instructor  — courses in their institution where courses.instructor_id = them
  *   student     — courses they are enrolled in; their own submissions;
  *                 course material (notes uploaded by staff) plus their own notes
  */
@@ -17,7 +20,7 @@ import type pkg from 'pg';
 
 type Pool = InstanceType<typeof pkg.Pool>;
 export type Role = 'student' | 'instructor' | 'admin';
-export interface Caller { legacyUserId: number; role: Role }
+export interface Caller { legacyUserId: number; role: Role; institutionId: string }
 
 export class AccessDenied extends Error {
   constructor(public status: 403 | 404 = 403, message = 'Access denied') {
@@ -43,30 +46,49 @@ export const courseOfAssignment = async (pool: Pool, assignmentId: number) =>
 // ── predicates ────────────────────────────────────────────────────────────────
 export async function managesCourse(pool: Pool, caller: Caller, courseId: number | null): Promise<boolean> {
   if (courseId == null) return false;
-  if (caller.role === 'admin') return true;
-  if (caller.role !== 'instructor') return false;
-  return !!(await one(pool, 'SELECT 1 FROM courses WHERE id = $1 AND instructor_id = $2', [courseId, caller.legacyUserId]));
+  if (caller.role !== 'admin' && caller.role !== 'instructor') return false;
+  return !!(await one(pool,
+    `SELECT 1 FROM courses
+     WHERE id = $1 AND institution_id = $2 AND ($3::text = 'admin' OR instructor_id = $4)`,
+    [courseId, caller.institutionId, caller.role, caller.legacyUserId]));
 }
 
-export async function isEnrolled(pool: Pool, studentId: number, courseId: number | null): Promise<boolean> {
+export async function isEnrolled(pool: Pool, caller: Caller, courseId: number | null): Promise<boolean> {
   if (courseId == null) return false;
-  return !!(await one(pool, 'SELECT 1 FROM enrollments WHERE course_id = $1 AND student_id = $2', [courseId, studentId]));
+  return !!(await one(pool,
+    'SELECT 1 FROM enrollments WHERE course_id = $1 AND student_id = $2 AND institution_id = $3',
+    [courseId, caller.legacyUserId, caller.institutionId]));
+}
+
+/** True when the course exists in the caller's institution. */
+export async function courseInInstitution(pool: Pool, caller: Caller, courseId: number | null): Promise<boolean> {
+  if (courseId == null) return false;
+  return !!(await one(pool, 'SELECT 1 FROM courses WHERE id = $1 AND institution_id = $2', [courseId, caller.institutionId]));
+}
+
+/** True when userId has a non-removed membership in the caller's institution (optionally with a role). */
+export async function isMemberOfInstitution(pool: Pool, caller: Caller, userId: number, role?: string): Promise<boolean> {
+  return !!(await one(pool,
+    `SELECT 1 FROM institution_members
+     WHERE user_id = $1 AND institution_id = $2 AND status <> 'removed'
+       AND ($3::text IS NULL OR role = $3)`,
+    [userId, caller.institutionId, role ?? null]));
 }
 
 export async function canAccessCourse(pool: Pool, caller: Caller, courseId: number | null): Promise<boolean> {
   if (courseId == null) return false;
   if (await managesCourse(pool, caller, courseId)) return true;
-  return caller.role === 'student' && isEnrolled(pool, caller.legacyUserId, courseId);
+  return caller.role === 'student' && isEnrolled(pool, caller, courseId);
 }
 
 // ── assertions (throw AccessDenied; 404 when the resource does not exist) ────
 export async function assertManagesCourse(pool: Pool, caller: Caller, courseId: number | null) {
-  if (courseId == null) throw new AccessDenied(404, 'Not found');
+  if (!(await courseInInstitution(pool, caller, courseId))) throw new AccessDenied(404, 'Not found');
   if (!(await managesCourse(pool, caller, courseId))) throw new AccessDenied();
 }
 
 export async function assertCanAccessCourse(pool: Pool, caller: Caller, courseId: number | null) {
-  if (courseId == null) throw new AccessDenied(404, 'Not found');
+  if (!(await courseInInstitution(pool, caller, courseId))) throw new AccessDenied(404, 'Not found');
   if (!(await canAccessCourse(pool, caller, courseId))) throw new AccessDenied();
 }
 
@@ -81,9 +103,9 @@ export async function loadNoteForCaller(pool: Pool, caller: Caller, noteId: numb
      JOIN modules m ON m.id = n.module_id
      LEFT JOIN users u ON u.id = n.uploaded_by
      WHERE n.id = $1`, [noteId]);
-  if (!note) throw new AccessDenied(404, 'Note not found');
+  if (!note || note.institution_id !== caller.institutionId) throw new AccessDenied(404, 'Note not found');
   if (await managesCourse(pool, caller, note.course_id)) return note;
-  if (caller.role !== 'student' || !(await isEnrolled(pool, caller.legacyUserId, note.course_id))) {
+  if (caller.role !== 'student' || !(await isEnrolled(pool, caller, note.course_id))) {
     throw new AccessDenied();
   }
   const own = note.uploaded_by === caller.legacyUserId;
@@ -100,7 +122,7 @@ export async function loadSubmissionForCaller(pool: Pool, caller: Caller, submis
      JOIN assignments a ON a.id = s.assignment_id
      JOIN modules m     ON m.id = a.module_id
      WHERE s.id = $1`, [submissionId]);
-  if (!sub) throw new AccessDenied(404, 'Submission not found');
+  if (!sub || sub.institution_id !== caller.institutionId) throw new AccessDenied(404, 'Submission not found');
   if (await managesCourse(pool, caller, sub.course_id)) return sub;
   if (mode === 'read' && caller.role === 'student' && sub.student_id === caller.legacyUserId) return sub;
   throw new AccessDenied();

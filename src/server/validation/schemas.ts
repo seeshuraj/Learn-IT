@@ -10,6 +10,10 @@ export const routeParamId = z.object({
   id: positiveId,
 });
 
+export const routeParamCourseId = z.object({
+  courseId: positiveId,
+});
+
 // ── Assignments ──────────────────────────────────────────────────────────
 export const assignmentCreateSchema = z.object({
   title:       z.string().min(1, 'title required').max(255),

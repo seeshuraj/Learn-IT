@@ -1,7 +1,9 @@
 /**
  * auditLogs.ts — GET /api/admin/audit-logs
  *
- * Admin-only paginated read endpoint for the audit_logs table.
+ * Admin-only paginated read endpoint for the audit_logs table, limited to
+ * the caller's institution. Platform-level rows (institution_id NULL) are
+ * never returned here.
  *
  * Query params (all optional):
  *   action        – exact prefix match, e.g. "grade" matches "grade.submit"
@@ -16,7 +18,7 @@
 import { Router, Request, Response } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
 
@@ -36,8 +38,8 @@ export function createAuditLogsRouter(pool: InstanceType<typeof Pool>): Router {
       const limit  = Math.min(parseInt((req.query.limit  as string) ?? '50',  10) || 50,  200);
       const offset = Math.max(parseInt((req.query.offset as string) ?? '0',   10) || 0,   0);
 
-      const conditions: string[] = [];
-      const params: unknown[]    = [];
+      const params: unknown[]    = [(req as AuthenticatedRequest).auth.institutionId];
+      const conditions: string[] = ['institution_id = $1'];
 
       if (action) {
         params.push(action + '%');
@@ -60,7 +62,7 @@ export function createAuditLogsRouter(pool: InstanceType<typeof Pool>): Router {
         conditions.push(`created_at <= $${params.length}`);
       }
 
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      const where = `WHERE ${conditions.join(' AND ')}`;
 
       params.push(limit);
       const limitPlaceholder  = `$${params.length}`;

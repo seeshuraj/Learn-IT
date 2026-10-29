@@ -45,6 +45,7 @@ import {
   analyticsSummarySchema,
   classOverviewSummarySchema,
   routeParamId,
+  routeParamCourseId,
 } from "./src/server/validation/schemas.js";
 import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
@@ -62,13 +63,17 @@ import { log, errorFields } from './src/server/lib/log.js';
 import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
   assertManagesCourse, assertCanAccessCourse, loadNoteForCaller,
-  loadSubmissionForCaller, studentVisibleNotes,
+  loadSubmissionForCaller, studentVisibleNotes, isMemberOfInstitution,
 } from './src/server/lib/access.js';
 
 const callerOf = (req: Request): Caller => {
-  const { legacyUserId, role } = (req as AuthenticatedRequest).auth;
-  return { legacyUserId, role };
+  const { legacyUserId, role, institutionId } = (req as AuthenticatedRequest).auth;
+  return { legacyUserId, role, institutionId };
 };
+
+// API role → institution_members.role for users created by an institution admin.
+const memberRoleOf = (role: "student" | "instructor" | "admin") =>
+  role === "admin" ? "institution_admin" : role;
 
 dotenv.config();
 validateEnv();
@@ -610,8 +615,12 @@ async function startServer() {
     try {
       const authReq = req as AuthenticatedRequest;
       const user = await queryOne(
-        "SELECT id,name,email,role,active,year,major,gpa FROM users WHERE id=$1 AND active=1",
-        [authReq.auth.legacyUserId]
+        `SELECT u.id, u.name, u.email, u.active, u.year, u.major, u.gpa,
+                $2::text AS role, i.id AS institution_id, i.name AS institution_name
+         FROM users u
+         JOIN institutions i ON i.id = $3
+         WHERE u.id = $1 AND u.active = 1`,
+        [authReq.auth.legacyUserId, authReq.auth.role, authReq.auth.institutionId]
       );
       if (user) {
         writeAudit({
@@ -655,9 +664,12 @@ async function startServer() {
   });
 
   // ── Courses ───────────────────────────────────────────────────────────────
-  app.get("/api/courses", requireAuth, async (_req, res) => {
+  app.get("/api/courses", requireAuth, async (req, res) => {
     try {
-      const courses = await query("SELECT * FROM courses ORDER BY name");
+      const courses = await query(
+        "SELECT * FROM courses WHERE institution_id=$1 ORDER BY name",
+        [callerOf(req).institutionId]
+      );
       res.json(courses);
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -855,7 +867,7 @@ async function startServer() {
       [assignmentId]
     );
     if (!assignment) throw new AccessDenied(404, "Assignment not found");
-    if (!(await isEnrolled(pool, callerOf(req).legacyUserId, assignment.course_id))) throw new AccessDenied();
+    if (!(await isEnrolled(pool, callerOf(req), assignment.course_id))) throw new AccessDenied();
     if (assignment.status !== "active") throw new AccessDenied(403, "This assignment is not accepting submissions");
   }
 
@@ -961,9 +973,9 @@ async function startServer() {
          JOIN assignments a ON s.assignment_id = a.id
          JOIN modules m     ON a.module_id     = m.id
          JOIN courses c     ON m.course_id     = c.id
-         WHERE $1::text = 'admin' OR c.instructor_id = $2
+         WHERE c.institution_id = $3 AND ($1::text = 'admin' OR c.instructor_id = $2)
          ORDER BY s.submitted_at DESC`,
-        [caller.role, caller.legacyUserId]
+        [caller.role, caller.legacyUserId, caller.institutionId]
       );
       res.json(subs);
     } catch (e: any) { sendServerError(res, e); }
@@ -973,8 +985,8 @@ async function startServer() {
     try {
       const authReq = req as AuthenticatedRequest;
       const courses = await query(
-        "SELECT * FROM courses WHERE instructor_id=$1 ORDER BY name",
-        [authReq.auth.legacyUserId]
+        "SELECT * FROM courses WHERE instructor_id=$1 AND institution_id=$2 ORDER BY name",
+        [authReq.auth.legacyUserId, authReq.auth.institutionId]
       );
       res.json(courses);
     } catch (e: any) { sendServerError(res, e); }
@@ -1021,8 +1033,8 @@ async function startServer() {
       const courses = await query(
         `SELECT c.* FROM courses c
          JOIN enrollments e ON c.id=e.course_id
-         WHERE e.student_id=$1`,
-        [req.params.id]
+         WHERE e.student_id=$1 AND e.institution_id=$2`,
+        [req.params.id, callerOf(req).institutionId]
       );
       res.json(courses);
     } catch (e: any) { sendServerError(res, e); }
@@ -1036,10 +1048,10 @@ async function startServer() {
          FROM assignments a
          JOIN modules m     ON a.module_id=m.id
          JOIN courses c     ON m.course_id=c.id
-         JOIN enrollments e ON c.id=e.course_id AND e.student_id=$1
+         JOIN enrollments e ON c.id=e.course_id AND e.student_id=$1 AND e.institution_id=$2
          LEFT JOIN submissions s ON s.assignment_id=a.id AND s.student_id=$1
          ORDER BY a.due_date`,
-        [req.params.id]
+        [req.params.id, callerOf(req).institutionId]
       );
       res.json(assignments);
     } catch (e: any) { sendServerError(res, e); }
@@ -1053,9 +1065,9 @@ async function startServer() {
            COUNT(DISTINCT s.id)          AS total_submissions,
            AVG(s.grade)                  AS average_grade
          FROM enrollments e
-         LEFT JOIN submissions s ON s.student_id=e.student_id
-         WHERE e.student_id=$1`,
-        [req.params.id]
+         LEFT JOIN submissions s ON s.student_id=e.student_id AND s.institution_id=e.institution_id
+         WHERE e.student_id=$1 AND e.institution_id=$2`,
+        [req.params.id, callerOf(req).institutionId]
       );
       res.json(stats);
     } catch (e: any) { sendServerError(res, e); }
@@ -1070,9 +1082,9 @@ async function startServer() {
          JOIN assignments a ON s.assignment_id=a.id
          JOIN modules m     ON a.module_id=m.id
          JOIN courses c     ON m.course_id=c.id
-         WHERE s.student_id=$1 AND s.grade IS NOT NULL
+         WHERE s.student_id=$1 AND s.institution_id=$2 AND s.grade IS NOT NULL
          ORDER BY s.submitted_at`,
-        [req.params.id]
+        [req.params.id, callerOf(req).institutionId]
       );
       res.json(submissions);
     } catch (e: any) { sendServerError(res, e); }
@@ -1085,18 +1097,33 @@ async function startServer() {
          FROM notes n
          JOIN modules m ON n.module_id=m.id
          JOIN courses c ON m.course_id=c.id
-         WHERE n.uploaded_by=$1
+         WHERE n.uploaded_by=$1 AND n.institution_id=$2
          ORDER BY n.uploaded_at DESC`,
-        [req.params.id]
+        [req.params.id, callerOf(req).institutionId]
       );
       res.json(notes);
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  // ── Admin ─────────────────────────────────────────────────────────────────
-  app.get("/api/admin/users", requireAuth, requireRole("admin"), async (_req, res) => {
+  // ── Admin (institution-scoped) ────────────────────────────────────────────
+  // Every admin route acts on the caller's institution only. Rows in another
+  // institution are reported as 404.
+  const PG_UNIQUE = "23505";
+  const PG_FK     = "23503";
+
+  app.get("/api/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const users = await query("SELECT id,name,email,role,active,year,major,gpa FROM users ORDER BY name");
+      const users = await query(
+        `SELECT u.id, u.name, u.email,
+                CASE WHEN im.role IN ('institution_admin','institution_owner') THEN 'admin' ELSE im.role END AS role,
+                CASE WHEN im.status = 'active' THEN u.active ELSE 0 END AS active,
+                u.year, u.major, u.gpa, im.role AS member_role, im.status AS member_status
+         FROM institution_members im
+         JOIN users u ON u.id = im.user_id
+         WHERE im.institution_id = $1 AND im.status <> 'removed'
+         ORDER BY u.name`,
+        [callerOf(req).institutionId]
+      );
       res.json(users);
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1104,22 +1131,29 @@ async function startServer() {
   app.post("/api/admin/users", requireAuth, requireRole("admin"), validateBody(adminUserCreateSchema), async (req, res) => {
     try {
       const { name, email, role, year, major, gpa } = req.body;
+      const { institutionId } = callerOf(req);
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
         const user = await client.query(
-          "INSERT INTO users (name,email,role,active,year,major,gpa) VALUES ($1,$2,$3,1,$4,$5,$6) RETURNING *",
+          "INSERT INTO users (name,email,role,active,year,major,gpa) VALUES ($1,$2,$3,1,$4,$5,$6) RETURNING id,name,email,role,active,year,major,gpa",
           [name, email, role, year ?? null, major ?? null, gpa ?? null]
         );
         const newUser = user.rows[0];
+        await client.query(
+          "INSERT INTO institution_members (institution_id, user_id, role) VALUES ($1,$2,$3)",
+          [institutionId, newUser.id, memberRoleOf(role)]
+        );
         const authResult = await createAuthUserAndIdentityMapRow(client, newUser.id, email, role);
         await client.query("COMMIT");
         res.status(201).json({
           ...newUser,
           tempPassword: authResult?.tempPassword,
         });
-      } catch (err) {
+      } catch (err: any) {
         await client.query("ROLLBACK");
+        // Emails are unique platform-wide; do not reveal which institution holds it.
+        if (err?.code === PG_UNIQUE) return res.status(409).json({ error: "A user with this email already exists" });
         throw err;
       } finally {
         client.release();
@@ -1129,47 +1163,102 @@ async function startServer() {
 
   app.put("/api/admin/users/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), validateBody(adminUserUpdateSchema), async (req, res) => {
     try {
-      // Partial update: omitted fields keep their value (previously they were
-      // overwritten with NULL, e.g. gpa on every edit since the schema omits it).
+      // Partial update: omitted fields keep their value.
       const { name, email, role, active, year, major } = req.body;
-      const user = await queryOne(
-        `UPDATE users SET
-           name   = COALESCE($1, name),
-           email  = COALESCE($2, email),
-           role   = COALESCE($3, role),
-           active = COALESCE($4, active),
-           year   = COALESCE($5, year),
-           major  = COALESCE($6, major)
-         WHERE id = $7
-         RETURNING id, name, email, role, active, year, major, gpa`,
-        [name ?? null, email ?? null, role ?? null, active ?? null,
-         year ?? null, major ?? null, req.params.id]
-      );
-      if (!user) return res.status(404).json({ error: "User not found" });
-      res.json(user);
+      const caller = callerOf(req);
+      const targetId = Number(req.params.id);
+      if (targetId === caller.legacyUserId && ((role && role !== "admin") || active === 0)) {
+        return res.status(400).json({ error: "You cannot remove your own admin access" });
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const member = await client.query(
+          `SELECT role FROM institution_members
+           WHERE user_id = $1 AND institution_id = $2 AND status <> 'removed'
+           FOR UPDATE`,
+          [targetId, caller.institutionId]
+        );
+        if (!member.rows.length) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "User not found" });
+        }
+        // Only an owner may change an owner.
+        if (member.rows[0].role === "institution_owner" && (req as AuthenticatedRequest).auth.memberRole !== "institution_owner") {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "Only an institution owner can modify an owner" });
+        }
+        const user = await client.query(
+          `UPDATE users SET
+             name   = COALESCE($1, name),
+             email  = COALESCE($2, email),
+             role   = COALESCE($3, role),
+             active = COALESCE($4, active),
+             year   = COALESCE($5, year),
+             major  = COALESCE($6, major)
+           WHERE id = $7
+           RETURNING id, name, email, role, active, year, major, gpa`,
+          [name ?? null, email ?? null, role ?? null, active ?? null,
+           year ?? null, major ?? null, targetId]
+        );
+        // Authorization reads institution_members, so role and active must
+        // be reflected there to take effect. An owner keeps owner status
+        // unless explicitly demoted to a non-admin role.
+        const nextMemberRole =
+          role == null ? null
+          : role === "admin" && member.rows[0].role === "institution_owner" ? "institution_owner"
+          : memberRoleOf(role);
+        await client.query(
+          `UPDATE institution_members SET
+             role       = COALESCE($1, role),
+             status     = CASE WHEN $2::int IS NULL THEN status
+                               WHEN $2::int = 1 THEN 'active' ELSE 'suspended' END,
+             updated_at = now()
+           WHERE user_id = $3 AND institution_id = $4`,
+          [nextMemberRole, active ?? null, targetId, caller.institutionId]
+        );
+        if (role) {
+          await client.query("UPDATE user_identity_map SET role = $1 WHERE legacy_user_id = $2", [role, targetId]);
+        }
+        await client.query("COMMIT");
+        res.json(user.rows[0]);
+      } catch (err: any) {
+        await client.query("ROLLBACK");
+        if (err?.code === PG_UNIQUE) return res.status(409).json({ error: "A user with this email already exists" });
+        throw err;
+      } finally {
+        client.release();
+      }
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.get("/api/admin/stats", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/stats", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const [users, courses, submissions, enrollments] = await Promise.all([
-        queryOne("SELECT COUNT(*) AS count FROM users WHERE active=1"),
-        queryOne("SELECT COUNT(*) AS count FROM courses"),
-        queryOne("SELECT COUNT(*) AS count FROM submissions"),
-        queryOne("SELECT COUNT(*) AS count FROM enrollments"),
-      ]);
+      const inst = callerOf(req).institutionId;
+      const row = await queryOne(
+        `SELECT
+           (SELECT COUNT(*) FROM institution_members im JOIN users u ON u.id = im.user_id
+             WHERE im.institution_id = $1 AND im.status = 'active' AND u.active = 1) AS users,
+           (SELECT COUNT(*) FROM courses     WHERE institution_id = $1) AS courses,
+           (SELECT COUNT(*) FROM submissions WHERE institution_id = $1) AS submissions,
+           (SELECT COUNT(*) FROM enrollments WHERE institution_id = $1) AS enrollments`,
+        [inst]
+      );
       res.json({
-        users:       Number(users?.count ?? 0),
-        courses:     Number(courses?.count ?? 0),
-        submissions: Number(submissions?.count ?? 0),
-        enrollments: Number(enrollments?.count ?? 0),
+        users:       Number(row?.users ?? 0),
+        courses:     Number(row?.courses ?? 0),
+        submissions: Number(row?.submissions ?? 0),
+        enrollments: Number(row?.enrollments ?? 0),
       });
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.get("/api/admin/settings", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/settings", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const settings = await query("SELECT key, value FROM settings");
+      const settings = await query(
+        "SELECT key, value FROM settings WHERE institution_id = $1",
+        [callerOf(req).institutionId]
+      );
       const obj: Record<string, string> = {};
       settings.forEach((s: any) => { obj[s.key] = s.value; });
       res.json(obj);
@@ -1180,19 +1269,22 @@ async function startServer() {
     try {
       const { key, value } = req.body;
       await run(
-        "INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
-        [key, value]
+        `INSERT INTO settings (institution_id, key, value) VALUES ($1,$2,$3)
+         ON CONFLICT (institution_id, key) DO UPDATE SET value = EXCLUDED.value`,
+        [callerOf(req).institutionId, key, value]
       );
       res.json({ success: true });
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const courses = await query(
         `SELECT c.*, u.name AS instructor_name
          FROM courses c LEFT JOIN users u ON c.instructor_id=u.id
-         ORDER BY c.name`
+         WHERE c.institution_id = $1
+         ORDER BY c.name`,
+        [callerOf(req).institutionId]
       );
       res.json(courses);
     } catch (e: any) { sendServerError(res, e); }
@@ -1201,9 +1293,13 @@ async function startServer() {
   app.post("/api/admin/courses", requireAuth, requireRole("admin"), validateBody(courseCreateSchema), async (req, res) => {
     try {
       const { code, name, instructor_id } = req.body;
+      const caller = callerOf(req);
+      if (!(await isMemberOfInstitution(pool, caller, instructor_id, "instructor"))) {
+        return res.status(400).json({ error: "instructor_id is not an instructor in this institution" });
+      }
       const course = await queryOne(
-        "INSERT INTO courses (code, name, instructor_id) VALUES ($1,$2,$3) RETURNING *",
-        [code, name, instructor_id]
+        "INSERT INTO courses (institution_id, code, name, instructor_id) VALUES ($1,$2,$3,$4) RETURNING *",
+        [caller.institutionId, code, name, instructor_id]
       );
       res.status(201).json(course);
     } catch (e: any) { sendServerError(res, e); }
@@ -1211,19 +1307,27 @@ async function startServer() {
 
   app.delete("/api/admin/courses/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), async (req, res) => {
     try {
-      const { changes } = await run("DELETE FROM courses WHERE id=$1", [req.params.id]);
+      const { changes } = await run(
+        "DELETE FROM courses WHERE id=$1 AND institution_id=$2",
+        [req.params.id, callerOf(req).institutionId]
+      );
       if (!changes) return res.status(404).json({ error: "Course not found" });
       res.json({ success: true });
-    } catch (e: any) { sendServerError(res, e); }
+    } catch (e: any) {
+      // Academic records are RESTRICT-protected; archive instead of deleting.
+      if (e?.code === PG_FK) return res.status(409).json({ error: "Course has modules, enrollments or exams; archive it instead" });
+      sendServerError(res, e);
+    }
   });
 
-  app.get("/api/admin/enrollments/:courseId", requireAuth, requireRole("admin"), async (req, res) => {
+  app.get("/api/admin/enrollments/:courseId", requireAuth, requireRole("admin"), validateParams(routeParamCourseId), async (req, res) => {
     try {
+      await assertManagesCourse(pool, callerOf(req), Number(req.params.courseId));
       const enrollments = await query(
         `SELECT e.*, u.name AS student_name, u.email AS student_email
          FROM enrollments e JOIN users u ON e.student_id=u.id
-         WHERE e.course_id=$1`,
-        [req.params.courseId]
+         WHERE e.course_id=$1 AND e.institution_id=$2`,
+        [req.params.courseId, callerOf(req).institutionId]
       );
       res.json(enrollments);
     } catch (e: any) { sendServerError(res, e); }
@@ -1232,11 +1336,16 @@ async function startServer() {
   app.post("/api/admin/enrollments", requireAuth, requireRole("admin"), validateBody(enrollmentCreateSchema), async (req, res) => {
     try {
       const { course_id, student_id } = req.body;
+      const caller = callerOf(req);
+      await assertManagesCourse(pool, caller, course_id);
+      if (!(await isMemberOfInstitution(pool, caller, student_id, "student"))) {
+        return res.status(400).json({ error: "student_id is not a student in this institution" });
+      }
       const enrollment = await queryOne(
         "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING *",
         [course_id, student_id]
       );
-      notify(pool, student_id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
+      if (enrollment) notify(pool, student_id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
       res.status(201).json(enrollment ?? { message: "Already enrolled" });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1244,15 +1353,23 @@ async function startServer() {
   app.post("/api/admin/bulk-enroll", requireAuth, requireRole("admin"), validateBody(bulkEnrollSchema), async (req, res) => {
     try {
       const { course_id, emails } = req.body;
+      const caller = callerOf(req);
+      await assertManagesCourse(pool, caller, course_id);
       const results = [];
       for (const email of emails) {
-        const student = await queryOne("SELECT id FROM users WHERE email=$1 AND role='student'", [email]);
+        const student = await queryOne(
+          `SELECT u.id FROM users u
+           JOIN institution_members im ON im.user_id = u.id
+           WHERE u.email = $1 AND im.institution_id = $2
+             AND im.role = 'student' AND im.status = 'active'`,
+          [email, caller.institutionId]
+        );
         if (!student) { results.push({ email, status: "not_found" }); continue; }
         const enrollment = await queryOne(
           "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING *",
           [course_id, student.id]
         );
-        notify(pool, student.id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
+        if (enrollment) notify(pool, student.id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
         results.push({ email, status: enrollment ? "enrolled" : "already_enrolled" });
       }
       res.json(results);
@@ -1261,7 +1378,10 @@ async function startServer() {
 
   app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), async (req, res) => {
     try {
-      const { changes } = await run("DELETE FROM enrollments WHERE id=$1", [req.params.id]);
+      const { changes } = await run(
+        "DELETE FROM enrollments WHERE id=$1 AND institution_id=$2",
+        [req.params.id, callerOf(req).institutionId]
+      );
       if (!changes) return res.status(404).json({ error: "Enrollment not found" });
       res.json({ success: true });
     } catch (e: any) { sendServerError(res, e); }
@@ -1451,10 +1571,11 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.get("/api/admin/stats/snapshot", requireAuth, requireRole("admin"), async (_req, res) => {
+  app.get("/api/admin/stats/snapshot", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const row = await queryOne(
-        "SELECT * FROM admin_stats_snapshots ORDER BY snapshotted_at DESC LIMIT 1"
+        "SELECT * FROM admin_stats_snapshots WHERE institution_id=$1 ORDER BY snapshotted_at DESC LIMIT 1",
+        [callerOf(req).institutionId]
       );
       if (!row) return res.status(404).json({ error: "No snapshot available" });
       const age = Date.now() - new Date(row.snapshotted_at).getTime();
@@ -1478,6 +1599,13 @@ async function startServer() {
   // The frontend is served by Vercel; this service is API-only.
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "Not found" });
+  });
+
+  // Errors passed to next() (e.g. from auth middleware) must not fall through
+  // to Express's default HTML handler, which can include stack traces.
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (res.headersSent) return;
+    sendServerError(res, err);
   });
 
   const PORT = Number(process.env.PORT ?? 10000);

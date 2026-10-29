@@ -95,7 +95,7 @@ export function createGradingRouter(pool: pkg.Pool): Router {
         // Only staff of the submission's course may run AI grading on it.
         const submission = await loadSubmissionForCaller(
           pool,
-          { legacyUserId: auth.legacyUserId, role: auth.role },
+          { legacyUserId: auth.legacyUserId, role: auth.role, institutionId: auth.institutionId },
           Number(submissionId),
           'grade',
         );
