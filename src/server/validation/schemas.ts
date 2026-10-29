@@ -39,10 +39,11 @@ export const submissionCreateSchema = z.object({
   content:       z.string().max(100000).optional().default(''),
 });
 
+// The upper bound is the assignment's max_points, checked in the handler.
 export const gradeSchema = z.object({
-  grade:    z.coerce.number().min(0).max(100),
+  grade:    z.coerce.number().int().min(0).max(10000),
   feedback: z.string().max(10000).optional().default(''),
-});
+}).strict();
 
 // ── Admin — users ────────────────────────────────────────────────────────
 export const adminUserCreateSchema = z.object({
@@ -127,4 +128,17 @@ export const classOverviewSummarySchema = z.object({
       status:  z.string().trim().max(40),
     }).strict()).max(500),
   }).strict(),
+}).strict();
+
+// ── AI chat ───────────────────────────────────────────────────────────────
+// history roles are limited to user/assistant: a client-supplied "system"
+// turn would let a student rewrite the assistant's instructions.
+export const aiChatSchema = z.object({
+  question:    z.string().trim().min(1).max(2000),
+  moduleId:    z.coerce.number().int().positive().nullable().optional(),
+  moduleTitle: z.string().trim().max(200).optional(),
+  history: z.array(z.object({
+    role:    z.enum(['user', 'assistant']),
+    content: z.string().max(4000),
+  }).strict()).max(20).optional().default([]),
 }).strict();

@@ -15,7 +15,8 @@
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit -p tsconfig.server.json",
-    "check:client-env": "node scripts/check-client-env.mjs"
+    "check:client-env": "node scripts/check-client-env.mjs",
+    "test": "node --import tsx --test \"src/server/**/__tests__/*.test.ts\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
