@@ -11,6 +11,7 @@
  */
 
 import pkg from 'pg';
+import { log, errorFields } from './log.js';
 const { Pool } = pkg;
 type PgPool = InstanceType<typeof Pool>;
 
@@ -35,6 +36,6 @@ export function notify(
      VALUES ($1, $2, $3, $4)`,
     [userId, type, message, metadata ? JSON.stringify(metadata) : null]
   ).catch((err: Error) => {
-    console.error(`[notify] failed to insert notification for user ${userId}:`, err.message);
+    log.error('notification insert failed', { userId, type, ...errorFields(err) });
   });
 }

@@ -26,6 +26,8 @@ import {
 } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { uploadLimiter, aiGradeLimiter } from '../middleware/rateLimit.js';
+import { sendServerError } from '../lib/httpErrors.js';
+import { log, errorFields } from '../lib/log.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -243,7 +245,7 @@ export function createUnitExamsRouter(
           metadata: { course_id, title }, req,
         });
         res.status(201).json({ id: examId });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -270,7 +272,7 @@ export function createUnitExamsRouter(
           [req.params.courseId]
         );
         res.json(exams);
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -385,8 +387,8 @@ export function createUnitExamsRouter(
           preview:      inserted.slice(0, 10),
         });
       } catch (e: any) {
-        console.error('[unit-exams/upload-marks]', e.message);
-        res.status(500).json({ error: e.message });
+        log.error('unit exam marks upload failed', errorFields(e));
+        sendServerError(res, e);
       }
     }
   );
@@ -452,7 +454,7 @@ export function createUnitExamsRouter(
               [examId]
             );
           } catch (e: any) {
-            console.error('[unit-exams/upload-paper] async analysis error:', e.message);
+            log.error('unit exam paper analysis failed', errorFields(e));
             await pool.query(
               `UPDATE unit_exams SET analysis_status='failed', updated_at=NOW() WHERE id=$1`,
               [examId]
@@ -468,8 +470,8 @@ export function createUnitExamsRouter(
 
         res.json({ success: true, text_length: paperText.length, analysis_status: 'processing' });
       } catch (e: any) {
-        console.error('[unit-exams/upload-paper]', e.message);
-        res.status(500).json({ error: e.message });
+        log.error('unit exam paper upload failed', errorFields(e));
+        sendServerError(res, e);
       }
     }
   );
@@ -553,7 +555,7 @@ export function createUnitExamsRouter(
             strongest_topics: topicAverages.slice(-3).reverse().map(t => t.topic),
           },
         });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -600,7 +602,7 @@ export function createUnitExamsRouter(
           : null;
 
         res.json({ results, latest, overall_avg, weak_topics: topWeakTopics });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 
@@ -621,7 +623,7 @@ export function createUnitExamsRouter(
         }
 
         res.json(exam);
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { sendServerError(res, e); }
     }
   );
 

@@ -23,6 +23,8 @@ import {
   requireRole,
   AuthenticatedRequest,
 } from '../middleware/auth.js';
+import { sendServerError } from '../lib/httpErrors.js';
+import { log, errorFields } from '../lib/log.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
@@ -69,7 +71,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
 
       res.json({ ...roadmap, milestones });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -374,8 +376,8 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
         title, summary, generated_at: new Date().toISOString(), milestones: saved,
       });
     } catch (e: any) {
-      console.error('[roadmaps/generate] error:', e.message);
-      res.status(500).json({ error: e.message });
+      log.error('roadmap generation failed', errorFields(e));
+      sendServerError(res, e);
     }
   });
 
@@ -415,7 +417,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
 
       res.json({ success: true, status });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 
@@ -430,7 +432,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
       );
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 

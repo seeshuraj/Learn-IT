@@ -12,7 +12,6 @@ interface Note {
   course_name: string;
   chunk_count: number;
   module_id: number;
-  cloudinary_url?: string;
   text_content?: string;
 }
 
@@ -91,26 +90,18 @@ export default function NotesPage({ user }: Props) {
     setBlobUrl(null);
     setPreviewLoading(true);
     try {
-      let url: string;
-      if (note.cloudinary_url) {
-        url = note.cloudinary_url;
-        setBlobUrl(url);
-      } else {
-        try {
-          const signed = await api.getSignedNoteUrl(note.id);
-          url = signed.url;
-          setBlobUrl(url);
-        } catch {
-          const { getAccessToken } = await import('../services/supabaseClient');
-          const token = await getAccessToken();
-          const res = await fetch(`${BASE}/api/notes/${note.id}/proxy`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
-          if (!res.ok) throw new Error(`Could not load file: ${res.status}`);
-          const blob = await res.blob();
-          const objUrl = URL.createObjectURL(blob);
-          setBlobUrl(objUrl);
-        }
+      try {
+        const signed = await api.getSignedNoteUrl(note.id);
+        setBlobUrl(signed.url);
+      } catch {
+        const { getAccessToken } = await import('../services/supabaseClient');
+        const token = await getAccessToken();
+        const res = await fetch(`${BASE}/api/notes/${note.id}/proxy`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) throw new Error(`Could not load file: ${res.status}`);
+        const blob = await res.blob();
+        setBlobUrl(URL.createObjectURL(blob));
       }
     } catch (e: any) {
       setError(e.message ?? 'Could not preview this file.');
@@ -125,8 +116,24 @@ export default function NotesPage({ user }: Props) {
     if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
   }, [blobUrl]);
 
-  function getDownloadUrl(note: Note): string {
-    return note.cloudinary_url || `${BASE}/uploads/notes/${note.filename}`;
+  // Files live in a private bucket: fetch a short-lived signed URL (the API
+  // authorizes the caller first) instead of linking to a guessable path.
+  // The tab is opened synchronously in the click handler: opening it after the
+  // await would no longer count as a user gesture and popup blockers drop it.
+  async function downloadNote(note: Note): Promise<void> {
+    const tab = window.open('about:blank', '_blank');
+    try {
+      const { url } = await api.getSignedNoteUrl(note.id);
+      if (tab) {
+        tab.opener = null;
+        tab.location.href = url;
+      } else {
+        window.location.assign(url);
+      }
+    } catch (e: any) {
+      tab?.close();
+      setError(e.message ?? 'Could not download this file.');
+    }
   }
 
   function canPreview(note: Note): boolean {
@@ -232,7 +239,6 @@ export default function NotesPage({ user }: Props) {
               <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-sm font-medium text-slate-700 truncate">{activeNote.original_name}</span>
-                  {activeNote.cloudinary_url && <span className="text-xs text-teal-500 shrink-0">☁ Cloud</span>}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {blobUrl && (
@@ -245,15 +251,13 @@ export default function NotesPage({ user }: Props) {
                       ↗ Open
                     </a>
                   )}
-                  <a
-                    href={getDownloadUrl(activeNote)}
-                    download={activeNote.original_name}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => downloadNote(activeNote)}
                     className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
                   >
                     ↓ Download
-                  </a>
+                  </button>
                   <button
                     onClick={closePreview}
                     className="text-slate-400 hover:text-slate-600 text-lg leading-none px-1"
@@ -316,7 +320,6 @@ export default function NotesPage({ user }: Props) {
                           {new Date(note.uploaded_at).toLocaleDateString('en-IE', {
                             day: 'numeric', month: 'short', year: 'numeric',
                           })}
-                          {note.cloudinary_url && <span className="ml-1 text-teal-500">☁</span>}
                         </p>
                       </div>
                     </div>
@@ -340,15 +343,13 @@ export default function NotesPage({ user }: Props) {
                            activeNote?.id === note.id ? '✕ Close' : '👁 Preview & Chat'}
                         </button>
                       )}
-                      <a
-                        href={getDownloadUrl(note)}
-                        download={note.original_name}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => downloadNote(note)}
                         className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
                       >
                         ↓ Download
-                      </a>
+                      </button>
                       {isInstructor && (
                         <button
                           onClick={async () => {

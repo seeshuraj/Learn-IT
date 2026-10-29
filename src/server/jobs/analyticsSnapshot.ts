@@ -11,6 +11,7 @@
  */
 
 import pkg from 'pg';
+import { log, errorFields } from '../lib/log.js';
 const { Pool } = pkg;
 
 type PgPool = InstanceType<typeof Pool>;
@@ -55,9 +56,9 @@ export async function snapshotAdminStats(pool: PgPool): Promise<void> {
       )
     `);
 
-    console.log('[snapshot] admin_stats_snapshots written');
+    log.info('snapshot written', { table: 'admin_stats_snapshots' });
   } catch (err: any) {
-    console.error('[snapshot] snapshotAdminStats FAILED (non-fatal):', err.message);
+    log.error('snapshotAdminStats failed (non-fatal)', errorFields(err));
   }
 }
 
@@ -157,12 +158,12 @@ export async function snapshotCourseAnalytics(pool: PgPool): Promise<void> {
           [courseId]
         );
       } catch (courseErr: any) {
-        console.error(`[snapshot] course ${courseId} FAILED (non-fatal):`, courseErr.message);
+        log.error('course snapshot failed (non-fatal)', { courseId, ...errorFields(courseErr) });
       }
     }
 
-    console.log(`[snapshot] course_analytics_snapshots written (${courses.length} courses)`);
+    log.info('snapshot written', { table: 'course_analytics_snapshots', courses: courses.length });
   } catch (err: any) {
-    console.error('[snapshot] snapshotCourseAnalytics FAILED (non-fatal):', err.message);
+    log.error('snapshotCourseAnalytics failed (non-fatal)', errorFields(err));
   }
 }

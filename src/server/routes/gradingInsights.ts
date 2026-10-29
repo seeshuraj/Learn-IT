@@ -14,6 +14,7 @@ import { Router } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
+import { sendServerError } from '../lib/httpErrors.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
@@ -83,7 +84,7 @@ export function createGradingInsightsRouter(pool: PgPool): Router {
         improvements: topImprovements,
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      sendServerError(res, e);
     }
   });
 

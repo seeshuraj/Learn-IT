@@ -20,6 +20,8 @@ import {
 } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { aiGradeLimiter } from '../middleware/rateLimit.js';
+import { sendServerError } from '../lib/httpErrors.js';
+import { log, errorFields } from '../lib/log.js';
 
 const NVIDIA_BASE  = 'https://integrate.api.nvidia.com/v1';
 const CHAT_MODEL   = 'mistralai/mistral-nemo-12b-instruct';
@@ -155,8 +157,8 @@ export function createGradingRouter(pool: pkg.Pool): Router {
 
         res.json(result);
       } catch (e: any) {
-        console.error('[grading/ai-grade]', e.message);
-        res.status(500).json({ error: e.message });
+        log.error('ai grading failed', errorFields(e));
+        sendServerError(res, e);
       }
     }
   );
