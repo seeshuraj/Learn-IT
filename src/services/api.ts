@@ -11,6 +11,7 @@
  * to '' and accidentally hits the Vercel SPA, which returns HTML.
  */
 import { supabase, getAccessToken } from './supabaseClient';
+import type { StudentAnalyticsData, ClassOverviewData } from './aiService';
 
 const BASE =
   (import.meta as any).env?.VITE_API_BASE_URL ||
@@ -330,8 +331,10 @@ export const api = {
     request('/api/ai/grade-pdf', { method: 'POST', body: JSON.stringify({ submission_id: submissionId, rubric, module_id: moduleId }) }),
   aiChat: (question: string, moduleTitle: string, moduleId: number | null, history: any[]) =>
     request('/api/ai/chat', { method: 'POST', body: JSON.stringify({ question, moduleTitle, moduleId, history }) }),
-  aiAnalyticsSummary: (analytics: any) =>
+  aiAnalyticsSummary: (analytics: StudentAnalyticsData) =>
     request('/api/ai/analytics-summary', { method: 'POST', body: JSON.stringify({ analytics }) }),
+  aiClassOverviewSummary: (overview: ClassOverviewData) =>
+    request('/api/ai/class-overview-summary', { method: 'POST', body: JSON.stringify({ overview }) }),
 
   // Roadmaps
   getRoadmap:          (courseId: number) => request(`/api/roadmaps/${courseId}`),
