@@ -19,6 +19,7 @@ export type NotificationType =
   | 'new_assignment'
   | 'roadmap_ready'
   | 'enrollment_confirmed'
+  | 'submission_received'
   | 'assignment_due_soon'
   | 'general';
 

@@ -2,14 +2,24 @@ services:
   - type: web
     name: learnit-api
     runtime: node
-    buildCommand: npm install && npm run build 2>/dev/null || npm install
-    startCommand: node --import tsx/esm server.ts
+    # Build only the API bundle; the frontend is built and served by Vercel.
+    # No `|| npm install` fallback: a failed build must fail the deploy.
+    buildCommand: npm ci --include=dev && npm run build:server
+    startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
+      # Secrets: set in the Render dashboard, never committed.
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: NVIDIA_API_KEY
         sync: false
-      - key: CORS_ORIGIN
+      - key: ALLOWED_ORIGIN
         sync: false
