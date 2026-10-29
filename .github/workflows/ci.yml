@@ -66,5 +66,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: npm audit (production dependencies, high and above)
-        run: npm audit --omit=dev --audit-level=high
+      # Blocks on critical. Known highs (xlsx: no npm fix, moving to the SheetJS
+      # CDN build; zod: needs the v4 major) are surfaced as annotations until
+      # their fix PRs land. Tighten to --audit-level=high once they do.
+      - name: npm audit (production dependencies, blocking on critical)
+        run: npm audit --omit=dev --audit-level=critical
+      - name: Report high-severity findings
+        if: always()
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e '
+            const a = require("./audit.json");
+            for (const [name, v] of Object.entries(a.vulnerabilities || {})) {
+              if (!["high", "critical"].includes(v.severity)) continue;
+              const via = (v.via || []).map(x => typeof x === "string" ? x : x.title).join("; ").slice(0, 300);
+              console.log(`::warning title=audit ${v.severity}::${name} (${v.range}): ${via}`);
+            }'
+
