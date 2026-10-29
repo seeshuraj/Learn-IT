@@ -1,0 +1,2 @@
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS cloudinary_url TEXT DEFAULT '';
+ALTER TABLE submission_files ADD COLUMN IF NOT EXISTS cloudinary_url TEXT DEFAULT '';
