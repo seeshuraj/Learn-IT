@@ -91,7 +91,7 @@ const COMMITMENTS = [
   },
 ];
 
-// Per enrolled student, per academic year. USD shown at about ₹95 = US$1.
+// Per enrolled student, per semester. USD shown at about ₹95 = US$1.
 const TIERS = [
   {
     name: "LMS",
@@ -346,10 +346,10 @@ export default function LandingPage() {
         <section id="pricing" aria-labelledby="pricing-h" className="border-t border-[var(--rule)]">
           <div className="mx-auto max-w-[72rem] px-4 py-20 sm:px-6 lg:py-28">
             <h2 id="pricing-h" className="lp-display max-w-[40rem] text-[clamp(1.9rem,4vw,2.75rem)] font-bold leading-[1.08] tracking-[-0.025em]">
-              Priced per student, per year
+              Priced per student, per semester
             </h2>
             <p className="mt-4 max-w-[38rem] text-[17px] leading-[1.6] text-[var(--muted)]">
-              You pay only for enrolled students. Start on any plan and move up when your faculty are ready.
+              You pay each semester for the students enrolled that semester. Start on any plan and move up when your faculty are ready.
             </p>
             <div className="mt-12 grid gap-y-12 md:grid-cols-3 md:gap-x-10">
               {TIERS.map(t => (
@@ -357,7 +357,7 @@ export default function LandingPage() {
                   <h3 className="text-[17px] font-semibold">{t.name}</h3>
                   <p className="mt-4 flex flex-wrap items-baseline gap-x-2">
                     <span className="lp-num text-[clamp(2.4rem,5vw,3.25rem)] font-extrabold leading-none tracking-[-0.03em]">{t.inr}</span>
-                    <span className="text-[15px] text-[var(--muted)]">per student, per year</span>
+                    <span className="text-[15px] text-[var(--muted)]">per student, per semester</span>
                   </p>
                   <p className="mt-1.5 text-[14px] text-[var(--muted)]">({t.usd})</p>
                   <p className="mt-4 text-[16px] leading-[1.5]">{t.fit}</p>
