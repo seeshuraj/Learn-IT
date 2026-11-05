@@ -91,6 +91,47 @@ const COMMITMENTS = [
   },
 ];
 
+// Per enrolled student, per academic year. USD shown at about ₹95 = US$1.
+const TIERS = [
+  {
+    name: "LMS",
+    inr: "₹300",
+    usd: "about US$3",
+    fit: "For colleges moving coursework online.",
+    lead: "Includes",
+    items: [
+      "Courses, modules and course notes",
+      "Assignments, submissions and grading",
+      "Unit test marks import from CSV or Excel",
+      "Student, faculty and admin dashboards",
+    ],
+  },
+  {
+    name: "LMS + AI tutor",
+    inr: "₹2,000",
+    usd: "about US$21",
+    fit: "For colleges that want students supported between classes.",
+    lead: "Everything in LMS, plus",
+    items: [
+      "AI tutor that answers from your course notes",
+      "AI-written progress summaries for each student",
+    ],
+  },
+  {
+    name: "Full academic intelligence",
+    inr: "₹8,000",
+    usd: "about US$84",
+    fit: "For colleges that want every student on a personal plan.",
+    lead: "Everything in LMS + AI tutor, plus",
+    items: [
+      "Weak-topic detection from every unit test",
+      "Personal study roadmaps for each student",
+      "AI-drafted grading feedback, approved by faculty",
+      "Topic analysis of exam papers",
+    ],
+  },
+];
+
 /** Loads the two landing-page typefaces only on this page. */
 function useLandingFonts() {
   useEffect(() => {
@@ -209,6 +250,7 @@ export default function LandingPage() {
           <nav aria-label="Primary" className="flex items-center gap-1 sm:gap-2">
             <a href="#how" className="lp-focus hidden rounded-md px-3 py-2 text-[15px] text-[var(--muted)] hover:text-[var(--ink)] md:inline-block">How it works</a>
             <a href="#trust" className="lp-focus hidden rounded-md px-3 py-2 text-[15px] text-[var(--muted)] hover:text-[var(--ink)] md:inline-block">Data and privacy</a>
+            <a href="#pricing" className="lp-focus hidden rounded-md px-3 py-2 text-[15px] text-[var(--muted)] hover:text-[var(--ink)] md:inline-block">Pricing</a>
             <Link to="/login" className="lp-focus whitespace-nowrap rounded-md px-2 py-2 text-[15px] font-medium hover:text-[var(--blue)] sm:px-3">Sign in</Link>
             <a href={PILOT_MAILTO} className="lp-focus lp-btn whitespace-nowrap">Book a pilot</a>
           </nav>
@@ -297,6 +339,43 @@ export default function LandingPage() {
                 </div>
               ))}
             </dl>
+          </div>
+        </section>
+
+        {/* Pricing */}
+        <section id="pricing" aria-labelledby="pricing-h" className="border-t border-[var(--rule)]">
+          <div className="mx-auto max-w-[72rem] px-4 py-20 sm:px-6 lg:py-28">
+            <h2 id="pricing-h" className="lp-display max-w-[40rem] text-[clamp(1.9rem,4vw,2.75rem)] font-bold leading-[1.08] tracking-[-0.025em]">
+              Priced per student, per year
+            </h2>
+            <p className="mt-4 max-w-[38rem] text-[17px] leading-[1.6] text-[var(--muted)]">
+              You pay only for enrolled students. Start on any plan and move up when your faculty are ready.
+            </p>
+            <div className="mt-12 grid gap-y-12 md:grid-cols-3 md:gap-x-10">
+              {TIERS.map(t => (
+                <div key={t.name} className="flex flex-col border-t-2 border-[var(--ink)] pt-5">
+                  <h3 className="text-[17px] font-semibold">{t.name}</h3>
+                  <p className="mt-4 flex flex-wrap items-baseline gap-x-2">
+                    <span className="lp-num text-[clamp(2.4rem,5vw,3.25rem)] font-extrabold leading-none tracking-[-0.03em]">{t.inr}</span>
+                    <span className="text-[15px] text-[var(--muted)]">per student, per year</span>
+                  </p>
+                  <p className="mt-1.5 text-[14px] text-[var(--muted)]">({t.usd})</p>
+                  <p className="mt-4 text-[16px] leading-[1.5]">{t.fit}</p>
+                  <p className="mt-5 text-[14px] font-medium text-[var(--muted)]">{t.lead}</p>
+                  <ul className="mt-2 space-y-2 text-[15px] leading-[1.5]">
+                    {t.items.map(item => (
+                      <li key={item} className="flex gap-2.5">
+                        <span className="mt-[9px] h-[5px] w-[5px] shrink-0 rounded-full bg-[var(--blue)]" aria-hidden="true" />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+            <p className="mt-12 max-w-[40rem] text-[14px] leading-[1.6] text-[var(--muted)]">
+              US dollar amounts are approximate. Pilot terms are agreed with each college before the semester starts.
+            </p>
           </div>
         </section>
 
