@@ -13,7 +13,6 @@ interface Props {
   moduleTitle?: string;
   /** The module's numeric DB id — required for server-side RAG retrieval. */
   moduleId?: number | null;
-  notesContext?: string;
 }
 
 interface Message {
@@ -29,7 +28,6 @@ const WELCOME =
 export const ChatBot: React.FC<Props> = ({
   moduleTitle = "General Course Assistant",
   moduleId = null,
-  notesContext = "",
 }) => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -61,12 +59,12 @@ export const ChatBot: React.FC<Props> = ({
         .filter((m) => m.content !== WELCOME)
         .slice(-20)
         .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
-      const reply = await askModuleChatbot(q, moduleTitle, moduleId, notesContext, history);
+      const reply = await askModuleChatbot(q, moduleTitle, moduleId, history);
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (e: any) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Sorry, I ran into an error: ${e.message}` },
+        { role: "assistant", content: e?.message || "The AI assistant is temporarily unavailable. Please try again in a minute." },
       ]);
     } finally {
       setLoading(false);
@@ -128,7 +126,7 @@ export const ChatBot: React.FC<Props> = ({
                 }`}
               >
                 <div
-                  className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed ${
+                  className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
                     m.role === "user"
                       ? "bg-violet-600 text-white rounded-br-md"
                       : "bg-slate-100 text-slate-800 rounded-bl-md"

@@ -2,7 +2,7 @@
  * cron.ts
  *
  * Schedules analytics snapshot jobs using node-cron.
- * Call startCronJobs(pool) once from startServer().
+ * Call startCronJobs(pool, extraJobs) once from startServer().
  *
  * Schedule: every 30 minutes  ->  '0,30 * * * *'
  * An immediate run fires on startup so the first request always hits
@@ -23,26 +23,26 @@ type PgPool = InstanceType<typeof Pool>;
 /**
  * Start background cron jobs.
  *
- * Returns a Promise so callers can safely do:
- *   startCronJobs(pool).catch(console.error)
- *
- * The second argument (nimChat) is accepted but currently unused — it is
- * kept so the signature matches the call in server.ts without needing a
- * separate change there.
+ * `extraJobs` run alongside the snapshots on startup and every tick (e.g. the
+ * idempotent stale-embedding catch-up). Each job handles its own errors; a
+ * rejection is logged and never stops the others.
  */
 export async function startCronJobs(
   pool: PgPool,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _nimChat?: unknown,
+  extraJobs: Array<() => Promise<unknown>> = [],
 ): Promise<void> {
   async function runAll() {
-    await Promise.allSettled([
+    const results = await Promise.allSettled([
       snapshotAdminStats(pool),
       snapshotCourseAnalytics(pool),
+      ...extraJobs.map(job => job()),
     ]);
+    for (const r of results) {
+      if (r.status === 'rejected') log.error('cron job failed', errorFields(r.reason));
+    }
   }
 
-  // Fire immediately on startup (non-blocking — error is caught internally)
+  // Fire immediately on startup (non-blocking)
   runAll().catch((e: Error) => log.error('cron startup run failed', errorFields(e)));
 
   // Then every 30 minutes
@@ -50,5 +50,5 @@ export async function startCronJobs(
     runAll().catch((e: Error) => log.error('cron scheduled run failed', errorFields(e)));
   });
 
-  log.info('cron registered', { job: 'analytics-snapshot', schedule: '0,30 * * * *' });
+  log.info('cron registered', { job: 'analytics-snapshot', schedule: '0,30 * * * *', extraJobs: extraJobs.length });
 }

@@ -1,26 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { TrendingUp, TrendingDown, BarChart3, AlertCircle, FileText, RefreshCw } from 'lucide-react';
 import { AIAnalyticsSummary } from '../components/AIAnalyticsSummary';
-import { StudentAnalyticsData } from '../services/aiService';
+import {
+  StudentAnalyticsResponse, submissionRateOf, toAISummaryData,
+} from '../services/aiService';
 import { api } from '../services/api';
 
-interface CourseStats {
-  course_code: string;
-  course_name: string;
-  assignments_total: number;
-  assignments_submitted: number;
-  avg_grade: number | null;
-  late: number;
-  grades: { title: string; grade: number; submitted_at: string }[];
-}
-
-interface AnalyticsData {
-  student_name: string;
-  overall_avg: number | null;
-  total_submitted: number;
-  total_pending: number;
-  courses: CourseStats[];
-}
+type AnalyticsData = StudentAnalyticsResponse;
 
 interface GradingInsight {
   text: string;
@@ -34,20 +20,6 @@ interface GradingInsights {
 }
 
 interface Props { user: any; }
-
-function toAISummaryData(data: AnalyticsData, submissionRate: number): StudentAnalyticsData {
-  return {
-    studentName: data.student_name,
-    overallAverage: data.overall_avg ?? 0,
-    submissionRate,
-    courses: data.courses.map(c => ({
-      name: c.course_name,
-      average: c.avg_grade ?? 0,
-      assignments: c.assignments_submitted,
-      late: c.late,
-    })),
-  };
-}
 
 const gradeColor = (g: number | null) => {
   if (g == null) return 'text-slate-400';
@@ -322,11 +294,8 @@ export default function AnalyticsPage({ user }: Props) {
     </div>
   );
 
-  const submissionRate = data.total_submitted + data.total_pending > 0
-    ? Math.round((data.total_submitted / (data.total_submitted + data.total_pending)) * 100)
-    : 0;
-
-  const aiData = toAISummaryData(data, submissionRate);
+  const submissionRate = submissionRateOf(data);
+  const aiData = toAISummaryData(data);
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">

@@ -61,6 +61,9 @@ import { notify } from "./src/server/lib/notify.js";
 import { sendServerError } from './src/server/lib/httpErrors.js';
 import { log, errorFields } from './src/server/lib/log.js';
 import {
+  createNimEmbedder, embedModelFromEnv, cosineSim, reembedStaleChunks,
+} from './src/server/lib/embeddings.js';
+import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
   assertManagesCourse, assertCanAccessCourse, loadNoteForCaller,
   loadSubmissionForCaller, studentVisibleNotes, isMemberOfInstitution,
@@ -374,16 +377,6 @@ function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
   return chunks.filter(c => c.trim().length > 20);
 }
 
-function cosineSim(a: number[], b: number[]): number {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot   += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
-}
-
 // visibleToStudentId: when set, only chunks from notes that student may read
 // (course material + their own notes) are considered.
 async function retrieveChunks(
@@ -392,23 +385,25 @@ async function retrieveChunks(
   topK = 5,
   visibleToStudentId?: number
 ): Promise<string[]> {
+  // Only vectors from the current model are comparable; chunks still on an
+  // older model are skipped until reembedStaleChunks() catches them up.
   const chunks = visibleToStudentId == null
     ? await query(
         `SELECT nc.chunk_text, nc.embedding
          FROM note_chunks nc
          JOIN notes n ON nc.note_id = n.id
-         WHERE n.module_id = $1`,
-        [moduleId]
+         WHERE n.module_id = $1 AND nc.embedding_model = $2`,
+        [moduleId, embedder.model]
       )
     : await query(
         `SELECT nc.chunk_text, nc.embedding
          FROM note_chunks nc
          JOIN notes n ON nc.note_id = n.id
-         WHERE n.module_id = $1 AND ${studentVisibleNotes("$2")}`,
-        [moduleId, visibleToStudentId]
+         WHERE n.module_id = $1 AND nc.embedding_model = $2 AND ${studentVisibleNotes("$3")}`,
+        [moduleId, embedder.model, visibleToStudentId]
       );
   if (!chunks.length) return [];
-  const [queryEmbed] = await nimEmbed([queryText], "query");
+  const [queryEmbed] = await embedder.embed([queryText], "query");
   const scored = chunks.map((c: any) => {
     const emb: number[] = JSON.parse(c.embedding ?? "[]");
     return { text: c.chunk_text, score: cosineSim(queryEmbed, emb) };
@@ -438,7 +433,10 @@ async function nimChat(
   opts: { temperature?: number; maxTokens?: number } = {}
 ): Promise<string> {
   const key = process.env.NVIDIA_API_KEY;
-  if (!key) return "[Mock AI] Set NVIDIA_API_KEY in .env to enable real AI responses.";
+  if (!key) {
+    if (isProduction) throw new Error("NVIDIA_API_KEY is not set; cannot call the chat model");
+    return "[Mock AI] Set NVIDIA_API_KEY in .env to enable real AI responses.";
+  }
   const res = await fetchWithTimeout(
     "https://integrate.api.nvidia.com/v1/chat/completions",
     {
@@ -462,39 +460,12 @@ async function nimChat(
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-async function nimEmbed(
-  texts: string[],
-  inputType: "passage" | "query" = "passage"
-): Promise<number[][]> {
-  const key = process.env.NVIDIA_API_KEY;
-  if (!key) {
-    // Random vectors would be stored and silently corrupt retrieval for these
-    // notes, so production fails loudly instead (callers treat it as non-fatal).
-    if (isProduction) throw new Error("NVIDIA_API_KEY is not set; cannot generate embeddings");
-    return texts.map(() => Array.from({ length: 384 }, () => Math.random() - 0.5));
-  }
-  const res = await fetchWithTimeout(
-    "https://integrate.api.nvidia.com/v1/embeddings",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model:      "nvidia/nv-embedqa-e5-v5",
-        input:      texts,
-        input_type: inputType,
-        truncate:   "END",
-      }),
-    },
-    45000
-  );
-  if (!res.ok) {
-    const errBody = await res.text();
-    log.error("nim embed request failed", { status: res.status });
-    throw new Error(`NVIDIA Embed ${res.status}: ${errBody}`);
-  }
-  const data = await res.json() as any;
-  return (data.data ?? []).map((d: any) => d.embedding as number[]);
-}
+// Model is configurable so an NVIDIA end-of-life notice is a config change.
+const embedder = createNimEmbedder({
+  apiKey: process.env.NVIDIA_API_KEY,
+  model: embedModelFromEnv(),
+  isProduction,
+});
 
 const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 
@@ -773,17 +744,22 @@ async function startServer() {
       if (extractedText.trim().length > 50) {
         const chunks = chunkText(extractedText);
         if (chunks.length > 0) {
+          // If embedding fails the chunks are still stored, without vectors;
+          // reembedStaleChunks() fills them in on its next run.
+          let embeddings: number[][] | null = null;
           try {
-            const embeddings = await nimEmbed(chunks, "passage");
-            for (let i = 0; i < chunks.length; i++) {
-              await run(
-                `INSERT INTO note_chunks (note_id, chunk_index, chunk_text, embedding)
-                 VALUES ($1,$2,$3,$4)`,
-                [note.id, i, chunks[i], JSON.stringify(embeddings[i])]
-              );
-            }
+            embeddings = await embedder.embed(chunks, "passage");
           } catch (embErr) {
-            log.error("note embedding failed (non-fatal)", { noteId: note.id, ...errorFields(embErr) });
+            log.error("note embedding failed; chunks queued for re-embedding", { noteId: note.id, ...errorFields(embErr) });
+          }
+          for (let i = 0; i < chunks.length; i++) {
+            await run(
+              `INSERT INTO note_chunks (note_id, chunk_index, chunk_text, embedding, embedding_model)
+               VALUES ($1,$2,$3,$4,$5)`,
+              [note.id, i, chunks[i],
+               embeddings ? JSON.stringify(embeddings[i]) : null,
+               embeddings ? embedder.model : null]
+            );
           }
         }
       }
@@ -1073,20 +1049,83 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.get("/api/students/:id/analytics", requireAuth, requireSelfOrAdmin(), async (req, res) => {
+  // Aggregated per-course analytics for one student (shape: StudentAnalyticsResponse
+  // in src/services/aiService.ts). Grades are percentages of max_points.
+  app.get("/api/students/:id/analytics", requireAuth, requireSelfOrAdmin(), validateParams(routeParamId), async (req, res) => {
     try {
-      const submissions = await query(
-        `SELECT s.grade, s.submitted_at, a.title AS assignment_title,
-                m.name AS module_name, c.name AS course_name
-         FROM submissions s
-         JOIN assignments a ON s.assignment_id=a.id
-         JOIN modules m     ON a.module_id=m.id
-         JOIN courses c     ON m.course_id=c.id
-         WHERE s.student_id=$1 AND s.institution_id=$2 AND s.grade IS NOT NULL
-         ORDER BY s.submitted_at`,
-        [req.params.id, callerOf(req).institutionId]
-      );
-      res.json(submissions);
+      const studentId = Number(req.params.id);
+      const { institutionId } = callerOf(req);
+
+      // Late = submitted on a later calendar day than the due date. due_date is
+      // free text, so compare ISO date strings instead of casting (a malformed
+      // value must not fail the whole request).
+      const lateExpr = `CASE WHEN a.due_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                          THEN to_char(s.submitted_at, 'YYYY-MM-DD') > left(a.due_date, 10)
+                          ELSE false END`;
+      const pctExpr  = `s.grade * 100.0 / NULLIF(a.max_points, 0)`;
+
+      const [student, courses, grades] = await Promise.all([
+        queryOne(
+          `SELECT u.name FROM users u
+           JOIN institution_members im ON im.user_id = u.id AND im.institution_id = $2
+           WHERE u.id = $1`,
+          [studentId, institutionId]
+        ),
+        query(
+          `SELECT c.id, c.code AS course_code, c.name AS course_name,
+                  COUNT(DISTINCT a.id) FILTER (WHERE a.status = 'active')                AS assignments_total,
+                  COUNT(DISTINCT s.assignment_id)                                       AS assignments_submitted,
+                  ROUND(AVG(${pctExpr}) FILTER (WHERE s.grade IS NOT NULL), 1)          AS avg_grade,
+                  COUNT(DISTINCT s.id) FILTER (WHERE ${lateExpr})                        AS late
+           FROM enrollments e
+           JOIN courses c        ON c.id = e.course_id
+           LEFT JOIN modules m     ON m.course_id = c.id
+           LEFT JOIN assignments a ON a.module_id = m.id
+           LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = e.student_id
+           WHERE e.student_id = $1 AND e.institution_id = $2
+           GROUP BY c.id, c.code, c.name
+           ORDER BY c.name`,
+          [studentId, institutionId]
+        ),
+        query(
+          `SELECT m.course_id, a.title, ROUND(${pctExpr}, 1) AS grade, s.submitted_at
+           FROM submissions s
+           JOIN assignments a ON a.id = s.assignment_id
+           JOIN modules m     ON m.id = a.module_id
+           JOIN enrollments e ON e.course_id = m.course_id AND e.student_id = s.student_id
+           WHERE s.student_id = $1 AND s.institution_id = $2 AND s.grade IS NOT NULL
+           ORDER BY s.submitted_at`,
+          [studentId, institutionId]
+        ),
+      ]);
+      if (!student) return res.status(404).json({ error: "Student not found" });
+
+      const num = (v: unknown) => (v == null ? null : Number(v));
+      const courseStats = courses.map((c: any) => ({
+        course_code:           c.course_code,
+        course_name:           c.course_name,
+        assignments_total:     Number(c.assignments_total),
+        assignments_submitted: Number(c.assignments_submitted),
+        avg_grade:             num(c.avg_grade),
+        late:                  Number(c.late),
+        grades: grades
+          .filter((g: any) => g.course_id === c.id && g.grade != null)
+          .map((g: any) => ({ title: g.title, grade: Number(g.grade), submitted_at: g.submitted_at })),
+      }));
+
+      const allGrades = grades.filter((g: any) => g.grade != null).map((g: any) => Number(g.grade));
+      const totalSubmitted = courseStats.reduce((n: number, c: any) => n + c.assignments_submitted, 0);
+      const totalAssigned  = courseStats.reduce((n: number, c: any) => n + c.assignments_total, 0);
+
+      res.json({
+        student_name:    student.name,
+        overall_avg:     allGrades.length
+          ? Math.round((allGrades.reduce((x: number, y: number) => x + y, 0) / allGrades.length) * 10) / 10
+          : null,
+        total_submitted: totalSubmitted,
+        total_pending:   Math.max(totalAssigned - totalSubmitted, 0),
+        courses:         courseStats,
+      });
     } catch (e: any) { sendServerError(res, e); }
   });
 
@@ -1447,8 +1486,13 @@ async function startServer() {
 
       let context = "";
       if (module_id) {
-        const chunks = await retrieveChunks(module_id, content.slice(0, 500));
-        if (chunks.length) context = "\n\nRelevant course material:\n" + chunks.join("\n---\n");
+        try {
+          const chunks = await retrieveChunks(module_id, content.slice(0, 500));
+          if (chunks.length) context = "\n\nRelevant course material:\n" + chunks.join("\n---\n");
+        } catch (retrievalErr) {
+          // Grade from the rubric alone; this is a draft an instructor reviews.
+          log.warn("course material retrieval failed; drafting without it", errorFields(retrievalErr));
+        }
       }
 
       const prompt = `You are a university grading assistant.${context}\n\nRubric:\n${rubric}\n\nStudent submission:\n${content.slice(0, 4000)}\n\nThe submission is scored out of ${maxPoints}. Respond with JSON only: {"score": integer 0-${maxPoints}, "feedback": string, "strengths": string[], "improvements": string[]}`;
@@ -1478,14 +1522,23 @@ async function startServer() {
 
       let moduleName = "this course";
       let contextChunks: string[] = [];
+      // "unavailable": notes exist but could not be searched; the client tells
+      // the user the answer is not grounded in their notes.
+      let retrieval: "none" | "ok" | "unavailable" = "none";
       if (moduleId) {
         const mod = await queryOne("SELECT name, course_id FROM modules WHERE id = $1", [moduleId]);
         await assertCanAccessCourse(pool, caller, mod?.course_id ?? null);
         moduleName = mod.name ?? moduleName;
-        contextChunks = await retrieveChunks(
-          moduleId, question, 5,
-          caller.role === "student" ? caller.legacyUserId : undefined,
-        );
+        try {
+          contextChunks = await retrieveChunks(
+            moduleId, question, 5,
+            caller.role === "student" ? caller.legacyUserId : undefined,
+          );
+          retrieval = contextChunks.length ? "ok" : "none";
+        } catch (retrievalErr) {
+          retrieval = "unavailable";
+          log.warn("course material retrieval failed; answering without it", errorFields(retrievalErr));
+        }
       }
 
       // Course material is untrusted data: delimit it and say so, so text
@@ -1508,7 +1561,7 @@ async function startServer() {
       ];
 
       const answer = await nimChat(messages, { temperature: 0.5, maxTokens: 512 });
-      res.json({ answer });
+      res.json({ answer, retrieval, sourceCount: contextChunks.length });
     } catch (e: any) { sendServerError(res, e); }
   });
 
@@ -1613,7 +1666,8 @@ async function startServer() {
 
   // Run startup tasks after the server is already listening
   checkStorageConnectivity().catch(e => log.error("storage connectivity check crashed", errorFields(e)));
-  startCronJobs(pool, nimChat).catch(e => log.error("cron startup failed", errorFields(e)));
+  startCronJobs(pool, [() => reembedStaleChunks(pool, embedder)])
+    .catch(e => log.error("cron startup failed", errorFields(e)));
 }
 
 startServer().catch(e => {
