@@ -165,22 +165,6 @@ export default function NotesPage({ user }: Props) {
   const chatModuleId: number | null =
     activeNote?.module_id ?? currentModule?.id ?? null;
 
-  const chatNotesContext: string = (() => {
-    const contextNotes = activeNote ? [activeNote] : filteredNotes;
-    const withContent = contextNotes.filter(n => n.text_content);
-    if (withContent.length > 0) {
-      return withContent
-        .map(n => `=== ${n.original_name} ===\n${n.text_content}`)
-        .join('\n\n')
-        .slice(0, 4000);
-    }
-    if (contextNotes.length > 0) {
-      return `The following notes have been uploaded for this module:\n` +
-        contextNotes.map(n => `- ${n.original_name}`).join('\n') +
-        `\n\nNote: Full text content is not yet available in this session.`;
-    }
-    return '';
-  })();
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-[60vh]">
@@ -374,7 +358,6 @@ export default function NotesPage({ user }: Props) {
       <ChatBot
         moduleTitle={chatModuleTitle}
         moduleId={chatModuleId}
-        notesContext={chatNotesContext}
       />
     </div>
   );

@@ -7,6 +7,9 @@ import {
 import { Link } from "react-router-dom";
 import { Toaster, toast } from "sonner";
 import { api } from "../services/api";
+import {
+  getAnalyticsSummary, hasGradedWork, toAISummaryData, StudentAnalyticsResponse,
+} from '../services/aiService';
 
 interface DashboardPageProps {
   user: User;
@@ -161,9 +164,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
       .catch(() => {});
 
     setAiLoading(true);
+    // Only ask the model when there is graded work to summarise.
     api.getStudentAnalytics(user.id)
-      .then((analytics: any) => api.aiAnalyticsSummary(analytics))
-      .then((res: any) => setAiInsight(res?.summary ?? null))
+      .then((analytics: StudentAnalyticsResponse) =>
+        hasGradedWork(analytics) ? getAnalyticsSummary(toAISummaryData(analytics)) : null)
+      .then((summary) => setAiInsight(summary || null))
       .catch(() => setAiInsight(null))
       .finally(() => setAiLoading(false));
   }, [user.id]);

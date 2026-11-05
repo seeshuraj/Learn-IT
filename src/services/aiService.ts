@@ -43,36 +43,36 @@ export interface ConversationTurn {
 }
 
 /**
- * askModuleChatbot — sends the user question to the Express /api/ai/chat
- * endpoint which performs vector RAG retrieval from note_chunks using the
- * moduleId, then calls NVIDIA NIM server-side.
+ * askModuleChatbot — sends the question to the Express /api/ai/chat endpoint,
+ * which retrieves relevant note chunks for the module and calls the model
+ * server-side.
+ *
+ * There is deliberately no client-side fallback: a keyword match over the
+ * notes looks like a real answer and hides outages. Failures surface as
+ * errors, and an answer the server could not ground in the notes says so.
  */
 export async function askModuleChatbot(
-  question:     string,
-  moduleTitle:  string,
-  moduleId:     number | null,
-  notesContext: string,
-  history:      ConversationTurn[] = []
+  question:    string,
+  moduleTitle: string,
+  moduleId:    number | null,
+  history:     ConversationTurn[] = []
 ): Promise<string> {
+  let res: { answer?: string; retrieval?: "none" | "ok" | "unavailable" };
   try {
-    const res = await api.aiChat(question, moduleTitle, moduleId, history);
-    return (res as any)?.answer ?? (res as any)?.reply ?? String(res);
-  } catch (backendErr: any) {
-    console.warn('[aiService] backend chat failed, using client fallback:', backendErr.message);
-    if (!notesContext) {
-      return "I don't have any notes loaded for this module yet. Ask your instructor to upload lecture materials.";
-    }
-    const lower    = question.toLowerCase();
-    const sentences = notesContext.split(/[.!?\n]+/).filter(s => s.trim().length > 20);
-    const relevant  = sentences.filter(s => {
-      const words = lower.split(' ').filter(w => w.length > 3);
-      return words.some(w => s.toLowerCase().includes(w));
-    });
-    if (relevant.length > 0) {
-      return `Based on your notes:\n\n${relevant.slice(0, 3).join('. ')}.`;
-    }
-    return `I found notes for this module but couldn't locate specific content matching your question. Try rephrasing or ask about a key term from the notes.`;
+    res = await api.aiChat(question, moduleTitle, moduleId, history) as typeof res;
+  } catch (err: any) {
+    const message: string = err?.message ?? "";
+    throw new Error(
+      message.startsWith("Too many requests")
+        ? message
+        : "The AI assistant is temporarily unavailable. Please try again in a minute."
+    );
   }
+  const answer = res?.answer?.trim();
+  if (!answer) throw new Error("The AI assistant returned an empty answer. Please try again.");
+  return res.retrieval === "unavailable"
+    ? `${answer}\n\n(Note: your course notes couldn't be searched just now, so this answer isn't based on them.)`
+    : answer;
 }
 
 // ─── 3. STUDENT ANALYTICS AI SUMMARY ──────────────────────────────────────────
@@ -87,6 +87,49 @@ export interface StudentAnalyticsData {
   }>;
   overallAverage:  number;
   submissionRate:  number;
+}
+
+/** Shape returned by GET /api/students/:id/analytics. Grades are percentages. */
+export interface StudentCourseStats {
+  course_code:           string;
+  course_name:           string;
+  assignments_total:     number;
+  assignments_submitted: number;
+  avg_grade:             number | null;
+  late:                  number;
+  grades: { title: string; grade: number; submitted_at: string }[];
+}
+
+export interface StudentAnalyticsResponse {
+  student_name:    string;
+  overall_avg:     number | null;
+  total_submitted: number;
+  total_pending:   number;
+  courses:         StudentCourseStats[];
+}
+
+export function submissionRateOf(data: StudentAnalyticsResponse): number {
+  const total = data.total_submitted + data.total_pending;
+  return total > 0 ? Math.round((data.total_submitted / total) * 100) : 0;
+}
+
+export function toAISummaryData(data: StudentAnalyticsResponse): StudentAnalyticsData {
+  return {
+    studentName:    data.student_name,
+    overallAverage: data.overall_avg ?? 0,
+    submissionRate: submissionRateOf(data),
+    courses: data.courses.map(c => ({
+      name:        c.course_name,
+      average:     c.avg_grade ?? 0,
+      assignments: c.assignments_submitted,
+      late:        c.late,
+    })),
+  };
+}
+
+/** A summary needs at least one graded course; otherwise skip the model call. */
+export function hasGradedWork(data: StudentAnalyticsResponse): boolean {
+  return data.courses.some(c => c.avg_grade != null);
 }
 
 export async function getAnalyticsSummary(
