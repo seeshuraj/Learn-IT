@@ -44,7 +44,7 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. 1
 | RLS disabled on 6 new tables (audit_logs, snapshots, roadmaps, notifications) | ✅ Resolved (2026-05-15) |
 | SECURITY DEFINER view + functions exposed | ✅ Resolved (2026-05-15) |
 | Orphaned `cloudinary_url` columns in DB | ✅ Resolved (2026-05-15) |
-| Seed users on shared temp password `ChangeMe123!` | ⏳ **Run locally** — `npx tsx scripts/rotate-seed-passwords.ts` |
+| Seed users on a shared temporary password | ✅ Resolved — verified 2026-11-05: no account still uses it |
 
 **Supabase security advisor currently reports: 1 warning (leaked password protection — requires Supabase Pro, skipped).**
 
@@ -72,7 +72,7 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. 1
 | P2-1 | `GET /api/admin/courses` — returns `{ id, code, name, instructor_id, instructor_name, enrollment_count, module_count }` |
 | P2-2 | Bulk-enroll hard-fails entire transaction on Auth creation error; returns `tempPassword` per new user in response |
 | P2-3 | `rateLimit.ts` — all 6 limiters: `loginLimiter`, `aiLimiter`, `aiGradeLimiter`, `uploadLimiter`, `reportLimiter`, `generalApiLimiter` |
-| P2-4 | `scripts/rotate-seed-passwords.ts` — rotates `ChangeMe123!` for all seeded Auth accounts; **run locally** |
+| P2-4 | `scripts/rotate-seed-passwords.ts` — rotates the seeded Auth accounts' passwords to unique random ones; **run locally** |
 | P2-5 | `migrations/004_drop_cloudinary_url_columns.sql` — drops dead `cloudinary_url` columns — ✅ applied to prod 2026-05-15 |
 | P2-6 | `storage_path` stripped from all note/submission API responses; only `proxy_url` + `signed_url` returned |
 | P2-7 | `DashboardPage.tsx` — live AI insight via `api.getStudentAnalytics()` → `api.aiAnalyticsSummary()`; loading spinner + graceful fallback |
@@ -143,7 +143,7 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. 1
 
 | Step | Action | Status |
 |---|---|---|
-| 1 | Run `npx tsx scripts/rotate-seed-passwords.ts` locally | ⏳ **Pending** |
+| 1 | Run `npx tsx scripts/rotate-seed-passwords.ts` locally | ✅ Done — verified 2026-11-05 |
 | 2 | Enable "Check passwords against HaveIBeenPwned" (Supabase Auth dashboard) | ⏭️ Skipped — requires Supabase Pro |
 | 3 | Enable hCaptcha + paste Secret Key (Supabase Auth dashboard) | ✅ Done |
 | 4 | Add `VITE_HCAPTCHA_SITE_KEY` to Vercel environment variables | ✅ Done |
@@ -154,4 +154,4 @@ Status: **Phase 1 + Phase 2 + Phase 3 (P3-1, P3-2, P3-3, P3-4) fully complete. 1
 
 **All code changes are complete.**
 
-The only outstanding item is **Step 1** above — run `rotate-seed-passwords.ts` once from your local terminal to rotate the `ChangeMe123!` default passwords on seeded accounts.
+Step 1 is done: as of 2026-11-05 no seeded account uses the shared temporary password. Re-run `rotate-seed-passwords.ts` whenever demo credentials need to be reissued; never record passwords in this repository.
