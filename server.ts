@@ -1413,7 +1413,7 @@ async function startServer() {
     try {
       const { submissionContent, rubric } = req.body;
       const prompt = `You are a university grading assistant. Grade the following student submission based on the rubric provided.\n\nRubric:\n${rubric}\n\nSubmission:\n${submissionContent}\n\nRespond in JSON format only: {"score": number 0-100, "feedback": string, "strengths": string[], "improvements": string[]}`;
-      const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024 });
+      const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024, timeoutMs: 40_000 });
       const result = parseGradingSuggestion(response, 100);
       if (!result) return res.status(502).json({ error: "The AI response could not be read. Please try again or grade manually." });
       res.json(result);
@@ -1458,7 +1458,7 @@ async function startServer() {
       }
 
       const prompt = `You are a university grading assistant.${context}\n\nRubric:\n${rubric}\n\nStudent submission:\n${content.slice(0, 4000)}\n\nThe submission is scored out of ${maxPoints}. Respond with JSON only: {"score": integer 0-${maxPoints}, "feedback": string, "strengths": string[], "improvements": string[]}`;
-      const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024 });
+      const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024, timeoutMs: 40_000 });
       const result = parseGradingSuggestion(response, maxPoints);
       if (!result) return res.status(502).json({ error: "The AI response could not be read. Please try again or grade manually." });
 
@@ -1628,7 +1628,10 @@ async function startServer() {
 
   // Run startup tasks after the server is already listening
   checkStorageConnectivity().catch(e => log.error("storage connectivity check crashed", errorFields(e)));
-  chatClient.discover().catch(e => log.error("chat model discovery crashed", errorFields(e)));
+  // Discovery is free; the probe costs one tiny completion per candidate per deploy.
+  chatClient.discover()
+    .then(() => chatClient.probe())
+    .catch(e => log.error("chat model discovery/probe crashed", errorFields(e)));
   startCronJobs(pool, [() => reembedStaleChunks(pool, embedder)])
     .catch(e => log.error("cron startup failed", errorFields(e)));
 }

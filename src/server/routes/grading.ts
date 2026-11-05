@@ -100,7 +100,7 @@ export function createGradingRouter(pool: pkg.Pool, nimChat: ChatFn): Router {
             },
           ];
 
-          const raw     = await nimChat(messages, { temperature: 0.2, maxTokens: 1536 });
+          const raw     = await nimChat(messages, { temperature: 0.2, maxTokens: 1536, timeoutMs: 45_000 });
           const cleaned = raw.replace(/```json|```/g, '').trim();
           const parsed  = JSON.parse(cleaned);
           parsed.score  = Math.max(0, Math.min(Math.round(parsed.score), maxPoints));

@@ -30,7 +30,7 @@ type PgPool = InstanceType<typeof Pool>;
 
 type NimChatFn = (
   messages: { role: string; content: string }[],
-  opts?: { temperature?: number; maxTokens?: number }
+  opts?: { temperature?: number; maxTokens?: number; timeoutMs?: number }
 ) => Promise<string>;
 
 export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
@@ -318,7 +318,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
           { role: 'system', content: systemMsg },
           { role: 'user',   content: prompt },
         ],
-        { temperature: 0.4, maxTokens: 1400 }
+        { temperature: 0.4, maxTokens: 1400, timeoutMs: 45_000 }
       );
 
       let parsed: { title: string; summary: string; milestones: any[] };
