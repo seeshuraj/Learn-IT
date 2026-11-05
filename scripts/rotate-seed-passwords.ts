@@ -2,8 +2,8 @@
 /**
  * P2-4 — Rotate temporary passwords for the 4 seeded Auth users.
  *
- * All seeded accounts were created with the shared temp password "ChangeMe123!"
- * during the initial backfill migration. This script replaces each one with a
+ * All seeded accounts were created with one shared temporary password during
+ * the initial backfill migration. This script replaces each one with a
  * unique cryptographically-generated password and prints a credential table
  * for the admin to distribute.
  *
@@ -17,6 +17,7 @@
  * fresh passwords and overwrites whatever was set previously.
  */
 
+import { randomInt } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -43,17 +44,24 @@ const pool = new Pool({
   max: 3,
 });
 
-/** Generate a strong unique password: 1 upper + 1 digit + 1 symbol + 13 random chars */
+/**
+ * Generate a strong unique password from a CSPRNG: 1 upper + 1 digit +
+ * 1 symbol + 13 random chars, then a Fisher-Yates shuffle.
+ */
 function generatePassword(): string {
-  const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*";
-  let pwd = "";
-  pwd += "ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 24)];
-  pwd += "23456789"[Math.floor(Math.random() * 8)];
-  pwd += "!@#$%^&*"[Math.floor(Math.random() * 8)];
-  for (let i = 3; i < 16; i++) {
-    pwd += charset[Math.floor(Math.random() * charset.length)];
+  const upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits  = "23456789";
+  const symbols = "!@#$%^&*";
+  const charset = upper + "abcdefghjkmnpqrstuvwxyz" + digits + symbols;
+  const pick = (set: string) => set[randomInt(set.length)];
+
+  const chars = [pick(upper), pick(digits), pick(symbols)];
+  while (chars.length < 16) chars.push(pick(charset));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
   }
-  return pwd.split("").sort(() => Math.random() - 0.5).join("");
+  return chars.join("");
 }
 
 async function main() {
