@@ -10,6 +10,7 @@ import { api } from "../services/api";
 import {
   getAnalyticsSummary, hasGradedWork, toAISummaryData, StudentAnalyticsResponse,
 } from '../services/aiService';
+import { MarkdownMessage } from '../components/MarkdownMessage';
 
 interface DashboardPageProps {
   user: User;
@@ -231,7 +232,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
             Generating your personalised insight…
           </div>
         ) : aiInsight ? (
-          <p className="text-sm leading-relaxed opacity-90">{aiInsight}</p>
+          <MarkdownMessage text={aiInsight} className="text-sm leading-relaxed opacity-90" />
         ) : (
           <p className="text-sm leading-relaxed opacity-75 italic">
             Could not load AI insight right now — check back shortly.

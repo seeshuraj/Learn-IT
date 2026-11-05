@@ -43,8 +43,24 @@ export const CALL_DEADLINE_MS   = 50_000;
 export const COOLDOWN_MS        = 10 * 60_000;
 export type ChatFn = (messages: ChatMessage[], opts?: ChatOptions) => Promise<string>;
 
+export interface StreamHandlers {
+  /** Called with each new piece of visible answer text, in order. */
+  onDelta(text: string): void;
+  /** Aborts the upstream request (e.g. the user closed the chat). */
+  signal?: AbortSignal;
+}
+export interface StreamResult { model: string; text: string }
+
+/** Idle gap allowed between chunks once an answer has started streaming. */
+export const STREAM_IDLE_MS = 30_000;
+
 export interface ChatClient {
   chat: ChatFn;
+  /**
+   * Streaming chat. Fails over like chat() until the first visible token;
+   * after that the answer is committed to that model and errors propagate.
+   */
+  chatStream(messages: ChatMessage[], opts: ChatOptions, handlers: StreamHandlers): Promise<StreamResult>;
   /** Narrow the candidates to models listed for this key. Safe to skip or fail. */
   discover(): Promise<string[]>;
   /** Send each candidate a tiny prompt; keep responders first, in preference order. */
@@ -73,6 +89,26 @@ export function stripReasoning(text: string): string {
 export interface ProbeResult { model: string; ok: boolean; ms: number; error?: string }
 
 /** The model cannot serve this call; `permanent` = retired (404/410). */
+/**
+ * The visible part of a partially streamed answer: complete <think> blocks
+ * removed, anything after an unclosed <think> withheld, and a trailing
+ * partial "<think" tag held back until the next chunk decides it.
+ */
+export function visibleSoFar(full: string): string {
+  let out = full.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const open = out.search(/<think>/i);
+  if (open !== -1) out = out.slice(0, open);
+  for (let k = Math.min('<think>'.length - 1, out.length); k > 0; k--) {
+    if ('<think>'.startsWith(out.slice(-k).toLowerCase())) { out = out.slice(0, -k); break; }
+  }
+  return out.replace(/^\s+/, '');
+}
+
+/** Thrown when the caller aborted (client disconnected); never retried. */
+export class ChatAborted extends Error {
+  constructor() { super('chat aborted by caller'); this.name = 'ChatAborted'; }
+}
+
 class ModelUnavailable extends Error {
   constructor(message: string, readonly permanent: boolean) { super(message); }
 }
@@ -197,6 +233,126 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
     throw new Error(`No NVIDIA chat model answered (tried: ${tried.join(', ') || 'none'}). Set NVIDIA_CHAT_MODEL.`);
   };
 
+  async function streamModel(
+    model: string, messages: ChatMessage[], o: ChatOptions, firstTokenMs: number, h: StreamHandlers,
+  ): Promise<StreamResult> {
+    const controller = new AbortController();
+    const onOuterAbort = () => controller.abort();
+    h.signal?.addEventListener('abort', onOuterAbort, { once: true });
+    let started = false;
+    let timer = setTimeout(() => controller.abort(), firstTokenMs);
+    const fail = (err: any): never => {
+      if (h.signal?.aborted) throw new ChatAborted();
+      if (err?.name === 'AbortError') {
+        if (!started) throw new ModelUnavailable(`${model} gave no answer within ${firstTokenMs} ms`, false);
+        throw new Error(`NVIDIA NIM stream from ${model} stalled`);
+      }
+      throw err;
+    };
+    try {
+      let res: Response;
+      try {
+        res = await doFetch(`${NIM_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: o.temperature ?? 0.4,
+            max_tokens: o.maxTokens ?? 1024,
+            stream: true,
+            ...modelRequestExtras(model),
+          }),
+          signal: controller.signal,
+        });
+      } catch (err) { return fail(err); }
+      if (res.status === 404 || res.status === 410) throw new ModelUnavailable(`${model} retired (${res.status})`, true);
+      if (TRANSIENT_STATUSES.has(res.status)) {
+        await res.text().catch(() => '');
+        throw new ModelUnavailable(`${model} failed (${res.status})`, false);
+      }
+      if (!res.ok || !res.body) {
+        const body = await res.text().catch(() => '');
+        log.error('nim chat stream request failed', { status: res.status, model });
+        throw new Error(`NVIDIA NIM ${res.status}: ${body.slice(0, 300)}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '', full = '', emitted = '', finished = false;
+      const emit = (visible: string) => {
+        if (visible.length > emitted.length && visible.startsWith(emitted)) {
+          const piece = visible.slice(emitted.length);
+          emitted = visible;
+          if (!started) started = true;
+          clearTimeout(timer);
+          timer = setTimeout(() => controller.abort(), STREAM_IDLE_MS);
+          h.onDelta(piece);
+        }
+      };
+      while (!finished) {
+        const chunk = await reader.read().catch((err: unknown) => fail(err));
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') { finished = true; break; }
+          let event: any;
+          try { event = JSON.parse(payload); } catch { continue; }
+          const piece = event.choices?.[0]?.delta?.content;
+          if (typeof piece === 'string' && piece) {
+            full += piece;
+            emit(visibleSoFar(full));
+          }
+        }
+      }
+      if (finished) await reader.cancel().catch(() => {});
+      const text = stripReasoning(full);
+      emit(text);   // flush anything held back (e.g. a literal trailing "<")
+      if (!text) {
+        log.error('nim chat stream returned no content', { model });
+        throw new Error('NVIDIA NIM returned an empty answer');
+      }
+      return { model, text };
+    } finally {
+      clearTimeout(timer);
+      h.signal?.removeEventListener('abort', onOuterAbort);
+    }
+  }
+
+  async function chatStream(messages: ChatMessage[], o: ChatOptions, h: StreamHandlers): Promise<StreamResult> {
+    if (!opts.apiKey) {
+      if (opts.isProduction) throw new Error('NVIDIA_API_KEY is not set; cannot call the chat model');
+      const mock = '[Mock AI] Set NVIDIA_API_KEY in .env to enable real AI responses.';
+      h.onDelta(mock);
+      return { model: 'mock', text: mock };
+    }
+    const attemptMs = o.timeoutMs ?? ATTEMPT_TIMEOUT_MS;
+    const deadline = now() + (opts.deadlineMs ?? Math.max(CALL_DEADLINE_MS, attemptMs + ATTEMPT_TIMEOUT_MS));
+    const tried: string[] = [];
+    for (const model of attemptOrder()) {
+      const remaining = deadline - now();
+      if (remaining < 2_000) break;
+      tried.push(model);
+      try {
+        const result = await streamModel(model, messages, o, Math.min(attemptMs, remaining), h);
+        if (preferred !== model) log.info('chat model selected', { model });
+        preferred = model;
+        benchedUntil.delete(model);
+        return result;
+      } catch (err) {
+        // Only a model that produced nothing visible can be replaced.
+        if (!(err instanceof ModelUnavailable)) throw err;
+        markUnavailable(model, err);
+      }
+    }
+    throw new Error(`No NVIDIA chat model answered (tried: ${tried.join(', ') || 'none'}). Set NVIDIA_CHAT_MODEL.`);
+  }
+
   async function probe(): Promise<ProbeResult[]> {
     if (!opts.apiKey) return [];
     const ping: ChatMessage[] = [{ role: 'user', content: 'Reply with the single word: ok' }];
@@ -246,6 +402,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
 
   return {
     chat,
+    chatStream,
     discover,
     probe,
     currentModel: () => preferred ?? candidates.find(m => !dead.has(m)) ?? null,

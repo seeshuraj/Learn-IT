@@ -4,7 +4,7 @@
 // the model provider and never holds a provider API key; prompts, keys,
 // rate limits and validation all live server-side.
 
-import { api } from './api';
+import { api, aiChatStream } from './api';
 
 // ─── 1. AI GRADING SUGGESTION ─────────────────────────────────────────────────
 // Proxies through the server-side /api/submissions/:id/ai-grade endpoint.
@@ -71,8 +71,48 @@ export async function askModuleChatbot(
   const answer = res?.answer?.trim();
   if (!answer) throw new Error("The AI assistant returned an empty answer. Please try again.");
   return res.retrieval === "unavailable"
-    ? `${answer}\n\n(Note: your course notes couldn't be searched just now, so this answer isn't based on them.)`
+    ? `${answer}${UNGROUNDED_NOTE}`
     : answer;
+}
+
+const UNAVAILABLE = "The AI assistant is temporarily unavailable. Please try again in a minute.";
+const UNGROUNDED_NOTE =
+  "\n\n_Note: your course notes couldn't be searched just now, so this answer isn't based on them._";
+
+/**
+ * Streaming variant of askModuleChatbot: `onText` receives the answer so far
+ * after every chunk. Resolves with the final text.
+ */
+export async function streamModuleChatbot(
+  question:    string,
+  moduleTitle: string,
+  moduleId:    number | null,
+  history:     ConversationTurn[],
+  onText:      (textSoFar: string) => void,
+  signal?:     AbortSignal,
+): Promise<string> {
+  let text = "";
+  let ungrounded = false;
+  try {
+    await aiChatStream({ question, moduleTitle, moduleId, history }, {
+      signal,
+      onMeta: (m) => { ungrounded = m.retrieval === "unavailable"; },
+      onDelta: (d) => { text += d; onText(text); },
+    });
+  } catch (err: any) {
+    if (err?.name === "AbortError") throw err;
+    const message: string = err?.message ?? "";
+    if (text) {
+      // Keep what arrived and say it is incomplete.
+      text += "\n\n_The answer was interrupted. Please ask again._";
+      onText(text);
+      return text;
+    }
+    throw new Error(message.startsWith("Too many requests") ? message : UNAVAILABLE);
+  }
+  if (!text.trim()) throw new Error("The AI assistant returned an empty answer. Please try again.");
+  if (ungrounded) { text += UNGROUNDED_NOTE; onText(text); }
+  return text;
 }
 
 // ─── 3. STUDENT ANALYTICS AI SUMMARY ──────────────────────────────────────────

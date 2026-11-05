@@ -7,7 +7,8 @@ import {
   Sparkles,
   BookOpen,
 } from "lucide-react";
-import { askModuleChatbot, ConversationTurn } from "../services/aiService";
+import { streamModuleChatbot, ConversationTurn } from "../services/aiService";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 interface Props {
   moduleTitle?: string;
@@ -37,6 +38,11 @@ export const ChatBot: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // In-flight answer; aborted when the window closes or the component unmounts.
+  const inflight = useRef<AbortController | null>(null);
+
+  useEffect(() => () => inflight.current?.abort(), []);
+  useEffect(() => { if (!open) inflight.current?.abort(); }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -49,24 +55,30 @@ export const ChatBot: React.FC<Props> = ({
     const q = input.trim();
     if (!q || loading) return;
     setInput("");
-    const userMsg: Message = { role: "user", content: q };
-    setMessages((prev) => [...prev, userMsg]);
+    // The API accepts at most 20 prior turns of up to 4000 chars each;
+    // recent context is what matters and it bounds token cost.
+    const history: ConversationTurn[] = messages
+      .filter((m) => m.content !== WELCOME && m.content.trim())
+      .slice(-20)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+    // The assistant bubble is appended up front and filled as tokens arrive.
+    setMessages((prev) => [...prev, { role: "user", content: q }, { role: "assistant", content: "" }]);
+    const setAnswer = (content: string) =>
+      setMessages((prev) => [...prev.slice(0, -1), { role: "assistant", content }]);
+
+    const controller = new AbortController();
+    inflight.current = controller;
     setLoading(true);
     try {
-      // The API accepts at most 20 prior turns of up to 4000 chars each;
-      // recent context is what matters and it bounds token cost.
-      const history: ConversationTurn[] = messages
-        .filter((m) => m.content !== WELCOME)
-        .slice(-20)
-        .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
-      const reply = await askModuleChatbot(q, moduleTitle, moduleId, history);
-      setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+      await streamModuleChatbot(q, moduleTitle, moduleId, history, setAnswer, controller.signal);
     } catch (e: any) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: e?.message || "The AI assistant is temporarily unavailable. Please try again in a minute." },
-      ]);
+      if (e?.name === "AbortError") {
+        setMessages((prev) => (prev.at(-1)?.content ? prev : prev.slice(0, -1)));
+      } else {
+        setAnswer(e?.message || "The AI assistant is temporarily unavailable. Please try again in a minute.");
+      }
     } finally {
+      if (inflight.current === controller) inflight.current = null;
       setLoading(false);
     }
   };
@@ -118,7 +130,7 @@ export const ChatBot: React.FC<Props> = ({
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-            {messages.map((m, i) => (
+            {messages.filter((m) => m.content).map((m, i) => (
               <div
                 key={i}
                 className={`flex ${
@@ -126,17 +138,17 @@ export const ChatBot: React.FC<Props> = ({
                 }`}
               >
                 <div
-                  className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                  className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed break-words ${
                     m.role === "user"
-                      ? "bg-violet-600 text-white rounded-br-md"
+                      ? "bg-violet-600 text-white rounded-br-md whitespace-pre-wrap"
                       : "bg-slate-100 text-slate-800 rounded-bl-md"
                   }`}
                 >
-                  {m.content}
+                  {m.role === "assistant" ? <MarkdownMessage text={m.content} /> : m.content}
                 </div>
               </div>
             ))}
-            {loading && (
+            {loading && !messages.at(-1)?.content && (
               <div className="flex justify-start">
                 <div className="bg-slate-100 px-3 py-2.5 rounded-2xl rounded-bl-md flex items-center gap-1">
                   <span
