@@ -19,11 +19,11 @@ const PILOT_MAILTO =
   );
 
 const MARKS = [
-  { q: "Q1", topic: "Arrays and linked lists", got: 9 },
+  { q: "Q1", topic: "Linked lists", got: 9 },
   { q: "Q2", topic: "Stacks and queues", got: 8 },
   { q: "Q3", topic: "Tree traversal", got: 3, flagged: true },
   { q: "Q4", topic: "Hashing", got: 7 },
-  { q: "Q5", topic: "Graph search (BFS, DFS)", got: 5 },
+  { q: "Q5", topic: "Graph search", got: 5 },
 ];
 
 const PLAN = [
@@ -169,7 +169,7 @@ function MarkedSheet() {
           </table>
 
           {/* Examiner's margin note (beside the table on wide screens, below it on phones) */}
-          <p className="lp-note lp-hand mt-3 max-w-[15rem] text-[22px] leading-[1.1] text-[var(--red)] sm:mt-16 sm:w-[11.5rem]">
+          <p className="lp-note lp-hand mt-3 max-w-[15rem] text-[22px] leading-[1.1] text-[var(--red)] sm:mt-[6.5rem] sm:w-[10.5rem]">
             Mixed up traversal order in all three parts. Revise Module 3.
           </p>
         </div>
@@ -209,8 +209,8 @@ export default function LandingPage() {
           <nav aria-label="Primary" className="flex items-center gap-1 sm:gap-2">
             <a href="#how" className="lp-focus hidden rounded-md px-3 py-2 text-[15px] text-[var(--muted)] hover:text-[var(--ink)] md:inline-block">How it works</a>
             <a href="#trust" className="lp-focus hidden rounded-md px-3 py-2 text-[15px] text-[var(--muted)] hover:text-[var(--ink)] md:inline-block">Data and privacy</a>
-            <Link to="/login" className="lp-focus rounded-md px-3 py-2 text-[15px] font-medium hover:text-[var(--blue)]">Sign in</Link>
-            <a href={PILOT_MAILTO} className="lp-focus lp-btn hidden sm:inline-flex">Book a pilot</a>
+            <Link to="/login" className="lp-focus whitespace-nowrap rounded-md px-2 py-2 text-[15px] font-medium hover:text-[var(--blue)] sm:px-3">Sign in</Link>
+            <a href={PILOT_MAILTO} className="lp-focus lp-btn whitespace-nowrap">Book a pilot</a>
           </nav>
         </div>
       </header>
