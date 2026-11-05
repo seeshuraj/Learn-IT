@@ -147,3 +147,111 @@ test('probe keeps responders first in preference order and benches the rest', as
   assert.equal(nim.chatCalls().at(-1)!.body.model, 'second');
   assert.equal(nim.chatCalls()[0].body.max_tokens, 128);
 });
+
+// ── streaming ────────────────────────────────────────────────────────────────
+import { visibleSoFar, ChatAborted } from '../llm.js';
+
+const sse = (pieces: string[]) => pieces.map(p =>
+  `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`).join('') + 'data: [DONE]\n\n';
+
+/** A streamed Response whose body yields `chunks`, optionally hanging or erroring after them. */
+function streamResponse(chunks: string[], after: 'end' | 'hang' | 'error' = 'end', signal?: AbortSignal) {
+  const enc = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(enc.encode(c));
+      if (after === 'end') controller.close();
+      // Error after delivery (erroring synchronously would discard queued chunks).
+      if (after === 'error') setTimeout(() => controller.error(new Error('socket reset')), 5);
+      if (after === 'hang') signal?.addEventListener('abort', () => {
+        const e = new Error('This operation was aborted'); e.name = 'AbortError'; controller.error(e);
+      });
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+function fakeStreamNim(route: (model: string, signal: AbortSignal) => Response | 'hang' | number) {
+  const models: string[] = [];
+  const impl = (async (_url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    models.push(body.model);
+    assert.equal(body.stream, true);
+    const r = route(body.model, init.signal);
+    if (r === 'hang') {
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+        const e = new Error('This operation was aborted'); e.name = 'AbortError'; reject(e);
+      }));
+    }
+    if (typeof r === 'number') return new Response('x', { status: r });
+    return r;
+  }) as unknown as typeof fetch;
+  return { impl, models };
+}
+
+test('visibleSoFar hides reasoning and holds back a partial <think> tag', () => {
+  assert.equal(visibleSoFar('<think>plan</think>\nAnswer'), 'Answer');
+  assert.equal(visibleSoFar('<think>still planning'), '');
+  assert.equal(visibleSoFar('Answer so far <thi'), 'Answer so far ');
+  assert.equal(visibleSoFar('a < b'), 'a < b');
+});
+
+test('streams visible deltas in order and returns the full answer', async () => {
+  const nim = fakeStreamNim(() => streamResponse([sse(['<think>hmm', '</think>', 'KD-trees ', 'split ', 'space.'])]));
+  const c = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: nim.impl });
+  const deltas: string[] = [];
+  const r = await c.chatStream(msgs, {}, { onDelta: d => deltas.push(d) });
+  assert.equal(r.text, 'KD-trees split space.');
+  assert.equal(deltas.join(''), r.text);
+  assert.ok(!deltas.join('').includes('hmm'));
+  assert.equal(r.model, 'm1');
+});
+
+test('handles SSE lines split across network chunks', async () => {
+  const whole = sse(['Hello', ' world']);
+  const nim = fakeStreamNim(() => streamResponse([whole.slice(0, 17), whole.slice(17, 40), whole.slice(40)]));
+  const c = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: nim.impl });
+  const deltas: string[] = [];
+  assert.equal((await c.chatStream(msgs, {}, { onDelta: d => deltas.push(d) })).text, 'Hello world');
+});
+
+test('fails over before the first token: retired model, then a model that never answers', async () => {
+  const nim = fakeStreamNim(model =>
+    model === 'gone' ? 410 : model === 'silent' ? 'hang' : streamResponse([sse(['ok'])]));
+  const c = createNimChat({ apiKey: 'k', models: ['gone', 'silent', 'good'], isProduction: true, fetchImpl: nim.impl });
+  const r = await c.chatStream(msgs, { timeoutMs: 20 }, { onDelta: () => {} });
+  assert.equal(r.text, 'ok');
+  assert.deepEqual(nim.models, ['gone', 'silent', 'good']);
+  // Both failures are remembered: the next call goes straight to the good model.
+  await c.chatStream(msgs, { timeoutMs: 20 }, { onDelta: () => {} });
+  assert.deepEqual(nim.models.slice(3), ['good']);
+});
+
+test('a model that sends only reasoning and then stalls counts as no answer and fails over', async () => {
+  const nim = fakeStreamNim((model, signal) =>
+    model === 'thinker' ? streamResponse([sse(['<think>forever']).replace('data: [DONE]\n\n', '')], 'hang', signal)
+                        : streamResponse([sse(['ok'])]));
+  const c = createNimChat({ apiKey: 'k', models: ['thinker', 'good'], isProduction: true, fetchImpl: nim.impl });
+  assert.equal((await c.chatStream(msgs, { timeoutMs: 20 }, { onDelta: () => {} })).text, 'ok');
+});
+
+test('after the first visible token, errors propagate instead of switching models mid-answer', async () => {
+  const partial = sse(['Partial ']).replace('data: [DONE]\n\n', '');
+  const nim = fakeStreamNim(() => streamResponse([partial], 'error'));
+  const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: nim.impl });
+  const deltas: string[] = [];
+  await assert.rejects(c.chatStream(msgs, {}, { onDelta: d => deltas.push(d) }), /socket reset/);
+  assert.deepEqual(deltas, ['Partial ']);
+  assert.deepEqual(nim.models, ['m1']);
+});
+
+test('a caller abort (user closed the chat) stops the stream without failover', async () => {
+  const outer = new AbortController();
+  const nim = fakeStreamNim((_m, signal) => {
+    setTimeout(() => outer.abort(), 5);
+    return streamResponse([sse(['Start ']).replace('data: [DONE]\n\n', '')], 'hang', signal);
+  });
+  const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: nim.impl });
+  await assert.rejects(c.chatStream(msgs, {}, { onDelta: () => {}, signal: outer.signal }), (e: unknown) => e instanceof ChatAborted);
+  assert.deepEqual(nim.models, ['m1']);
+});

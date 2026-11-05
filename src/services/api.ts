@@ -97,6 +97,63 @@ async function request<T = any>(
   }
 }
 
+// ── Streaming chat (server-sent events) ─────────────────────────────────────
+
+export interface ChatStreamHandlers {
+  onMeta?(meta: { retrieval: 'none' | 'ok' | 'unavailable'; sourceCount: number }): void;
+  onDelta(text: string): void;
+  signal?: AbortSignal;
+}
+
+/**
+ * POST /api/ai/chat/stream and dispatch its events. EventSource cannot send a
+ * body or an Authorization header, so this reads the fetch body directly.
+ * Resolves on `done`; rejects with the server's message on errors.
+ */
+export async function aiChatStream(
+  body: { question: string; moduleTitle: string; moduleId: number | null; history: unknown[] },
+  handlers: ChatStreamHandlers,
+): Promise<{ model?: string }> {
+  const res = await fetch(`${BASE}/api/ai/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(await authHeaders()) },
+    body: JSON.stringify(body),
+    credentials: 'include',
+    signal: handlers.signal,
+  });
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!res.ok || !contentType.includes('text/event-stream') || !res.body) {
+    const data = await res.json().catch(() => null);
+    throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      let event = 'message', data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) data += line.slice(5).trim();
+      }
+      let payload: any = {};
+      try { payload = data ? JSON.parse(data) : {}; } catch { continue; }
+      if (event === 'meta') handlers.onMeta?.(payload);
+      else if (event === 'delta' && typeof payload.text === 'string') handlers.onDelta(payload.text);
+      else if (event === 'done') { await reader.cancel().catch(() => {}); return { model: payload.model }; }
+      else if (event === 'error') throw new Error(payload.error ?? 'The AI assistant failed to answer.');
+    }
+  }
+  throw new Error('The answer was interrupted. Please try again.');
+}
+
 // ── Multipart upload helper ─────────────────────────────────────────────────
 
 async function uploadFile(path: string, fieldName: string, file: File): Promise<any> {

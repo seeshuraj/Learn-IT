@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Sparkles, Loader2, RefreshCw } from "lucide-react";
 import { getAnalyticsSummary, StudentAnalyticsData } from "../services/aiService";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 interface Props {
   data: StudentAnalyticsData;
@@ -45,11 +46,6 @@ export const AIAnalyticsSummary: React.FC<Props> = ({ data, autoLoad = true }) =
     return () => clearInterval(interval);
   }, [summary]);
 
-  const renderMarkdown = (text: string) =>
-    text
-      .replace(/\*\*(.*?)\*\*/g, '<strong class="text-slate-800">$1</strong>')
-      .replace(/\n/g, "<br/>");
-
   return (
     <div className="bg-gradient-to-br from-violet-50 to-indigo-50 border border-violet-200 rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
@@ -88,10 +84,8 @@ export const AIAnalyticsSummary: React.FC<Props> = ({ data, autoLoad = true }) =
       )}
 
       {displayed && !loading && (
-        <p
-          className="text-sm text-slate-700 leading-relaxed"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(displayed) }}
-        />
+        // Model output is untrusted: rendered as escaped Markdown, never raw HTML.
+        <MarkdownMessage text={displayed} className="text-sm text-slate-700 leading-relaxed" />
       )}
 
       {!loading && !summary && !error && (
