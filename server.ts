@@ -63,6 +63,7 @@ import { log, errorFields } from './src/server/lib/log.js';
 import {
   createNimEmbedder, embedModelFromEnv, cosineSim, reembedStaleChunks,
 } from './src/server/lib/embeddings.js';
+import { createNimChat, chatModelsFromEnv } from './src/server/lib/llm.js';
 import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
   assertManagesCourse, assertCanAccessCourse, loadNoteForCaller,
@@ -412,53 +413,14 @@ async function retrieveChunks(
   return scored.slice(0, topK).map(s => s.text);
 }
 
-async function fetchWithTimeout(
-  url: string,
-  opts: globalThis.RequestInit,
-  timeoutMs = 25000
-): Promise<globalThis.Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...opts, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-const NIM_CHAT_MODEL = "meta/llama-3.3-70b-instruct";
-
-async function nimChat(
-  messages: { role: string; content: string }[],
-  opts: { temperature?: number; maxTokens?: number } = {}
-): Promise<string> {
-  const key = process.env.NVIDIA_API_KEY;
-  if (!key) {
-    if (isProduction) throw new Error("NVIDIA_API_KEY is not set; cannot call the chat model");
-    return "[Mock AI] Set NVIDIA_API_KEY in .env to enable real AI responses.";
-  }
-  const res = await fetchWithTimeout(
-    "https://integrate.api.nvidia.com/v1/chat/completions",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model: NIM_CHAT_MODEL,
-        messages,
-        temperature: opts.temperature ?? 0.4,
-        max_tokens:  opts.maxTokens  ?? 1024,
-      }),
-    },
-    60000
-  );
-  if (!res.ok) {
-    const errBody = await res.text();
-    log.error("nim chat request failed", { status: res.status });
-    throw new Error(`NVIDIA NIM ${res.status}: ${errBody}`);
-  }
-  const data = await res.json() as any;
-  return data.choices?.[0]?.message?.content ?? "";
-}
+// Chat model failover: NVIDIA_CHAT_MODEL (optional, comma-separated) then the
+// defaults in lib/llm.ts; retired models (404/410) are skipped automatically.
+const chatClient = createNimChat({
+  apiKey: process.env.NVIDIA_API_KEY,
+  models: chatModelsFromEnv(),
+  isProduction,
+});
+const nimChat = chatClient.chat;
 
 // Model is configurable so an NVIDIA end-of-life notice is a config change.
 const embedder = createNimEmbedder({
@@ -546,7 +508,7 @@ async function startServer() {
   app.use("/api/student",            createGradingInsightsRouter(pool));
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
-  app.use("/api/submissions",        createGradingRouter(pool));
+  app.use("/api/submissions",        createGradingRouter(pool, nimChat));
 
   // ── Health ────────────────────────────────────────────────────────────────
   // Liveness only: no DB or Storage dependency, so a database outage cannot
@@ -1666,6 +1628,7 @@ async function startServer() {
 
   // Run startup tasks after the server is already listening
   checkStorageConnectivity().catch(e => log.error("storage connectivity check crashed", errorFields(e)));
+  chatClient.discover().catch(e => log.error("chat model discovery crashed", errorFields(e)));
   startCronJobs(pool, [() => reembedStaleChunks(pool, embedder)])
     .catch(e => log.error("cron startup failed", errorFields(e)));
 }

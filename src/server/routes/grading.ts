@@ -24,41 +24,10 @@ import { loadSubmissionForCaller } from '../lib/access.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
 
-const NVIDIA_BASE  = 'https://integrate.api.nvidia.com/v1';
-const CHAT_MODEL   = 'mistralai/mistral-nemo-12b-instruct';
+import type { ChatFn, ChatMessage } from '../lib/llm.js';
 
 function getApiKey(): string {
   return process.env.NVIDIA_API_KEY ?? '';
-}
-
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-async function nimChat(
-  messages: ChatMessage[],
-  opts: { temperature?: number; maxTokens?: number } = {}
-): Promise<string> {
-  const res = await fetch(`${NVIDIA_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getApiKey()}`,
-    },
-    body: JSON.stringify({
-      model: CHAT_MODEL,
-      messages,
-      temperature: opts.temperature ?? 0.2,
-      max_tokens:  opts.maxTokens  ?? 1536,
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`NVIDIA NIM error ${res.status}: ${err}`);
-  }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? '';
 }
 
 function mockGrade(maxPoints: number) {
@@ -74,7 +43,7 @@ function mockGrade(maxPoints: number) {
   };
 }
 
-export function createGradingRouter(pool: pkg.Pool): Router {
+export function createGradingRouter(pool: pkg.Pool, nimChat: ChatFn): Router {
   const router = Router();
 
   // POST /api/submissions/:id/ai-grade
