@@ -355,11 +355,8 @@ export default function LandingPage() {
               {TIERS.map(t => (
                 <div key={t.name} className="flex flex-col border-t-2 border-[var(--ink)] pt-5">
                   <h3 className="text-[17px] font-semibold">{t.name}</h3>
-                  <p className="mt-4 flex flex-wrap items-baseline gap-x-2">
-                    <span className="lp-num text-[clamp(2.4rem,5vw,3.25rem)] font-extrabold leading-none tracking-[-0.03em]">{t.inr}</span>
-                    <span className="text-[15px] text-[var(--muted)]">per student, per semester</span>
-                  </p>
-                  <p className="mt-1.5 text-[14px] text-[var(--muted)]">({t.usd})</p>
+                  <p className="lp-num mt-4 text-[clamp(2.4rem,5vw,3.25rem)] font-extrabold leading-none tracking-[-0.03em]">{t.inr}</p>
+                  <p className="mt-2 text-[15px] text-[var(--muted)]">per student, per semester ({t.usd})</p>
                   <p className="mt-4 text-[16px] leading-[1.5]">{t.fit}</p>
                   <p className="mt-5 text-[14px] font-medium text-[var(--muted)]">{t.lead}</p>
                   <ul className="mt-2 space-y-2 text-[15px] leading-[1.5]">
