@@ -40,13 +40,13 @@ interface ImportResult {
 const BAND_COLORS: Record<string, string> = {
   strong:   '#437a22',
   moderate: '#d19900',
-  weak:     '#a12c7b',
+  weak:     '#C8102E',
 };
 
 const BAND_BG: Record<string, string> = {
   strong:   '#d4dfcc',
   moderate: '#e9e0c6',
-  weak:     '#e0ced7',
+  weak:     '#FBE7EA',
 };
 
 export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
@@ -184,23 +184,23 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
     stepper: { display: 'flex', gap: 8, marginBottom: 20 },
     stepDot: (active: boolean, done: boolean) => ({
       flex: 1, height: 4, borderRadius: 2,
-      background: done ? '#437a22' : active ? '#01696f' : '#dcd9d5',
+      background: done ? '#437a22' : active ? '#2448B8' : '#D9E3EE',
       transition: 'background 0.2s',
     }),
-    label:   { fontSize: '0.75rem', color: '#7a7974', marginBottom: 16 },
-    card:    { background: '#f9f8f5', border: '1px solid #d4d1ca', borderRadius: 8, padding: '1.5rem' },
+    label:   { fontSize: '0.75rem', color: '#56667F', marginBottom: 16 },
+    card:    { background: '#F6F8FB', border: '1px solid #D9E3EE', borderRadius: 8, padding: '1.5rem' },
     h2:      { fontSize: '1.125rem', fontWeight: 600, marginBottom: 16 },
     group:   { marginBottom: 14 },
-    lbl:     { display: 'block', fontSize: '0.875rem', fontWeight: 500, marginBottom: 4, color: '#28251d' },
-    input:   { width: '100%', padding: '0.5rem 0.75rem', border: '1px solid #d4d1ca', borderRadius: 6, fontSize: '0.875rem', outline: 'none', boxSizing: 'border-box' as const },
+    lbl:     { display: 'block', fontSize: '0.875rem', fontWeight: 500, marginBottom: 4, color: '#13203B' },
+    input:   { width: '100%', padding: '0.5rem 0.75rem', border: '1px solid #D9E3EE', borderRadius: 6, fontSize: '0.875rem', outline: 'none', boxSizing: 'border-box' as const },
     row:     { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
-    btn:     { padding: '0.625rem 1.25rem', background: '#01696f', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', opacity: 1 },
-    ghost:   { padding: '0.625rem 1.25rem', background: 'none', color: '#7a7974', border: '1px solid #d4d1ca', borderRadius: 6, fontSize: '0.875rem', cursor: 'pointer' },
-    err:     { color: '#a12c7b', fontSize: '0.8125rem', marginTop: 10 },
+    btn:     { padding: '0.625rem 1.25rem', background: '#2448B8', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', opacity: 1 },
+    ghost:   { padding: '0.625rem 1.25rem', background: 'none', color: '#56667F', border: '1px solid #D9E3EE', borderRadius: 6, fontSize: '0.875rem', cursor: 'pointer' },
+    err:     { color: '#C8102E', fontSize: '0.8125rem', marginTop: 10 },
     band:    (b: string) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: BAND_BG[b] ?? '#eee', color: BAND_COLORS[b] ?? '#333' }),
-    stat:    { background: '#fff', border: '1px solid #d4d1ca', borderRadius: 8, padding: '0.75rem 1rem', textAlign: 'center' as const },
-    statNum: { fontSize: '1.5rem', fontWeight: 700, color: '#01696f' },
-    statLbl: { fontSize: '0.75rem', color: '#7a7974', marginTop: 2 },
+    stat:    { background: '#fff', border: '1px solid #D9E3EE', borderRadius: 8, padding: '0.75rem 1rem', textAlign: 'center' as const },
+    statNum: { fontSize: '1.5rem', fontWeight: 700, color: '#2448B8' },
+    statLbl: { fontSize: '0.75rem', color: '#56667F', marginTop: 2 },
     grid3:   { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 },
   };
 
@@ -208,8 +208,8 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
     <div style={s.wrap}>
       {/* Header with close button */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <span style={{ fontWeight: 600, fontSize: '1rem', color: '#28251d' }}>New Unit Exam</span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7a7974', padding: 4 }}>
+        <span style={{ fontWeight: 600, fontSize: '1rem', color: '#13203B' }}>New Unit Exam</span>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#56667F', padding: 4 }}>
           <X size={18} />
         </button>
       </div>
@@ -253,12 +253,12 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
               <div>
                 <label style={s.lbl}>Strong threshold (%)</label>
                 <input style={s.input} type="number" min="1" max="100" value={strongThr} onChange={e => setStrongThr(e.target.value)} />
-                <p style={{ fontSize: '0.7rem', color: '#7a7974', marginTop: 3 }}>≥ this % = Strong</p>
+                <p style={{ fontSize: '0.7rem', color: '#56667F', marginTop: 3 }}>≥ this % = Strong</p>
               </div>
               <div>
                 <label style={s.lbl}>Moderate threshold (%)</label>
                 <input style={s.input} type="number" min="1" max="100" value={modThr} onChange={e => setModThr(e.target.value)} />
-                <p style={{ fontSize: '0.7rem', color: '#7a7974', marginTop: 3 }}>≥ this % = Moderate; below = Weak</p>
+                <p style={{ fontSize: '0.7rem', color: '#56667F', marginTop: 3 }}>≥ this % = Moderate; below = Weak</p>
               </div>
             </div>
             {error && <p style={s.err}>{error}</p>}
@@ -273,7 +273,7 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
       {step === 2 && exam && (
         <div style={s.card}>
           <h2 style={s.h2}>Upload Marks — {exam.title}</h2>
-          <p style={{ fontSize: '0.875rem', color: '#7a7974', marginBottom: 16 }}>
+          <p style={{ fontSize: '0.875rem', color: '#56667F', marginBottom: 16 }}>
             Upload a <strong>CSV</strong> or <strong>XLSX</strong> file.
             Required columns: <code>student_email</code> (or <code>student_id</code>),{' '}
             <code>marks_obtained</code>. Optional topic columns (e.g.{' '}
@@ -298,19 +298,19 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
       {step === 3 && exam && result && (
         <div style={s.card}>
           <h2 style={s.h2}>Upload Exam Paper (Optional)</h2>
-          <div style={{ background: '#fff', border: '1px solid #d4d1ca', borderRadius: 6, padding: '0.75rem 1rem', marginBottom: 14 }}>
-            <p style={{ fontSize: '0.875rem', color: '#28251d', fontWeight: 500 }}>
+          <div style={{ background: '#fff', border: '1px solid #D9E3EE', borderRadius: 6, padding: '0.75rem 1rem', marginBottom: 14 }}>
+            <p style={{ fontSize: '0.875rem', color: '#13203B', fontWeight: 500 }}>
               Matched <strong style={{ color: '#437a22' }}>{result.rows_matched}</strong> of {result.rows_total} students.
               {result.rows_failed > 0 && (
-                <span style={{ color: '#a12c7b' }}> {result.rows_failed} rows failed.</span>
+                <span style={{ color: '#C8102E' }}> {result.rows_failed} rows failed.</span>
               )}
             </p>
           </div>
 
           {result.errors.length > 0 && (
             <details style={{ marginBottom: 14 }}>
-              <summary style={{ fontSize: '0.8125rem', cursor: 'pointer', color: '#7a7974' }}>Show row errors</summary>
-              <ul style={{ fontSize: '0.8125rem', color: '#a12c7b', paddingLeft: 16, marginTop: 6 }}>
+              <summary style={{ fontSize: '0.8125rem', cursor: 'pointer', color: '#56667F' }}>Show row errors</summary>
+              <ul style={{ fontSize: '0.8125rem', color: '#C8102E', paddingLeft: 16, marginTop: 6 }}>
                 {result.errors.map((e, i) => (
                   <li key={i}>Row {e.row}: {e.reason}</li>
                 ))}
@@ -318,7 +318,7 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
             </details>
           )}
 
-          <p style={{ fontSize: '0.875rem', color: '#7a7974', marginBottom: 12 }}>
+          <p style={{ fontSize: '0.875rem', color: '#56667F', marginBottom: 12 }}>
             Optionally upload the exam paper PDF. The AI will extract topics and weights,
             which improves roadmap milestone targeting for students who are weak in specific areas.
           </p>
@@ -374,7 +374,7 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
               {/* Weakest topics */}
               {analytics.stats.weakest_topics.length > 0 && (
                 <div style={{ marginBottom: 14 }}>
-                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6, color: '#7a7974' }}>Weakest Topics (used in roadmap generation)</p>
+                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6, color: '#56667F' }}>Weakest Topics (used in roadmap generation)</p>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {analytics.stats.weakest_topics.map((t: string) => (
                       <span key={t} style={s.band('weak')}>{t}</span>
@@ -386,7 +386,7 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
               {/* Strongest topics */}
               {analytics.stats.strongest_topics?.length > 0 && (
                 <div style={{ marginBottom: 14 }}>
-                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6, color: '#7a7974' }}>Strongest Topics</p>
+                  <p style={{ fontSize: '0.8125rem', fontWeight: 600, marginBottom: 6, color: '#56667F' }}>Strongest Topics</p>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {analytics.stats.strongest_topics.map((t: string) => (
                       <span key={t} style={s.band('strong')}>{t}</span>
@@ -395,14 +395,14 @@ export function ExamUploadWizard({ courseId, onClose, onSuccess }: Props) {
                 </div>
               )}
 
-              <p style={{ fontSize: '0.8125rem', color: '#7a7974', marginBottom: 16 }}>
+              <p style={{ fontSize: '0.8125rem', color: '#56667F', marginBottom: 16 }}>
                 Median: {analytics.stats.median_pct}% &nbsp;·&nbsp;
                 High: {analytics.stats.max_marks} &nbsp;·&nbsp;
                 Low: {analytics.stats.min_marks}
               </p>
             </>
           ) : (
-            <p style={{ color: '#7a7974', marginBottom: 16 }}>No results to preview yet.</p>
+            <p style={{ color: '#56667F', marginBottom: 16 }}>No results to preview yet.</p>
           )}
 
           <div style={{ display: 'flex', gap: 8 }}>

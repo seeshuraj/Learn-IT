@@ -1,0 +1,89 @@
+/*
+ * Shared brand components used by the landing page, sign-in and the app.
+ * Kept in @layer components so Tailwind utilities (e.g. `hidden`) always win.
+ *
+ * The --paper / --ink / ... aliases keep the landing page's existing
+ * `var(--…)` references working; they point at the @theme tokens.
+ */
+:root {
+  --paper: var(--color-paper);
+  --ink:   var(--color-ink);
+  --blue:  var(--color-brand);
+  --red:   var(--color-pen);
+  --rule:  var(--color-rule);
+  --muted: var(--color-muted);
+}
+
+@layer components {
+  .lp-display { text-wrap: balance; }
+  .lp-num { font-variant-numeric: tabular-nums; }
+  .lp-hand { font-family: var(--font-hand); font-weight: 600; }
+
+  /* Graph-sheet grid, only on answer sheets */
+  .lp-grid {
+    --grid: #E9EFF6;
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: -1px -1px;
+    background-color: #fff;
+  }
+
+  /* Red-pen strokes */
+  .lp-stroke path {
+    fill: none;
+    stroke: var(--red);
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+
+  /* Buttons */
+  .lp-btn, .lp-btn-ghost, .lp-btn-light {
+    display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+    border-radius: 10px; font-weight: 600; font-size: 15px;
+    padding: 0.6rem 1.05rem; transition: background-color .15s, color .15s, border-color .15s;
+  }
+  .lp-btn { background: var(--blue); color: #fff; }
+  .lp-btn:hover { background: #1B3A99; }
+  .lp-btn:disabled { opacity: .6; cursor: not-allowed; }
+  .lp-btn-ghost { border: 1.5px solid var(--ink); color: var(--ink); }
+  .lp-btn-ghost:hover { background: var(--ink); color: #fff; }
+  .lp-btn-light { background: #fff; color: var(--ink); }
+  .lp-btn-light:hover { background: #E7EEF8; }
+  .lp-btn-lg { padding: 0.85rem 1.4rem; font-size: 16px; }
+
+  /* Form fields */
+  .lp-input {
+    width: 100%; border-radius: 10px; border: 1.5px solid var(--rule); background: #fff;
+    padding: .7rem .9rem; font-size: 15px; color: var(--ink);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .lp-input::placeholder { color: #8A97AB; }
+  .lp-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36, 72, 184, .15); }
+
+  /* Focus */
+  .lp-focus:focus-visible { outline: 2.5px solid var(--blue); outline-offset: 3px; }
+  .lp-focus-dark:focus-visible { outline: 2.5px solid #fff; outline-offset: 3px; }
+  .lp-skip {
+    position: absolute; left: 1rem; top: -3rem; z-index: 50;
+    background: var(--ink); color: #fff; padding: .5rem .9rem; border-radius: 8px;
+  }
+  .lp-skip:focus { top: 1rem; }
+
+  /* 3D parallax stage (GSAP drives the transforms) */
+  .lp-stage { transform-style: preserve-3d; will-change: transform; }
+  .lp-layer { transform-style: preserve-3d; }
+}
+
+/* One orchestrated moment: the examiner marks the sheet, then the plan appears. */
+@media (prefers-reduced-motion: no-preference) {
+  .lp-stroke path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: lp-draw .7s ease-out forwards; }
+  .lp-num .lp-stroke path { animation-delay: .45s; }
+  .lp-underline .lp-stroke path { animation-delay: 1.05s; animation-duration: .45s; }
+  .lp-note { opacity: 0; animation: lp-in .5s ease-out 1.3s forwards; }
+  .lp-plan { opacity: 0; transform: translateY(10px); animation: lp-in .6s ease-out 1.75s forwards; }
+}
+@keyframes lp-draw { to { stroke-dashoffset: 0; } }
+@keyframes lp-in { to { opacity: 1; transform: none; } }

@@ -57,12 +57,12 @@ interface Props {
 const BAND_COLORS: Record<string, string> = {
   strong:   '#437a22',
   moderate: '#d19900',
-  weak:     '#a12c7b',
+  weak:     '#C8102E',
 };
 const BAND_BG: Record<string, string> = {
   strong:   '#d4dfcc',
   moderate: '#e9e0c6',
-  weak:     '#e0ced7',
+  weak:     '#FBE7EA',
 };
 
 export function ExamAnalyticsModal({ examId, onClose }: Props) {
@@ -86,29 +86,29 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
   const s: Record<string, React.CSSProperties> = {
     wrap:    { fontFamily: 'inherit', padding: '1.5rem' },
     header:  { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
-    title:   { fontSize: '1.125rem', fontWeight: 600, color: '#28251d' },
-    sub:     { fontSize: '0.8125rem', color: '#7a7974', marginTop: 2 },
-    tabs:    { display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #dcd9d5', paddingBottom: 0 },
+    title:   { fontSize: '1.125rem', fontWeight: 600, color: '#13203B' },
+    sub:     { fontSize: '0.8125rem', color: '#56667F', marginTop: 2 },
+    tabs:    { display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #D9E3EE', paddingBottom: 0 },
     tab:     (active: boolean) => ({
       padding: '0.375rem 0.875rem',
       fontSize: '0.875rem',
       fontWeight: active ? 600 : 400,
-      color: active ? '#01696f' : '#7a7974',
-      borderBottom: active ? '2px solid #01696f' : '2px solid transparent',
+      color: active ? '#2448B8' : '#56667F',
+      borderBottom: active ? '2px solid #2448B8' : '2px solid transparent',
       cursor: 'pointer',
       background: 'none',
       border: 'none',
       borderBottomStyle: 'solid',
     }),
     kpiGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 },
-    kpi:     { background: '#f9f8f5', border: '1px solid #d4d1ca', borderRadius: 8, padding: '0.875rem 1rem', textAlign: 'center' as const },
-    kpiNum:  { fontSize: '1.5rem', fontWeight: 700, color: '#01696f' },
-    kpiLbl:  { fontSize: '0.75rem', color: '#7a7974', marginTop: 2 },
+    kpi:     { background: '#F6F8FB', border: '1px solid #D9E3EE', borderRadius: 8, padding: '0.875rem 1rem', textAlign: 'center' as const },
+    kpiNum:  { fontSize: '1.5rem', fontWeight: 700, color: '#2448B8' },
+    kpiLbl:  { fontSize: '0.75rem', color: '#56667F', marginTop: 2 },
     band:    (b: string) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: BAND_BG[b] ?? '#eee', color: BAND_COLORS[b] ?? '#333' }),
-    chip:    (b: string) => ({ padding: '3px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 500, background: BAND_BG[b] ?? '#f3f0ec', color: BAND_COLORS[b] ?? '#28251d', display: 'inline-block' }),
+    chip:    (b: string) => ({ padding: '3px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 500, background: BAND_BG[b] ?? '#EEF2F7', color: BAND_COLORS[b] ?? '#13203B', display: 'inline-block' }),
     tbl:     { width: '100%', borderCollapse: 'collapse' as const, fontSize: '0.8125rem' },
-    th:      { textAlign: 'left' as const, padding: '0.5rem 0.75rem', borderBottom: '2px solid #dcd9d5', fontSize: '0.75rem', fontWeight: 600, color: '#7a7974', textTransform: 'uppercase' as const, letterSpacing: '0.03em' },
-    td:      { padding: '0.5rem 0.75rem', borderBottom: '1px solid #edeae5', color: '#28251d', verticalAlign: 'middle' as const },
+    th:      { textAlign: 'left' as const, padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9E3EE', fontSize: '0.75rem', fontWeight: 600, color: '#56667F', textTransform: 'uppercase' as const, letterSpacing: '0.03em' },
+    td:      { padding: '0.5rem 0.75rem', borderBottom: '1px solid #EEF2F7', color: '#13203B', verticalAlign: 'middle' as const },
   };
 
   return (
@@ -121,19 +121,19 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
             <p style={s.sub}>{new Date(data.exam.exam_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} · Max: {data.exam.max_marks} marks</p>
           )}
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7a7974', padding: 4 }}>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#56667F', padding: 4 }}>
           <X size={20} />
         </button>
       </div>
 
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {[1, 2, 3].map(n => <div key={n} style={{ height: 60, borderRadius: 8, background: '#f3f0ec', animation: 'pulse 1.5s ease-in-out infinite' }} />)}
+          {[1, 2, 3].map(n => <div key={n} style={{ height: 60, borderRadius: 8, background: '#EEF2F7', animation: 'pulse 1.5s ease-in-out infinite' }} />)}
         </div>
       )}
 
       {error && (
-        <div style={{ background: '#e0ced7', border: '1px solid #a12c7b', borderRadius: 8, padding: '0.75rem 1rem', color: '#a12c7b', fontSize: '0.875rem' }}>
+        <div style={{ background: '#FBE7EA', border: '1px solid #C8102E', borderRadius: 8, padding: '0.75rem 1rem', color: '#C8102E', fontSize: '0.875rem' }}>
           Failed to load analytics: {error}
         </div>
       )}
@@ -170,16 +170,16 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
                   <div style={{ height: 8, borderRadius: 4, overflow: 'hidden', display: 'flex', marginBottom: 6 }}>
                     <div style={{ width: `${(data.stats.bands.strong / data.stats.total) * 100}%`, background: '#6daa45' }} />
                     <div style={{ width: `${(data.stats.bands.moderate / data.stats.total) * 100}%`, background: '#e8af34' }} />
-                    <div style={{ width: `${(data.stats.bands.weak / data.stats.total) * 100}%`, background: '#d163a7' }} />
+                    <div style={{ width: `${(data.stats.bands.weak / data.stats.total) * 100}%`, background: '#E0566C' }} />
                   </div>
-                  <p style={{ fontSize: '0.75rem', color: '#7a7974', marginBottom: 16 }}>
+                  <p style={{ fontSize: '0.75rem', color: '#56667F', marginBottom: 16 }}>
                     Median: {data.stats.median_pct}% &nbsp;·&nbsp; High: {data.stats.max_marks} &nbsp;·&nbsp; Low: {data.stats.min_marks}
                   </p>
 
                   {/* Topic chips */}
                   {data.stats.weakest_topics.length > 0 && (
                     <div style={{ marginBottom: 12 }}>
-                      <p style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#7a7974', marginBottom: 6 }}>Weakest Topics (from CSV topic columns)</p>
+                      <p style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#56667F', marginBottom: 6 }}>Weakest Topics (from CSV topic columns)</p>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {data.stats.weakest_topics.map(t => <span key={t} style={s.chip('weak')}>{t}</span>)}
                       </div>
@@ -187,7 +187,7 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
                   )}
                   {data.stats.strongest_topics.length > 0 && (
                     <div style={{ marginBottom: 12 }}>
-                      <p style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#7a7974', marginBottom: 6 }}>Strongest Topics</p>
+                      <p style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#56667F', marginBottom: 6 }}>Strongest Topics</p>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {data.stats.strongest_topics.map(t => <span key={t} style={s.chip('strong')}>{t}</span>)}
                       </div>
@@ -195,8 +195,8 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
                   )}
                 </>
               ) : (
-                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#7a7974' }}>
-                  <BarChart2 size={36} style={{ margin: '0 auto 12px', color: '#bab9b4' }} />
+                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#56667F' }}>
+                  <BarChart2 size={36} style={{ margin: '0 auto 12px', color: '#C9D5E3' }} />
                   <p>No results uploaded yet.</p>
                 </div>
               )}
@@ -207,8 +207,8 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
           {tab === 'students' && (
             <div style={{ overflowX: 'auto' }}>
               {data.results.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#7a7974' }}>
-                  <Users size={36} style={{ margin: '0 auto 12px', color: '#bab9b4' }} />
+                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#56667F' }}>
+                  <Users size={36} style={{ margin: '0 auto 12px', color: '#C9D5E3' }} />
                   <p>No student results yet.</p>
                 </div>
               ) : (
@@ -227,7 +227,7 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
                         <td style={s.td}>
                           <span style={{ fontWeight: 500 }}>{r.student_name}</span>
                           <br />
-                          <span style={{ fontSize: '0.75rem', color: '#7a7974' }}>{r.student_email}</span>
+                          <span style={{ fontSize: '0.75rem', color: '#56667F' }}>{r.student_email}</span>
                         </td>
                         <td style={{ ...s.td, fontVariantNumeric: 'tabular-nums' }}>{parseFloat(r.marks_obtained).toFixed(1)}</td>
                         <td style={{ ...s.td, fontVariantNumeric: 'tabular-nums' }}>{parseFloat(r.percentage).toFixed(1)}%</td>
@@ -244,8 +244,8 @@ export function ExamAnalyticsModal({ examId, onClose }: Props) {
           {tab === 'topics' && (
             <>
               {data.topics.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#7a7974' }}>
-                  <Award size={36} style={{ margin: '0 auto 12px', color: '#bab9b4' }} />
+                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#56667F' }}>
+                  <Award size={36} style={{ margin: '0 auto 12px', color: '#C9D5E3' }} />
                   <p style={{ fontWeight: 500 }}>No AI topic analysis yet</p>
                   <p style={{ fontSize: '0.875rem', marginTop: 6 }}>
                     Upload an exam paper PDF in Step 3 to extract topics, weights, and difficulty ratings.

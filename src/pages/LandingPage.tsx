@@ -1,5 +1,7 @@
-import React, { useEffect } from "react";
+import React from "react";
 import { Link } from "react-router-dom";
+import { Logo } from "../components/brand/Logo";
+import { MarkedSheet } from "../components/brand/MarkedSheet";
 
 /**
  * Public landing page for colleges.
@@ -17,20 +19,6 @@ const PILOT_MAILTO =
   "&body=" + encodeURIComponent(
     "College name:\nDepartment(s):\nApproximate number of students:\nPreferred start (semester):\n",
   );
-
-const MARKS = [
-  { q: "Q1", topic: "Linked lists", got: 9 },
-  { q: "Q2", topic: "Stacks and queues", got: 8 },
-  { q: "Q3", topic: "Tree traversal", got: 3, flagged: true },
-  { q: "Q4", topic: "Hashing", got: 7 },
-  { q: "Q5", topic: "Graph search", got: 5 },
-];
-
-const PLAN = [
-  "Re-read Module 3, Lecture 7 notes on tree traversal",
-  "Practise five inorder and preorder questions",
-  "Ask the tutor why postorder visits the root last",
-];
 
 const ROLES = [
   {
@@ -132,113 +120,9 @@ const TIERS = [
   },
 ];
 
-/** Loads the two landing-page typefaces only on this page. */
-function useLandingFonts() {
-  useEffect(() => {
-    const id = "lp-fonts";
-    if (document.getElementById(id)) return;
-    const link = document.createElement("link");
-    link.id = id;
-    link.rel = "stylesheet";
-    link.href =
-      "https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap";
-    document.head.appendChild(link);
-  }, []);
-}
-
-function Logo() {
-  return (
-    <span className="flex items-center gap-2.5">
-      <img src="/favicon.svg" alt="" className="h-8 w-8 rounded-md" />
-      <span className="text-[17px] font-bold tracking-tight">LearnIT</span>
-    </span>
-  );
-}
-
-/** The marked answer sheet: the page's one bold element. */
-function MarkedSheet() {
-  const total = MARKS.reduce((n, m) => n + m.got, 0);
-  return (
-    <figure className="lp-sheet relative w-full" aria-label="Example: a marked unit test and the study plan LearnIT creates from it">
-      <div className="lp-grid rounded-[14px] border border-[var(--rule)] bg-white p-5 shadow-[0_1px_0_var(--rule),0_24px_48px_-28px_rgba(19,32,59,0.35)] sm:p-7">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b-2 border-[var(--ink)] pb-3">
-          <p className="text-[15px] font-semibold">Unit Test 2, Data Structures</p>
-          <p className="text-[13px] text-[var(--muted)]">Priya R., II year CSE</p>
-        </div>
-
-        <div className="grid gap-x-6 sm:grid-cols-[1fr_auto]">
-          <table className="mt-1 w-full border-collapse text-[14px]">
-            <caption className="sr-only">Marks by question</caption>
-            <thead>
-              <tr className="text-left text-[12px] text-[var(--muted)]">
-                <th scope="col" className="py-2 pr-3 font-medium">Question</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Topic</th>
-                <th scope="col" className="py-2 text-right font-medium">Marks</th>
-              </tr>
-            </thead>
-            <tbody>
-              {MARKS.map(m => (
-                <tr key={m.q} className="border-t border-[var(--rule)]">
-                  <td className="py-2.5 pr-3 text-[var(--muted)]">{m.q}</td>
-                  <td className={`py-2.5 pr-3 ${m.flagged ? "lp-underline relative" : ""}`}>
-                    {m.topic}
-                    {m.flagged && (
-                      <svg className="lp-stroke pointer-events-none absolute -bottom-0.5 left-0 h-2 w-[7.5rem]" viewBox="0 0 120 8" preserveAspectRatio="none" aria-hidden="true">
-                        <path d="M1 5 C 30 2, 60 7, 119 3" pathLength={1} />
-                      </svg>
-                    )}
-                  </td>
-                  <td className="lp-num py-2.5 text-right">
-                    {m.flagged ? (
-                      <span className="relative inline-block px-1.5">
-                        {m.got}/10
-                        <svg className="lp-stroke pointer-events-none absolute -inset-x-2 -inset-y-2 h-[calc(100%+16px)] w-[calc(100%+16px)]" viewBox="0 0 60 36" preserveAspectRatio="none" aria-hidden="true">
-                          <path d="M48 6 C 30 -1, 6 3, 4 17 C 3 31, 40 35, 54 24 C 61 17, 57 8, 44 5" pathLength={1} />
-                        </svg>
-                      </span>
-                    ) : (
-                      `${m.got}/10`
-                    )}
-                  </td>
-                </tr>
-              ))}
-              <tr className="border-t-2 border-[var(--ink)] font-semibold">
-                <td className="py-2.5" colSpan={2}>Total</td>
-                <td className="lp-num py-2.5 text-right">{total}/50</td>
-              </tr>
-            </tbody>
-          </table>
-
-          {/* Examiner's margin note (beside the table on wide screens, below it on phones) */}
-          <p className="lp-note lp-hand mt-3 max-w-[15rem] text-[22px] leading-[1.1] text-[var(--red)] sm:mt-[6.5rem] sm:w-[10.5rem]">
-            Mixed up traversal order in all three parts. Revise Module 3.
-          </p>
-        </div>
-      </div>
-
-      {/* What LearnIT does with it */}
-      <figcaption className="lp-plan relative -mt-3 ml-auto w-[92%] rounded-[14px] border border-[var(--rule)] bg-[var(--paper)] p-5 sm:-mt-6 sm:w-[82%]">
-        <p className="text-[14px] font-semibold">This week's plan for Priya</p>
-        <p className="mt-0.5 text-[13px] text-[var(--muted)]">Built from Unit Test 2 and her course notes</p>
-        <ul className="mt-3 space-y-2 text-[14px]">
-          {PLAN.map(item => (
-            <li key={item} className="flex gap-2.5">
-              <span className="mt-[5px] h-3 w-3 shrink-0 rounded-[3px] border-[1.5px] border-[var(--blue)]" aria-hidden="true" />
-              <span>{item}</span>
-            </li>
-          ))}
-        </ul>
-      </figcaption>
-    </figure>
-  );
-}
-
 export default function LandingPage() {
-  useLandingFonts();
-
   return (
-    <div className="lp min-h-screen bg-[var(--paper)] text-[var(--ink)] antialiased">
-      <style>{LANDING_CSS}</style>
+    <div className="min-h-screen bg-paper text-ink antialiased">
 
       <a href="#main" className="lp-skip">Skip to content</a>
 
@@ -259,7 +143,7 @@ export default function LandingPage() {
 
       <main id="main">
         {/* Hero */}
-        <section className="mx-auto grid max-w-[72rem] items-center gap-12 px-4 pb-20 pt-12 sm:px-6 md:pt-16 lg:grid-cols-[1.05fr_1fr] lg:gap-16 lg:pb-28 lg:pt-24">
+        <section data-tilt-area className="mx-auto grid max-w-[72rem] items-center gap-12 px-4 pb-20 pt-12 sm:px-6 md:pt-16 lg:grid-cols-[1.05fr_1fr] lg:gap-16 lg:pb-28 lg:pt-24">
           <div className="max-w-[36rem]">
             <h1 className="lp-display text-[clamp(2.6rem,7vw,4.5rem)] font-extrabold leading-[0.98] tracking-[-0.035em]">
               Every mark, explained.
@@ -278,7 +162,7 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <MarkedSheet />
+          <MarkedSheet scrollParallax />
         </section>
 
         {/* Roles */}
@@ -408,73 +292,3 @@ export default function LandingPage() {
     </div>
   );
 }
-
-const LANDING_CSS = `
-.lp {
-  --paper: #F6F8FB;
-  --ink:   #13203B;
-  --blue:  #2448B8;
-  --red:   #C8102E;
-  --rule:  #D9E3EE;
-  --muted: #56667F;
-  font-family: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
-  font-feature-settings: "kern";
-}
-.lp-display { text-wrap: balance; }
-.lp-num { font-variant-numeric: tabular-nums; }
-.lp-hand { font-family: "Caveat", "Segoe Print", cursive; font-weight: 600; }
-
-/* Graph-sheet grid, only on the answer sheet */
-.lp-grid {
-  --grid: #E9EFF6;
-  background-image:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: 22px 22px;
-  background-position: -1px -1px;
-  background-color: #fff;
-}
-
-/* Red-pen strokes */
-.lp-stroke path {
-  fill: none;
-  stroke: var(--red);
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  vector-effect: non-scaling-stroke;
-}
-
-/* Buttons */
-.lp-btn, .lp-btn-ghost, .lp-btn-light {
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 10px; font-weight: 600; font-size: 15px;
-  padding: 0.6rem 1.05rem; transition: background-color .15s, color .15s, border-color .15s;
-}
-.lp-btn { background: var(--blue); color: #fff; }
-.lp-btn:hover { background: #1B3A99; }
-.lp-btn-ghost { border: 1.5px solid var(--ink); color: var(--ink); }
-.lp-btn-ghost:hover { background: var(--ink); color: #fff; }
-.lp-btn-light { background: #fff; color: var(--ink); }
-.lp-btn-light:hover { background: #E7EEF8; }
-.lp-btn-lg { padding: 0.85rem 1.4rem; font-size: 16px; }
-
-/* Focus */
-.lp-focus:focus-visible { outline: 2.5px solid var(--blue); outline-offset: 3px; }
-.lp-focus-dark:focus-visible { outline: 2.5px solid #fff; outline-offset: 3px; }
-.lp-skip {
-  position: absolute; left: 1rem; top: -3rem; z-index: 50;
-  background: var(--ink); color: #fff; padding: .5rem .9rem; border-radius: 8px;
-}
-.lp-skip:focus { top: 1rem; }
-
-/* One orchestrated moment: the examiner marks the sheet, then the plan appears. */
-@media (prefers-reduced-motion: no-preference) {
-  .lp-stroke path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: lp-draw .7s ease-out forwards; }
-  .lp-num .lp-stroke path { animation-delay: .45s; }
-  .lp-underline .lp-stroke path { animation-delay: 1.05s; animation-duration: .45s; }
-  .lp-note { opacity: 0; animation: lp-in .5s ease-out 1.3s forwards; }
-  .lp-plan { opacity: 0; transform: translateY(10px); animation: lp-in .6s ease-out 1.75s forwards; }
-}
-@keyframes lp-draw { to { stroke-dashoffset: 0; } }
-@keyframes lp-in { to { opacity: 1; transform: none; } }
-`;

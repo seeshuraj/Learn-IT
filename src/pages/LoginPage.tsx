@@ -1,71 +1,68 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Eye, EyeOff } from 'lucide-react';
 import { User } from '../types';
 import { api, supabaseSignIn } from '../services/api';
 import { waitForSession } from '../services/supabaseClient';
 import { useCaptcha } from '../hooks/useCaptcha';
+import { Logo } from '../components/brand/Logo';
+import { MarkedSheet } from '../components/brand/MarkedSheet';
 
-/**
- * DEMO_ACCOUNTS — these emails must exist in Supabase Auth AND in
- * public.user_identity_map with is_active = true.
- * Passwords were reset via SQL: Admin123! / Teach123! / Study123!
- */
-const DEMO_ACCOUNTS = [
-  { role: 'Admin',      email: 'admin@learnit.edu',      label: 'Admin' },
-  { role: 'Instructor', email: 'instructor@learnit.edu', label: 'Instructor' },
-  { role: 'Student',    email: 'michael@learnit.edu',    label: 'Student' },
-];
+const PILOT_MAILTO =
+  'mailto:contact@learnitanalytics.com?subject=' + encodeURIComponent('LearnIT pilot for our college');
 
 interface LoginPageProps {
   onLogin: (user: User) => void;
 }
 
-export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [email,    setEmail]    = useState('');
-  const [password, setPassword] = useState('');
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState('');
+/** Turns auth/API failures into a message that says what to do next. */
+function signInError(err: any): string {
+  const msg: string = err?.message ?? '';
+  if (/invalid login credentials/i.test(msg)) return "That email and password don't match. Check both and try again.";
+  if (/email not confirmed/i.test(msg)) return 'This account has not been activated yet. Ask your college administrator.';
+  if (/captcha/i.test(msg)) return 'The security check expired. Complete it again, then sign in.';
+  if (/no active institution membership|not provisioned/i.test(msg)) {
+    return 'Your account is not linked to a college yet. Ask your college administrator.';
+  }
+  if (/too many/i.test(msg)) return 'Too many attempts. Wait a minute, then try again.';
+  return 'Sign-in failed. Check your connection and try again.';
+}
 
-  // P2-10: hCaptcha — disabled automatically if VITE_HCAPTCHA_SITE_KEY is not set
+export default function LoginPage({ onLogin }: LoginPageProps) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // hCaptcha hook: currently returns disabled=true (see useCaptcha.ts for re-enabling).
   const { containerRef, token: captchaToken, reset: resetCaptcha, ready: captchaReady, disabled: captchaDisabled } = useCaptcha();
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-
-    // Block submission until captcha is solved (skip check if captcha is disabled/not configured)
     if (!captchaDisabled && !captchaToken) {
-      setError('Please complete the CAPTCHA challenge before signing in.');
+      setError('Complete the security check, then sign in.');
       return;
     }
 
     setLoading(true);
     try {
       const normalizedEmail = email.trim().toLowerCase();
-
-      // 1. Authenticate with Supabase Auth, forwarding captcha token if present.
+      // 1. Authenticate with Supabase Auth (forwarding the captcha token if any).
       const { session } = await supabaseSignIn(
         normalizedEmail,
         password,
-        captchaDisabled ? undefined : (captchaToken ?? undefined)
+        captchaDisabled ? undefined : (captchaToken ?? undefined),
       );
-      console.log('SUPABASE_SESSION', session?.access_token?.slice(0, 20), !!session);
-
-      if (!session?.access_token) {
-        throw new Error(
-          'Supabase login succeeded but no session was returned. ' +
-          'Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in Vercel.'
-        );
-      }
-
-      // 2. Wait for the session to be persisted so parallel fetches find it.
+      if (!session?.access_token) throw new Error('No session returned');
+      // 2. Wait until the session is persisted so parallel requests find it.
       await waitForSession(session.access_token);
-
-      // 3. Fetch the legacy user record from our Express API.
+      // 3. Load the LearnIT profile (role and college) from the API.
       const user = await api.login(normalizedEmail);
       onLogin(user);
     } catch (err: any) {
-      setError(err.message ?? 'Invalid credentials');
-      // Reset captcha on failure so user can try again
+      setError(signInError(err));
       resetCaptcha();
     } finally {
       setLoading(false);
@@ -73,107 +70,126 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-teal-50 to-slate-100 px-4">
-      <div className="w-full max-w-md">
-        {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-3 mb-2">
-            <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect width="40" height="40" rx="10" fill="#01696f"/>
-              <text x="7" y="29" fontFamily="Georgia,serif" fontSize="26" fontWeight="bold" fill="white">L</text>
-              <circle cx="29" cy="12" r="5" fill="#4f98a3" opacity="0.9"/>
-            </svg>
-            <span className="text-2xl font-bold text-slate-800 tracking-tight">LearnIT</span>
-          </div>
-          <p className="text-slate-500 text-sm">AI-Powered Learning Platform</p>
-        </div>
+    <div className="min-h-screen bg-paper text-ink lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+      {/* Form column */}
+      <div className="flex min-h-screen flex-col px-4 py-6 sm:px-10 lg:px-16">
+        <header>
+          <Link to="/landing" className="lp-focus inline-block rounded-md" aria-label="LearnIT home">
+            <Logo />
+          </Link>
+        </header>
 
-        {/* Card */}
-        <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
-          <h1 className="text-xl font-semibold text-slate-800 mb-1">Sign in</h1>
-          <p className="text-slate-500 text-sm mb-6">Enter your university email and password to continue</p>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="email">
-                Email address
-              </label>
-              <input
-                id="email"
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="you@learnit.edu"
-                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="password">
-                Password
-              </label>
-              <input
-                id="password"
-                type="password"
-                required
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm transition"
-              />
-            </div>
-
-            {/* P2-10: hCaptcha widget — only rendered when VITE_HCAPTCHA_SITE_KEY is set */}
-            {!captchaDisabled && (
-              <div>
-                <div ref={containerRef} className="h-captcha" />
-                {!captchaReady && (
-                  <p className="text-xs text-slate-400 mt-1">Loading CAPTCHA…</p>
-                )}
-              </div>
-            )}
-
-            {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5 rounded-lg">
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading || (!captchaDisabled && !captchaReady)}
-              className="w-full bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg text-sm transition"
-            >
-              {loading ? 'Signing in…' : 'Sign in →'}
-            </button>
-          </form>
-
-          {/* Demo accounts */}
-          <div className="mt-6 pt-6 border-t border-slate-100">
-            <p className="text-xs text-slate-400 mb-3 uppercase tracking-wide font-medium">Demo accounts</p>
-            <div className="grid grid-cols-3 gap-2">
-              {DEMO_ACCOUNTS.map(a => (
-                <button
-                  key={a.role}
-                  type="button"
-                  onClick={() => setEmail(a.email)}
-                  className="text-xs bg-slate-50 hover:bg-teal-50 hover:text-teal-700 border border-slate-200 hover:border-teal-300 text-slate-600 rounded-lg py-2 px-2 font-medium transition"
-                >
-                  {a.label}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-slate-400 mt-2">
-              Click a role to pre-fill the email, then enter the password and Sign in.
+        <main className="flex flex-1 items-center py-12">
+          <div className="mx-auto w-full max-w-[24rem]">
+            <h1 className="lp-display text-[clamp(2rem,5vw,2.5rem)] font-extrabold leading-[1.05] tracking-[-0.03em]">
+              Sign in to LearnIT
+            </h1>
+            <p className="mt-3 text-[16px] leading-[1.55] text-muted">
+              Use the email address your college registered for you.
             </p>
-          </div>
-        </div>
 
-        <p className="text-center text-xs text-slate-400 mt-6">
-          LearnIT · Built with NVIDIA AI · TCD HPC
-        </p>
+            <form onSubmit={handleLogin} className="mt-9 space-y-5" noValidate>
+              <div>
+                <label htmlFor="email" className="mb-1.5 block text-[14px] font-medium">College email</label>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="username"
+                  inputMode="email"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="name@college.edu.in"
+                  className="lp-input"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="password" className="mb-1.5 block text-[14px] font-medium">Password</label>
+                <div className="relative">
+                  <input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    className="lp-input pr-12"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    className="lp-focus absolute inset-y-0 right-1 my-1 flex w-10 items-center justify-center rounded-md text-muted hover:text-ink"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                  >
+                    {showPassword ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
+                  </button>
+                </div>
+              </div>
+
+              {!captchaDisabled && (
+                <div>
+                  <div ref={containerRef} className="h-captcha" />
+                  {!captchaReady && <p className="mt-1 text-[13px] text-muted">Loading security check…</p>}
+                </div>
+              )}
+
+              {error && (
+                <p role="alert" className="rounded-[10px] border border-pen/25 bg-[#FBEDEF] px-4 py-3 text-[14px] leading-[1.5] text-pen">
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading || (!captchaDisabled && !captchaReady)}
+                className="lp-focus lp-btn lp-btn-lg w-full"
+              >
+                {loading ? 'Signing in…' : 'Sign in'}
+              </button>
+            </form>
+
+            <p className="mt-5 text-[14px] leading-[1.55] text-muted">
+              Forgot your password? Your college's LearnIT administrator can reset it.
+            </p>
+
+            <div className="mt-10 border-t border-rule pt-6 text-[14px] leading-[1.55] text-muted">
+              Is your college not on LearnIT yet?{' '}
+              <a href={PILOT_MAILTO} className="lp-focus rounded font-medium text-brand underline underline-offset-4 hover:text-brand-700">
+                Book a pilot
+              </a>
+            </div>
+          </div>
+        </main>
+
+        <footer className="text-[13px] text-muted">© {new Date().getFullYear()} LearnIT Analytics Pvt Ltd</footer>
       </div>
+
+      {/* Visual column: the marked sheet, tilting in 3D toward the pointer */}
+      <aside
+        data-tilt-area
+        aria-hidden="true"
+        className="relative hidden overflow-hidden bg-ink lg:flex lg:flex-col lg:justify-center lg:px-14 xl:px-20"
+      >
+        <div
+          className="pointer-events-none absolute inset-0 opacity-[0.07]"
+          style={{
+            backgroundImage:
+              'linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)',
+            backgroundSize: '28px 28px',
+          }}
+        />
+        <div className="relative mx-auto w-full max-w-[34rem]">
+          <p className="lp-display text-[clamp(1.8rem,2.6vw,2.4rem)] font-bold leading-[1.08] tracking-[-0.025em] text-white">
+            Every mark, explained.
+          </p>
+          <p className="mt-3 max-w-[28rem] text-[16px] leading-[1.55] text-white/70">
+            After each unit test, students see the topics they lost marks on and a plan for the week.
+          </p>
+          <MarkedSheet compact className="mt-10" />
+        </div>
+      </aside>
     </div>
   );
 }

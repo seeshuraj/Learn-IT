@@ -1,8 +1,122 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
+@import "./styles/brand.css";
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Space Grotesk", sans-serif;
+/*
+ * LearnIT brand tokens: one visual system for the landing page, sign-in and
+ * the app.
+ *
+ *   paper  #F6F8FB  answer-sheet white (page background)
+ *   ink    #13203B  blue-black ink (text, sidebar)
+ *   brand  #2448B8  ballpoint blue (actions, links, focus)
+ *   pen    #C8102E  examiner red (annotations, weak topics, errors)
+ *   rule   #D9E3EE  graph-sheet blue (borders, dividers)
+ *   muted  #56667F  secondary text
+ *
+ * The app's pages were written with Tailwind's indigo, violet, purple, teal
+ * and blue accents. Rather than rewriting every page, those accent families
+ * are mapped onto one brand-blue scale here, so every accent resolves to the
+ * same colour. Semantic colours (emerald/green = good, amber = caution,
+ * red = problem) and the slate neutrals are left as they are.
+ */
+@theme static {
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-hand: "Caveat", "Segoe Print", cursive;
+
+  --color-paper: #F6F8FB;
+  --color-ink: #13203B;
+  --color-brand: #2448B8;
+  --color-pen: #C8102E;
+  --color-rule: #D9E3EE;
+  --color-muted: #56667F;
+  --color-brand-50: #EEF2FC;
+  --color-brand-100: #DCE4F8;
+  --color-brand-200: #BAC9F1;
+  --color-brand-300: #8FA6E6;
+  --color-brand-400: #5F7DD8;
+  --color-brand-500: #3A5CC8;
+  --color-brand-600: #2448B8;
+  --color-brand-700: #1C3A99;
+  --color-brand-800: #182F7A;
+  --color-brand-900: #162963;
+  --color-brand-950: #0F1B40;
 }
 
+@theme {
+  --color-indigo-50: #EEF2FC;
+  --color-indigo-100: #DCE4F8;
+  --color-indigo-200: #BAC9F1;
+  --color-indigo-300: #8FA6E6;
+  --color-indigo-400: #5F7DD8;
+  --color-indigo-500: #3A5CC8;
+  --color-indigo-600: #2448B8;
+  --color-indigo-700: #1C3A99;
+  --color-indigo-800: #182F7A;
+  --color-indigo-900: #162963;
+  --color-indigo-950: #0F1B40;
+
+  --color-violet-50: #EEF2FC;
+  --color-violet-100: #DCE4F8;
+  --color-violet-200: #BAC9F1;
+  --color-violet-300: #8FA6E6;
+  --color-violet-400: #5F7DD8;
+  --color-violet-500: #3A5CC8;
+  --color-violet-600: #2448B8;
+  --color-violet-700: #1C3A99;
+  --color-violet-800: #182F7A;
+  --color-violet-900: #162963;
+  --color-violet-950: #0F1B40;
+
+  --color-purple-50: #EEF2FC;
+  --color-purple-100: #DCE4F8;
+  --color-purple-200: #BAC9F1;
+  --color-purple-300: #8FA6E6;
+  --color-purple-400: #5F7DD8;
+  --color-purple-500: #3A5CC8;
+  --color-purple-600: #2448B8;
+  --color-purple-700: #1C3A99;
+  --color-purple-800: #182F7A;
+  --color-purple-900: #162963;
+  --color-purple-950: #0F1B40;
+
+  --color-teal-50: #EEF2FC;
+  --color-teal-100: #DCE4F8;
+  --color-teal-200: #BAC9F1;
+  --color-teal-300: #8FA6E6;
+  --color-teal-400: #5F7DD8;
+  --color-teal-500: #3A5CC8;
+  --color-teal-600: #2448B8;
+  --color-teal-700: #1C3A99;
+  --color-teal-800: #182F7A;
+  --color-teal-900: #162963;
+  --color-teal-950: #0F1B40;
+
+  --color-blue-50: #EEF2FC;
+  --color-blue-100: #DCE4F8;
+  --color-blue-200: #BAC9F1;
+  --color-blue-300: #8FA6E6;
+  --color-blue-400: #5F7DD8;
+  --color-blue-500: #3A5CC8;
+  --color-blue-600: #2448B8;
+  --color-blue-700: #1C3A99;
+  --color-blue-800: #182F7A;
+  --color-blue-900: #162963;
+  --color-blue-950: #0F1B40;
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "kern";
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Keyboard focus is always visible, in brand blue. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2.5px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+}

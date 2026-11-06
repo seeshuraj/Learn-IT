@@ -32,7 +32,7 @@ export const AdminDashboard: React.FC = () => {
     { name: "Instructors", value: 12 },
     { name: "Admins", value: 3 },
   ];
-  const COLORS = ["#4f46e5", "#8b5cf6", "#ec4899"];
+  const COLORS = ["#2448B8", "#8FA6E6", "#13203B"];
 
   return (
     <div className="max-w-7xl mx-auto space-y-8">
@@ -131,7 +131,7 @@ export const AdminDashboard: React.FC = () => {
                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} dy={10} />
                 <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
                 <Tooltip cursor={{ fill: '#f8fafc' }} />
-                <Bar dataKey="uses" fill="#4f46e5" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="uses" fill="#2448B8" radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
