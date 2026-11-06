@@ -39,12 +39,12 @@ interface Props {
 const BAND_COLOR: Record<string, string> = {
   strong:   '#437a22',
   moderate: '#d19900',
-  weak:     '#a12c7b',
+  weak:     '#C8102E',
 };
 const BAND_BG: Record<string, string> = {
   strong:   '#d4dfcc',
   moderate: '#e9e0c6',
-  weak:     '#e0ced7',
+  weak:     '#FBE7EA',
 };
 const BAND_LABEL: Record<string, string> = {
   strong:   'Strong',
@@ -71,32 +71,32 @@ export function ExamPerformanceCard({ studentId }: Props) {
   }, [studentId]);
 
   const s: Record<string, React.CSSProperties> = {
-    card:   { background: '#f9f8f5', border: '1px solid #d4d1ca', borderRadius: 10, padding: '1.25rem', fontFamily: 'inherit' },
+    card:   { background: '#F6F8FB', border: '1px solid #D9E3EE', borderRadius: 10, padding: '1.25rem', fontFamily: 'inherit' },
     header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-    title:  { fontSize: '1rem', fontWeight: 600, color: '#28251d' },
-    avg:    { fontSize: '2rem', fontWeight: 700, color: '#01696f', lineHeight: 1 },
-    avgLbl: { fontSize: '0.75rem', color: '#7a7974', marginTop: 2 },
+    title:  { fontSize: '1rem', fontWeight: 600, color: '#13203B' },
+    avg:    { fontSize: '2rem', fontWeight: 700, color: '#2448B8', lineHeight: 1 },
+    avgLbl: { fontSize: '0.75rem', color: '#56667F', marginTop: 2 },
     band:   (b: string) => ({ display: 'inline-block', padding: '3px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: BAND_BG[b] ?? '#eee', color: BAND_COLOR[b] ?? '#333' }),
-    latest: { background: '#fff', border: '1px solid #d4d1ca', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: 12 },
-    lKey:   { fontSize: '0.75rem', color: '#7a7974' },
-    lVal:   { fontSize: '0.9375rem', fontWeight: 600, color: '#28251d' },
+    latest: { background: '#fff', border: '1px solid #D9E3EE', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: 12 },
+    lKey:   { fontSize: '0.75rem', color: '#56667F' },
+    lVal:   { fontSize: '0.9375rem', fontWeight: 600, color: '#13203B' },
     chips:  { display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: 8 },
-    chip:   { padding: '2px 8px', borderRadius: 10, background: '#e0ced7', color: '#a12c7b', fontSize: '0.75rem', fontWeight: 500 },
-    toggle: { background: 'none', border: 'none', cursor: 'pointer', color: '#01696f', fontSize: '0.8125rem', padding: 0, marginTop: 8 },
-    histRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #edeae5', fontSize: '0.8125rem' },
+    chip:   { padding: '2px 8px', borderRadius: 10, background: '#FBE7EA', color: '#C8102E', fontSize: '0.75rem', fontWeight: 500 },
+    toggle: { background: 'none', border: 'none', cursor: 'pointer', color: '#2448B8', fontSize: '0.8125rem', padding: 0, marginTop: 8 },
+    histRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #EEF2F7', fontSize: '0.8125rem' },
   };
 
   if (loading) {
     return (
       <div style={s.card}>
-        <p style={{ color: '#7a7974', fontSize: '0.875rem' }}>Loading exam results…</p>
+        <p style={{ color: '#56667F', fontSize: '0.875rem' }}>Loading exam results…</p>
       </div>
     );
   }
   if (error) {
     return (
       <div style={s.card}>
-        <p style={{ color: '#a12c7b', fontSize: '0.875rem' }}>Could not load exam data.</p>
+        <p style={{ color: '#C8102E', fontSize: '0.875rem' }}>Could not load exam data.</p>
       </div>
     );
   }
@@ -104,7 +104,7 @@ export function ExamPerformanceCard({ studentId }: Props) {
     return (
       <div style={s.card}>
         <p style={s.title}>Unit Exam Performance</p>
-        <p style={{ color: '#7a7974', fontSize: '0.875rem', marginTop: 8 }}>No exam results yet.</p>
+        <p style={{ color: '#56667F', fontSize: '0.875rem', marginTop: 8 }}>No exam results yet.</p>
       </div>
     );
   }
@@ -137,7 +137,7 @@ export function ExamPerformanceCard({ studentId }: Props) {
             </span>
             <span style={s.lVal}>{parseFloat(latest.percentage).toFixed(1)}%</span>
           </div>
-          <div style={{ fontSize: '0.75rem', color: '#7a7974', marginTop: 2 }}>
+          <div style={{ fontSize: '0.75rem', color: '#56667F', marginTop: 2 }}>
             {latest.course_code} — {latest.course_name}
           </div>
         </div>
@@ -146,7 +146,7 @@ export function ExamPerformanceCard({ studentId }: Props) {
       {/* Weak topics (consistently weak across exams) */}
       {weak_topics.length > 0 && (
         <div>
-          <p style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7a7974', marginBottom: 4 }}>
+          <p style={{ fontSize: '0.75rem', fontWeight: 600, color: '#56667F', marginBottom: 4 }}>
             Consistently Weak Topics
           </p>
           <div style={s.chips}>
