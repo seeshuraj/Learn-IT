@@ -25,6 +25,8 @@ import { AdminUserManagement } from "./pages/AdminUserManagement";
 import AdminCourseManagement from "./pages/AdminCourseManagement";
 import { AdminSettings } from "./pages/AdminSettings";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
 import RoadmapPage from "./pages/RoadmapPage";
 import AssessmentsPage from "./pages/AssessmentsPage";
 
@@ -97,6 +99,8 @@ const AppContent: React.FC = () => {
 
   if (location.pathname === "/landing") return <LandingPage />;
   if (location.pathname === "/login") return <LoginPage onLogin={handleLogin} />;
+  if (location.pathname === "/forgot-password") return <ForgotPasswordPage />;
+  if (location.pathname === "/reset-password") return <ResetPasswordPage />;
   if (!user) return <Navigate to="/landing" replace />;
   if (!authChecked) return null;
 

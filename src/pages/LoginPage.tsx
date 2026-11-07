@@ -34,6 +34,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [justReset] = useState(() => new URLSearchParams(window.location.search).has('reset'));
 
   // hCaptcha hook: currently returns disabled=true (see useCaptcha.ts for re-enabling).
   const { containerRef, token: captchaToken, reset: resetCaptcha, ready: captchaReady, disabled: captchaDisabled } = useCaptcha();
@@ -87,6 +88,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             <p className="mt-3 text-[16px] leading-[1.55] text-muted">
               Use the email address your college registered for you.
             </p>
+
+            {justReset && (
+              <p role="status" className="mt-6 rounded-[10px] border border-emerald-600/25 bg-emerald-50 px-4 py-3 text-[14px] leading-[1.5] text-emerald-800">
+                Password updated. Sign in with your new password.
+              </p>
+            )}
 
             <form onSubmit={handleLogin} className="mt-9 space-y-5" noValidate>
               <div>
@@ -150,8 +157,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               </button>
             </form>
 
-            <p className="mt-5 text-[14px] leading-[1.55] text-muted">
-              Forgot your password? Your college's LearnIT administrator can reset it.
+            <p className="mt-5 text-[14px] leading-[1.55]">
+              <Link to="/forgot-password" className="lp-focus rounded font-medium text-brand underline underline-offset-4 hover:text-brand-700">
+                Forgot your password?
+              </Link>
             </p>
 
             <div className="mt-10 border-t border-rule pt-6 text-[14px] leading-[1.55] text-muted">
