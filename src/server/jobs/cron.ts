@@ -7,6 +7,11 @@
  * Schedule: every 30 minutes  ->  '0,30 * * * *'
  * An immediate run fires on startup so the first request always hits
  * a warm snapshot (rather than waiting up to 30 min).
+ *
+ * Safe with several backend instances: each run first takes a Postgres
+ * advisory lock inside a transaction, and instances that don't get it skip
+ * the run. A transaction-scoped lock also works through Supabase's
+ * transaction pooler.
  */
 
 import pkg from 'pg';
@@ -17,8 +22,12 @@ const cron = require('node-cron');
 
 import { snapshotAdminStats, snapshotCourseAnalytics } from './analyticsSnapshot.js';
 import { log, errorFields } from '../lib/log.js';
+import { runExclusive } from '../lib/advisoryLock.js';
 
 type PgPool = InstanceType<typeof Pool>;
+
+/** Arbitrary constant identifying the snapshot job's advisory lock. */
+const CRON_LOCK_KEY = 74_201_001;
 
 /**
  * Start background cron jobs.
@@ -32,6 +41,11 @@ export async function startCronJobs(
   extraJobs: Array<() => Promise<unknown>> = [],
 ): Promise<void> {
   async function runAll() {
+    const ran = await runExclusive(pool, CRON_LOCK_KEY, runJobs);
+    if (!ran) log.info('cron run skipped: another instance holds the lock');
+  }
+
+  async function runJobs() {
     const results = await Promise.allSettled([
       snapshotAdminStats(pool),
       snapshotCourseAnalytics(pool),

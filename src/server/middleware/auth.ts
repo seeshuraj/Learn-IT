@@ -14,7 +14,10 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { createClient } from '@supabase/supabase-js';
+import { createHash } from 'node:crypto';
 import pkg from 'pg';
+import { TtlCache } from '../lib/ttlCache.js';
+import { userApiLimiter } from './rateLimit.js';
 const { Pool } = pkg;
 
 // ── Supabase server-side client (service role — never sent to browser) ──────
@@ -53,6 +56,42 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+// ── Verified-session cache ───────────────────────────────────────────────────
+// Each API call used to make a network round trip to Supabase Auth. Caching a
+// successful verification for a short time removes most of those calls under
+// load. Trade-off: a revoked session keeps working on this instance for at most
+// AUTH_CACHE_TTL_MS (default 60 s; set 0 to disable). Tokens are stored only as
+// SHA-256 hashes. Role and institution are still read from the DB every call.
+type VerifiedUser = { id: string; email: string };
+const authCacheTtlMs = Math.max(0, Number(process.env.AUTH_CACHE_TTL_MS ?? 60_000) || 0);
+const verifiedSessions = new TtlCache<VerifiedUser>(authCacheTtlMs, 20_000);
+
+async function verifyToken(token: string): Promise<VerifiedUser | null> {
+  const key = createHash('sha256').update(token).digest('hex');
+  const cached = verifiedSessions.get(key);
+  if (cached) return cached;
+
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return null;
+
+  const verified = { id: user.id, email: user.email ?? '' };
+  // Never cache past the token's own expiry.
+  const expSec = jwtExpiry(token);
+  const ttl = expSec ? Math.min(authCacheTtlMs, expSec * 1000 - Date.now()) : authCacheTtlMs;
+  verifiedSessions.set(key, verified, ttl);
+  return verified;
+}
+
+/** Reads `exp` from a JWT payload without verifying it (only used to bound the cache TTL). */
+function jwtExpiry(token: string): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
+    return typeof payload.exp === 'number' ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Core: validate bearer token with Supabase Auth server-side ───────────────
 /**
  * requireAuth
@@ -80,8 +119,15 @@ export async function requireAuth(
   const token = authHeader.slice(7);
 
   // getUser() validates the token against Supabase Auth server — not just JWT sig.
-  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !user) {
+  // Successful verifications are cached briefly (see verifyToken).
+  let user: VerifiedUser | null;
+  try {
+    user = await verifyToken(token);
+  } catch (err) {
+    next(err);
+    return;
+  }
+  if (!user) {
     res.status(401).json({ error: 'Invalid or expired session' });
     return;
   }
@@ -116,10 +162,11 @@ export async function requireAuth(
     role:          apiRoleOf(rows[0].role),
     memberRole:    rows[0].role,
     institutionId: rows[0].institution_id,
-    email:         user.email ?? '',
+    email:         user.email,
   };
 
-  next();
+  // Per-user request quota (campus-NAT safe; see rateLimit.ts).
+  userApiLimiter(req, res, next);
 }
 
 // ── Role guard ───────────────────────────────────────────────────────────────
