@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { ChatBot } from '../components/ChatBot';
-import { api } from '../services/api';
+import { api, API_BASE } from '../services/api';
 
 interface Note {
   id: number;
@@ -23,7 +23,7 @@ interface Module {
 
 interface Props { user: any; }
 
-const BASE = (import.meta as any).env?.VITE_API_BASE_URL ?? 'https://learn-it-3f5h.onrender.com';
+const BASE = API_BASE;
 
 const FILE_ICONS: Record<string, string> = {
   'application/pdf': '📄',

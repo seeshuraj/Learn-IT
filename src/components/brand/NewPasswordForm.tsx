@@ -20,6 +20,9 @@ export const NewPasswordForm: React.FC<NewPasswordFormProps> = ({ submitLabel, o
     e.preventDefault();
     setError("");
     if (password.length < MIN_LENGTH) return setError(`Use at least ${MIN_LENGTH} characters.`);
+    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      return setError("Include upper- and lower-case letters and at least one number.");
+    }
     if (password !== confirm) return setError("The two passwords don't match.");
 
     setLoading(true);
@@ -48,7 +51,7 @@ export const NewPasswordForm: React.FC<NewPasswordFormProps> = ({ submitLabel, o
           className="lp-input"
           aria-describedby="password-hint"
         />
-        <p id="password-hint" className="mt-1.5 text-[13px] text-muted">At least {MIN_LENGTH} characters.</p>
+        <p id="password-hint" className="mt-1.5 text-[13px] text-muted">At least {MIN_LENGTH} characters, with upper- and lower-case letters and a number.</p>
       </div>
 
       <div>

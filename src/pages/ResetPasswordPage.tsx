@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../services/supabaseClient";
+import { API_BASE } from "../services/api";
 import { AuthShell } from "../components/brand/AuthShell";
 import { NewPasswordForm } from "../components/brand/NewPasswordForm";
 
-const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE_URL || "https://learn-it-3f5h.onrender.com";
 
 // Captured at module load: supabase-js strips the URL hash once it has read the recovery tokens.
 const initialHash = typeof window !== "undefined" ? window.location.hash : "";

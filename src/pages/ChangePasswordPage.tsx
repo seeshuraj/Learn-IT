@@ -1,12 +1,9 @@
 import React from "react";
 import { supabase } from "../services/supabaseClient";
+import { API_BASE } from "../services/api";
 import { AuthShell } from "../components/brand/AuthShell";
 import { NewPasswordForm } from "../components/brand/NewPasswordForm";
 
-// Use same base as api.ts — in production VITE_API_BASE_URL points to Render
-const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE_URL ||
-  "https://learn-it-3f5h.onrender.com";
 
 interface Props {
   onSuccess: () => void;
