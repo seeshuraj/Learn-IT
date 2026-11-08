@@ -90,13 +90,19 @@ export async function streamModuleChatbot(
   history:     ConversationTurn[],
   onText:      (textSoFar: string) => void,
   signal?:     AbortSignal,
+  onMeta?:     (meta: { personalized: boolean }) => void,
 ): Promise<string> {
   let text = "";
   let ungrounded = false;
+  let sources: string[] = [];
   try {
     await aiChatStream({ question, moduleTitle, moduleId, history }, {
       signal,
-      onMeta: (m) => { ungrounded = m.retrieval === "unavailable"; },
+      onMeta: (m) => {
+        ungrounded = m.retrieval === "unavailable";
+        sources = Array.isArray(m.sources) ? m.sources.slice(0, 4) : [];
+        onMeta?.({ personalized: Boolean(m.personalized) });
+      },
       onDelta: (d) => { text += d; onText(text); },
     });
   } catch (err: any) {
@@ -112,7 +118,16 @@ export async function streamModuleChatbot(
   }
   if (!text.trim()) throw new Error("The AI assistant returned an empty answer. Please try again.");
   if (ungrounded) { text += UNGROUNDED_NOTE; onText(text); }
+  else if (sources.length) {
+    text += `\n\n_From your notes: ${sources.map(escapeMarkdown).join(", ")}_`;
+    onText(text);
+  }
   return text;
+}
+
+/** Note file names are user content; strip characters Markdown would interpret. */
+function escapeMarkdown(s: string): string {
+  return s.replace(/[\\`*_[\]()#>|~<]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 // ─── 3. STUDENT ANALYTICS AI SUMMARY ──────────────────────────────────────────
