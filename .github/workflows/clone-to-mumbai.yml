@@ -47,35 +47,72 @@ jobs:
           sudo apt-get install -y -qq postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
-      - name: Check connections and that the target is empty
+      - name: Check connections and detect phase
+        id: phase
         run: |
           set -euo pipefail
           src=$(psql "$SOURCE_DB_URL" -tAc "select current_setting('server_version')")
           dst=$(psql "$TARGET_DB_URL" -tAc "select current_setting('server_version')")
           echo "source server $src, target server $dst"
           n=$(psql "$TARGET_DB_URL" -tAc "select count(*) from information_schema.tables where table_schema in ('public','private')")
-          if [ "$n" != "0" ]; then echo "::error::Target already has $n tables in public/private; refusing to overwrite"; exit 1; fi
+          # A first run that stopped after loading schema + data resumes from the
+          # permissions step; anything else non-empty is refused.
+          if [ "$n" = "0" ]; then
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          else
+            srcu=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from users"); dstu=$(psql "$TARGET_DB_URL" -tAc "select count(*) from users")
+            srct=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from information_schema.tables where table_schema in ('public','private')")
+            if [ "$n" = "$srct" ] && [ "$srcu" = "$dstu" ]; then
+              echo "Target already holds the copied schema and data; resuming."
+              echo "fresh=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Target has $n tables that don't match the source; refusing to overwrite"; exit 1
+            fi
+          fi
 
       - name: Copy auth users and identities
+        if: steps.phase.outputs.fresh == 'true'
         run: |
           set -euo pipefail
           pg_dump "$SOURCE_DB_URL" --data-only --no-owner --table=auth.users --table=auth.identities -f auth.sql
           psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -f auth.sql
           rm -f auth.sql
 
-      - name: Copy public and private schemas with data
+      - name: Dump public and private schemas
         run: |
           set -euo pipefail
           pg_dump "$SOURCE_DB_URL" --schema=public --schema=private --no-owner \
             --no-publications --no-subscriptions -Fc -f app.dump
-          # The target already has schema "public" (with Supabase's own grants): skip recreating it.
-          pg_restore -l app.dump | grep -Ev ' SCHEMA - public | COMMENT - SCHEMA public | ACL - SCHEMA public ' > restore.list
-          pg_restore --no-owner --exit-on-error -L restore.list -d "$TARGET_DB_URL" app.dump
-          rm -f app.dump restore.list
+          # Skip: schema "public" itself (exists with Supabase's grants) and DEFAULT ACLs
+          # (belong to Supabase's internal roles; the target has its own defaults).
+          pg_restore -l app.dump | grep -Ev ' SCHEMA - public | COMMENT - SCHEMA public | ACL - SCHEMA public | DEFAULT ACL ' > all.list
+          grep -E '^[0-9]+; [0-9]+ [0-9]+ ACL ' all.list > acl.list || true
+          echo "restore entries: $(grep -c '^[0-9]' all.list), of which ACL: $(wc -l < acl.list)"
+
+      - name: Restore schema and data
+        if: steps.phase.outputs.fresh == 'true'
+        run: |
+          set -euo pipefail
+          grep -Ev '^[0-9]+; [0-9]+ [0-9]+ ACL ' all.list > objects.list
+          pg_restore --no-owner --exit-on-error -L objects.list -d "$TARGET_DB_URL" app.dump
+
+      - name: Apply production's exact grants
+        run: |
+          set -euo pipefail
+          # Supabase's default privileges gave anon/authenticated/service_role broad grants
+          # on every restored object. Clear those, then apply the source's ACL entries,
+          # which (re)grant exactly what production has. PUBLIC is left to the ACL entries.
+          psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -c "
+            revoke all on all tables    in schema public, private from anon, authenticated, service_role;
+            revoke all on all sequences in schema public, private from anon, authenticated, service_role;
+            revoke all on all functions in schema public, private from anon, authenticated, service_role;"
+          pg_restore --no-owner --exit-on-error -L acl.list -d "$TARGET_DB_URL" app.dump
+          rm -f app.dump all.list acl.list objects.list
 
       - name: Recreate the auth.users trigger
         run: |
           set -euo pipefail
+          psql "$TARGET_DB_URL" -tAc "select 1 from pg_trigger t join pg_class c on c.oid=t.tgrelid where c.relnamespace='auth'::regnamespace and t.tgname='on_auth_user_created'" | grep -q 1 && { echo "already present"; exit 0; } || true
           psql "$SOURCE_DB_URL" -tA -c "select pg_get_triggerdef(t.oid) || ';' from pg_trigger t join pg_class c on c.oid = t.tgrelid where c.relnamespace = 'auth'::regnamespace and not t.tgisinternal and t.tgname not like 'RI_%'" > triggers.sql
           echo "auth triggers to recreate: $(grep -c . triggers.sql || true)"
           psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -f triggers.sql
@@ -112,6 +149,11 @@ jobs:
                    where table_schema in ('public','private') and table_type = 'BASE TABLE') s"
           a=$(psql "$SOURCE_DB_URL" -tAc "$q")
           b=$(psql "$TARGET_DB_URL" -tAc "$q")
+          g="select (select count(*) from information_schema.role_table_grants where table_schema in ('public','private') and grantee in ('anon','authenticated','service_role'))
+                 || '/' || (select count(*) from information_schema.role_routine_grants where routine_schema in ('public','private') and grantee in ('anon','authenticated','service_role','PUBLIC'))"
+          ga=$(psql "$SOURCE_DB_URL" -tAc "$g"); gb=$(psql "$TARGET_DB_URL" -tAc "$g")
+          echo "grants (table/routine) source=$ga target=$gb"
+          if [ "$ga" != "$gb" ]; then echo "::error::Grants differ"; exit 1; fi
           au=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from auth.users"); bu=$(psql "$TARGET_DB_URL" -tAc "select count(*) from auth.users")
           ao=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from storage.objects"); bo=$(psql "$TARGET_DB_URL" -tAc "select count(*) from storage.objects")
           echo "auth.users source=$au target=$bu; storage.objects source=$ao target=$bo"
