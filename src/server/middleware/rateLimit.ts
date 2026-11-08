@@ -1,30 +1,38 @@
 /**
- * rateLimit.ts — Per-route rate limiters using express-rate-limit.
+ * rateLimit.ts — rate limiters using express-rate-limit.
  *
- * Strategy:
- *  - loginLimiter       : IP-based  — 10 attempts per 15 min  (brute-force guard on /api/login)
- *  - aiLimiter          : IP-based  — 30 requests per 60 min  (AI chat + grading endpoints)
- *  - uploadLimiter      : IP-based  — 20 uploads per 24 h     (note + submission file uploads)
- *  - reportLimiter      : IP-based  — 5 requests per 60 min   (analytics-summary / grade-pdf)
- *  - generalApiLimiter  : IP-based  — 200 requests per 15 min (catch-all for all other /api/* routes)
+ * Colleges put hundreds or thousands of students behind one public IP
+ * (campus Wi-Fi, hostel NAT), so per-IP quotas would lock a whole campus out
+ * after a handful of requests. Every limiter on an authenticated route is
+ * therefore keyed by the signed-in user (institution + user id). Only the
+ * pre-auth backstop is keyed by IP, with a ceiling sized for a campus.
  *
- * All limiters return JSON { error, retryAfter } — never HTML — so the
- * frontend can parse and display a user-friendly message.
+ *  - ipBackstopLimiter : per IP,   20 000 / 15 min  pre-auth DoS backstop for /api/*
+ *  - userApiLimiter    : per user,    600 / 15 min  every authenticated request (via requireAuth)
+ *  - loginLimiter      : per user,     30 / 15 min  /api/login profile fetch (password
+ *                                                    brute force is limited by Supabase Auth)
+ *  - aiLimiter         : per user,     40 / 60 min  AI chat and summaries
+ *  - aiGradeLimiter    : per user,     60 / 60 min  AI grading (instructors grade in batches)
+ *  - uploadLimiter     : per user,    100 / 24 h    notes, submissions, marks files
+ *  - reportLimiter     : per user,     10 / 60 min  expensive report generation
  *
- * express-rate-limit v7 ships with an in-memory store by default which is
- * per-process. This is fine for a single-instance deployment (Render free
- * tier). If you scale to multiple instances, swap the store for
- * rate-limit-redis using ioredis + the REDIS_URL env var.
+ * Every limit can be tuned per deployment with RATE_<NAME>_MAX
+ * (e.g. RATE_AI_MAX=80) without a code change.
+ *
+ * Counters live in process memory. With several instances each instance
+ * counts separately, so the effective limit is roughly limit × instances.
+ * These limits are for fairness and cost control, not security, so that is
+ * acceptable; a shared Redis store is only needed if exact limits matter.
  */
 
 import rateLimit, { Options, RateLimitRequestHandler } from "express-rate-limit";
 import { Request, Response } from "express";
+import { limitFromEnv, userKey } from "../lib/rateLimitKeys.js";
+
+const MINUTE = 60 * 1000;
 
 /** Shared JSON error handler so no limiter ever returns HTML to the client. */
-function onLimitReached(
-  label: string,
-  windowMs: number
-): Pick<Options, "handler"> {
+function onLimitReached(label: string, windowMs: number): Pick<Options, "handler"> {
   return {
     handler: (_req: Request, res: Response) => {
       const retryAfterSec = Math.ceil(windowMs / 1000);
@@ -36,83 +44,36 @@ function onLimitReached(
   };
 }
 
-/**
- * Login — 10 attempts per IP per 15 minutes.
- * Protects /api/login against credential-stuffing and brute-force.
- */
-export const loginLimiter: RateLimitRequestHandler = rateLimit({
-  windowMs:         15 * 60 * 1000, // 15 min
-  max:              10,
-  standardHeaders:  true,           // Return RateLimit-* headers (RFC 6585)
-  legacyHeaders:    false,
-  skipSuccessfulRequests: false,    // Count ALL attempts, not just failures
-  ...onLimitReached("login", 15 * 60 * 1000),
-});
+function perUser(name: string, label: string, windowMs: number, fallbackMax: number): RateLimitRequestHandler {
+  return rateLimit({
+    windowMs,
+    max: limitFromEnv(name, fallbackMax),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: userKey,
+    ...onLimitReached(label, windowMs),
+  });
+}
 
 /**
- * AI endpoints — 30 requests per IP per 60 minutes.
- * Covers /api/ai/chat, /api/ai/analytics-summary.
- * Prevents runaway LLM token spend from a single user/IP.
+ * Pre-auth backstop for all /api/* routes, keyed by IP. The ceiling is high
+ * because one IP can be an entire campus; real per-person limits apply after
+ * sign-in (userApiLimiter). Volumetric attacks belong at the edge (CDN/WAF).
  */
-export const aiLimiter: RateLimitRequestHandler = rateLimit({
-  windowMs:        60 * 60 * 1000, // 1 hour
-  max:             30,
+export const ipBackstopLimiter: RateLimitRequestHandler = rateLimit({
+  windowMs: 15 * MINUTE,
+  max: limitFromEnv("IP", 20_000),
   standardHeaders: true,
-  legacyHeaders:   false,
-  ...onLimitReached("AI", 60 * 60 * 1000),
+  legacyHeaders: false,
+  skip: (req: Request) => req.path === "/health" || req.path === "/ready",
+  ...onLimitReached("network", 15 * MINUTE),
 });
 
-/**
- * AI grading — 20 requests per IP per 60 minutes.
- * /api/ai/grade and /api/ai/grade-pdf are more expensive than chat.
- */
-export const aiGradeLimiter: RateLimitRequestHandler = rateLimit({
-  windowMs:        60 * 60 * 1000, // 1 hour
-  max:             20,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  ...onLimitReached("AI grading", 60 * 60 * 1000),
-});
+/** Every authenticated request; applied at the end of requireAuth. */
+export const userApiLimiter = perUser("USER", "general API", 15 * MINUTE, 600);
 
-/**
- * File upload — 20 uploads per IP per 24 hours.
- * Covers /api/modules/:id/notes and /api/submissions/upload.
- * Prevents storage exhaustion via repeated large file uploads.
- */
-export const uploadLimiter: RateLimitRequestHandler = rateLimit({
-  windowMs:        24 * 60 * 60 * 1000, // 24 hours
-  max:             20,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  ...onLimitReached("file upload", 24 * 60 * 60 * 1000),
-});
-
-/**
- * Report / analytics — 5 requests per IP per 60 minutes.
- * Covers /api/ai/analytics-summary — expensive DB aggregation + LLM call.
- */
-export const reportLimiter: RateLimitRequestHandler = rateLimit({
-  windowMs:        60 * 60 * 1000, // 1 hour
-  max:             5,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  ...onLimitReached("report generation", 60 * 60 * 1000),
-});
-
-/**
- * General API catch-all — 200 requests per IP per 15 minutes.
- * Applied globally to all /api/* routes as a baseline DoS guard.
- * Legitimate users will never hit this; scrapers and bots will.
- */
-export const generalApiLimiter: RateLimitRequestHandler = rateLimit({
-  windowMs:        15 * 60 * 1000, // 15 min
-  max:             200,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  skip: (req: Request) => {
-    // Skip health-check pings from Render/UptimeRobot so they don't
-    // consume the quota and trigger false 429s.
-    return req.path === "/api/health" || req.path === "/api/ready";
-  },
-  ...onLimitReached("general API", 15 * 60 * 1000),
-});
+export const loginLimiter = perUser("LOGIN", "sign-in", 15 * MINUTE, 30);
+export const aiLimiter = perUser("AI", "AI", 60 * MINUTE, 40);
+export const aiGradeLimiter = perUser("AI_GRADE", "AI grading", 60 * MINUTE, 60);
+export const uploadLimiter = perUser("UPLOAD", "file upload", 24 * 60 * MINUTE, 100);
+export const reportLimiter = perUser("REPORT", "report generation", 60 * MINUTE, 10);
