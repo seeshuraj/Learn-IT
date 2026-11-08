@@ -7,7 +7,6 @@ import dotenv from "dotenv";
 import { createRequire } from "module";
 import fs from "fs";
 import dns from "dns";
-import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import {
   requireAuth,
@@ -57,6 +56,8 @@ import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights
 import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
 import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { createGradingRouter } from "./src/server/routes/grading.js";
+import { createUserImportRouter } from "./src/server/routes/userImport.js";
+import { generateTempPassword } from "./src/server/lib/tempPassword.js";
 import { notify } from "./src/server/lib/notify.js";
 import { sendServerError } from './src/server/lib/httpErrors.js';
 import { log, errorFields } from './src/server/lib/log.js';
@@ -169,31 +170,6 @@ async function checkStorageConnectivity(): Promise<void> {
 
 // ── Auth user helpers ─────────────────────────────────────────────────────────
 
-function generateTempPassword(): string {
-  const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*";
-  const upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const digits  = "23456789";
-  const special = "!@#$%^&*";
-
-  const buf = crypto.randomBytes(20);
-
-  let pwd = "";
-  pwd += upper[buf[0] % upper.length];
-  pwd += digits[buf[1] % digits.length];
-  pwd += special[buf[2] % special.length];
-
-  for (let i = 3; i < 16; i++) {
-    pwd += charset[buf[i] % charset.length];
-  }
-
-  const arr = crypto.randomBytes(pwd.length);
-  const chars = pwd.split("");
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = arr[i] % (i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join("");
-}
 
 async function createAuthUserAndIdentityMapRow(
   client: pkg.PoolClient,
@@ -511,6 +487,7 @@ async function startServer() {
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
   app.use("/api/submissions",        createGradingRouter(pool, nimChat));
+  app.use("/api/admin/users/import", createUserImportRouter(pool, supabaseAdmin));
 
   // ── Health ────────────────────────────────────────────────────────────────
   // Liveness only: no DB or Storage dependency, so a database outage cannot

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { User } from "../types";
-import { Users, Search, UserPlus, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
+import { Users, Search, UserPlus, Upload, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { toast, Toaster } from "sonner";
 import { api } from "../services/api";
+import { BulkImportDialog } from "../components/admin/BulkImportDialog";
 
 // ── Temp Password Modal ─────────────────────────────────────────────────────
 interface TempPasswordModalProps {
@@ -96,6 +97,7 @@ export const AdminUserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [search, setSearch] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
   const [tempCreds, setTempCreds] = useState<{ name: string; email: string; password: string } | null>(null);
 
   useEffect(() => {
@@ -209,13 +211,28 @@ export const AdminUserManagement: React.FC = () => {
           <h1 className="text-4xl font-bold text-slate-900">User Management</h1>
           <p className="text-slate-500 mt-1">Manage students, instructors, and administrators.</p>
         </div>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
-        >
-          <UserPlus className="w-4 h-4" /> Add New User
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={() => setIsImportOpen(true)}
+            className="px-5 py-3 bg-white text-slate-800 border border-slate-200 rounded-2xl text-sm font-bold flex items-center gap-2 hover:border-slate-400 transition-all"
+          >
+            <Upload className="w-4 h-4" /> Import from CSV
+          </button>
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
+          >
+            <UserPlus className="w-4 h-4" /> Add New User
+          </button>
+        </div>
       </div>
+
+      {isImportOpen && (
+        <BulkImportDialog
+          onClose={() => setIsImportOpen(false)}
+          onImported={() => api.getAdminUsers().then((data: any) => setUsers(Array.isArray(data) ? data : []))}
+        />
+      )}
 
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
         <div className="p-6 border-b border-slate-100 flex items-center justify-between gap-4">

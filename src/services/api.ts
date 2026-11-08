@@ -342,6 +342,11 @@ export const api = {
     request('/api/admin/settings', { method: 'POST', body: JSON.stringify({ key, value }) }),
   createAdminUser:  (data: any) =>
     request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+  previewUserImport: (file: File) => uploadFile('/api/admin/users/import/preview', 'file', file),
+  commitUserImport: (mode: 'invite' | 'temp_password', rows: unknown[]) =>
+    request('/api/admin/users/import/commit', { method: 'POST', body: JSON.stringify({ mode, rows }) }),
+  resendUserInvites: (emails: string[]) =>
+    request('/api/admin/users/import/resend-invites', { method: 'POST', body: JSON.stringify({ emails }) }),
   updateAdminUser:  (userId: number, data: any) =>
     request(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
   createUser:       (data: any) =>
