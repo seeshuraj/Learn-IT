@@ -25,14 +25,12 @@ import { AdminUserManagement } from "./pages/AdminUserManagement";
 import AdminCourseManagement from "./pages/AdminCourseManagement";
 import { AdminSettings } from "./pages/AdminSettings";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
+import { API_BASE } from "./services/api";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import RoadmapPage from "./pages/RoadmapPage";
 import AssessmentsPage from "./pages/AssessmentsPage";
 
-const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE_URL ||
-  "https://learn-it-3f5h.onrender.com";
 
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {

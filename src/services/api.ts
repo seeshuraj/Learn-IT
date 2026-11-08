@@ -13,9 +13,11 @@
 import { supabase, getAccessToken } from './supabaseClient';
 import type { StudentAnalyticsData, ClassOverviewData } from './aiService';
 
-const BASE =
+/** Backend origin. Every browser call to the API builds its URL from this. */
+export const API_BASE: string =
   (import.meta as any).env?.VITE_API_BASE_URL ||
-  'https://learn-it-3f5h.onrender.com'; // production fallback — never empty
+  'https://learnit-api-sg.onrender.com'; // production fallback (Singapore) — never empty
+const BASE = API_BASE;
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 
