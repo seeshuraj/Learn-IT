@@ -1,0 +1,121 @@
+# ONE-OFF: copy production (Ireland, eu-west-1) into the new Mumbai
+# (ap-south-1) project. Runs only on pushes to ops/clone-mumbai and refuses to
+# touch a target that already has tables in `public`. Never merge this branch.
+#
+# Copies: auth users + identities (logins keep working), public + private
+# schemas with data, grants, RLS policies and functions, the auth.users
+# trigger, storage buckets, storage policies and storage objects.
+name: Clone database to Mumbai
+
+on:
+  push:
+    branches: [ops/clone-mumbai]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clone-to-mumbai
+  cancel-in-progress: false
+
+jobs:
+  clone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_DB_URL: ${{ secrets.SOURCE_DB_URL }}
+      TARGET_DB_URL: ${{ secrets.TARGET_DB_URL }}
+      SOURCE_SERVICE_ROLE_KEY: ${{ secrets.SOURCE_SERVICE_ROLE_KEY }}
+      TARGET_SERVICE_ROLE_KEY: ${{ secrets.TARGET_SERVICE_ROLE_KEY }}
+      SOURCE_URL: https://pyjynvgsrlxypkiiopei.supabase.co
+      TARGET_URL: https://idytyybyyqutkgwrqjzl.supabase.co
+      PGCONNECT_TIMEOUT: "20"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets are present
+        run: |
+          for v in SOURCE_DB_URL TARGET_DB_URL SOURCE_SERVICE_ROLE_KEY TARGET_SERVICE_ROLE_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::Repository secret $v is not set"; exit 1; fi
+          done
+
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y > /dev/null
+          sudo apt-get install -y -qq postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Check connections and that the target is empty
+        run: |
+          set -euo pipefail
+          src=$(psql "$SOURCE_DB_URL" -tAc "select current_setting('server_version')")
+          dst=$(psql "$TARGET_DB_URL" -tAc "select current_setting('server_version')")
+          echo "source server $src, target server $dst"
+          n=$(psql "$TARGET_DB_URL" -tAc "select count(*) from information_schema.tables where table_schema in ('public','private')")
+          if [ "$n" != "0" ]; then echo "::error::Target already has $n tables in public/private; refusing to overwrite"; exit 1; fi
+
+      - name: Copy auth users and identities
+        run: |
+          set -euo pipefail
+          pg_dump "$SOURCE_DB_URL" --data-only --no-owner --table=auth.users --table=auth.identities -f auth.sql
+          psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -f auth.sql
+          rm -f auth.sql
+
+      - name: Copy public and private schemas with data
+        run: |
+          set -euo pipefail
+          pg_dump "$SOURCE_DB_URL" --schema=public --schema=private --no-owner \
+            --no-publications --no-subscriptions -Fc -f app.dump
+          # The target already has schema "public" (with Supabase's own grants): skip recreating it.
+          pg_restore -l app.dump | grep -Ev ' SCHEMA - public | COMMENT - SCHEMA public | ACL - SCHEMA public ' > restore.list
+          pg_restore --no-owner --exit-on-error -L restore.list -d "$TARGET_DB_URL" app.dump
+          rm -f app.dump restore.list
+
+      - name: Recreate the auth.users trigger
+        run: |
+          set -euo pipefail
+          psql "$SOURCE_DB_URL" -tA -c "select pg_get_triggerdef(t.oid) || ';' from pg_trigger t join pg_class c on c.oid = t.tgrelid where c.relnamespace = 'auth'::regnamespace and not t.tgisinternal and t.tgname not like 'RI_%'" > triggers.sql
+          echo "auth triggers to recreate: $(grep -c . triggers.sql || true)"
+          psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -f triggers.sql
+
+      - name: Copy storage buckets and policies
+        run: |
+          set -euo pipefail
+          psql "$SOURCE_DB_URL" -tA -c "
+            select format('insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values (%L, %L, %L, %s, %s) on conflict (id) do nothing;',
+                          id, name, public, coalesce(file_size_limit::text, 'null'),
+                          coalesce(quote_literal(allowed_mime_types::text) || '::text[]', 'null'))
+            from storage.buckets" > buckets.sql
+          psql "$SOURCE_DB_URL" -tA -c "
+            select format('create policy %I on storage.%I as %s for %s to %s%s%s;',
+                          policyname, tablename, permissive, cmd, array_to_string(roles, ', '),
+                          coalesce(' using (' || qual || ')', ''),
+                          coalesce(' with check (' || with_check || ')', ''))
+            from pg_policies where schemaname = 'storage'" > storage_policies.sql
+          psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -f buckets.sql
+          psql "$TARGET_DB_URL" -v ON_ERROR_STOP=1 -q -f storage_policies.sql
+          echo "buckets: $(wc -l < buckets.sql), storage policies: $(wc -l < storage_policies.sql)"
+
+      - name: Copy storage objects
+        run: |
+          set -euo pipefail
+          psql "$SOURCE_DB_URL" -tA -F $'\t' -c "select bucket_id, name, coalesce(metadata->>'mimetype','') from storage.objects order by 1, 2" > objects.tsv
+          node .github/scripts/copy-storage.mjs < objects.tsv
+
+      - name: Verify row counts match
+        run: |
+          set -euo pipefail
+          q="select string_agg(format('%s=%s', t, (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %s', t), false, true, '')))[1]::text), ' ' order by t)
+             from (select format('%I.%I', table_schema, table_name) t from information_schema.tables
+                   where table_schema in ('public','private') and table_type = 'BASE TABLE') s"
+          a=$(psql "$SOURCE_DB_URL" -tAc "$q")
+          b=$(psql "$TARGET_DB_URL" -tAc "$q")
+          au=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from auth.users"); bu=$(psql "$TARGET_DB_URL" -tAc "select count(*) from auth.users")
+          ao=$(psql "$SOURCE_DB_URL" -tAc "select count(*) from storage.objects"); bo=$(psql "$TARGET_DB_URL" -tAc "select count(*) from storage.objects")
+          echo "auth.users source=$au target=$bu; storage.objects source=$ao target=$bo"
+          if [ "$a" != "$b" ] || [ "$au" != "$bu" ] || [ "$ao" != "$bo" ]; then
+            echo "::error::Counts differ"; echo "source: $a"; echo "target: $b"; exit 1
+          fi
+          echo "All table counts match."
