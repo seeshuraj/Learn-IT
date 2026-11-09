@@ -57,6 +57,21 @@ Add the values per college: two colleges need 1,000 sign-ins per 5 minutes, and 
 
 Rate-limit counters live in each instance's memory. With N instances, a user's effective limit is up to N times the setting. That is fine for fairness and cost control. Add a shared Redis store only if exact limits become a contractual requirement.
 
+### AI allowance per college
+
+Every AI call is metered in `ai_usage_events`: college, user, course, feature, model, tokens and latency, but never prompt or answer text. College admins see their usage on the Admin dashboard.
+
+A college's monthly allowance is checked before each call. When it runs out, AI features reply "Your college's AI allowance for this month has been used up" until the next calendar month (UTC). Set the allowance per college to match its plan:
+
+```sql
+-- tokens per month (prompt + completion); NULL = use AI_MONTHLY_TOKEN_BUDGET; 0 = unlimited
+update institutions set ai_monthly_token_budget = 20000000 where slug = '<college-slug>';
+```
+
+`AI_MONTHLY_TOKEN_BUDGET` (Render env) is the default for colleges without their own value. If it is unset, colleges are unlimited.
+
+Sizing: a tutor answer is about 2,500 tokens with notes and the student record included, and AI grading about 3,000. A 2,000-account college averaging 40 tutor questions per student per month uses roughly 200M tokens. Start the allowance from the plan's AI tier and adjust it from the dashboard numbers after the first month.
+
 ### Render → Settings
 
 - Health check path: `/api/health`. Render then replaces a hung instance automatically.

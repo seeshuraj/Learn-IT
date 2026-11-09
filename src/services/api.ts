@@ -351,6 +351,7 @@ export const api = {
     request('/api/admin/settings', { method: 'POST', body: JSON.stringify({ key, value }) }),
   createAdminUser:  (data: any) =>
     request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+  getAiUsage: (days = 30) => request(`/api/admin/ai-usage?days=${days}`),
   previewUserImport: (file: File) => uploadFile('/api/admin/users/import/preview', 'file', file),
   commitUserImport: (mode: 'invite' | 'temp_password', rows: unknown[]) =>
     request('/api/admin/users/import/commit', { method: 'POST', body: JSON.stringify({ mode, rows }) }),

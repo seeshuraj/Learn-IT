@@ -16,6 +16,11 @@ export function sendServerError(res: Response, err: unknown, status = 500): void
     if (!res.headersSent) res.status(denied.status ?? 403).json({ error: err.message });
     return;
   }
+  // A college's monthly AI allowance is used up: tell the user plainly.
+  if (err instanceof Error && err.name === 'AiBudgetExceeded') {
+    if (!res.headersSent) res.status(429).json({ error: err.message, code: 'ai_budget_exceeded' });
+    return;
+  }
   const requestId = (res.getHeader('X-Request-Id') as string | undefined) ?? undefined;
   const req = res.req;
   log.error('request failed', {
