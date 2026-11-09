@@ -102,7 +102,14 @@ async function request<T = any>(
 // ── Streaming chat (server-sent events) ─────────────────────────────────────
 
 export interface ChatStreamHandlers {
-  onMeta?(meta: { retrieval: 'none' | 'ok' | 'unavailable'; sourceCount: number }): void;
+  onMeta?(meta: {
+    retrieval: 'none' | 'ok' | 'unavailable';
+    sourceCount: number;
+    /** Note names the answer drew on, for citations. */
+    sources?: string[];
+    /** True when the student's own marks and feedback informed the answer. */
+    personalized?: boolean;
+  }): void;
   onDelta(text: string): void;
   signal?: AbortSignal;
 }

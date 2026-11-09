@@ -22,9 +22,15 @@ interface Message {
 }
 
 const WELCOME =
-  "Hi! I'm your AI course assistant powered by NVIDIA NIM. " +
-  "Ask me anything about your course material. " +
-  "If you've uploaded notes for a module, I can answer questions directly from them.";
+  "Hi! I'm your course tutor. I answer from this module's notes and tell you which note I used. " +
+  "For students, I also look at your recent exam topics and graded feedback, so I can focus on what you need. " +
+  "I can make mistakes, so check key points against your notes.";
+
+const SUGGESTIONS = [
+  "What should I revise for this module?",
+  "Explain the topic I lost the most marks on",
+  "Summarise the key points of these notes",
+];
 
 export const ChatBot: React.FC<Props> = ({
   moduleTitle = "General Course Assistant",
@@ -36,6 +42,8 @@ export const ChatBot: React.FC<Props> = ({
     { role: "assistant", content: WELCOME },
   ]);
   const [loading, setLoading] = useState(false);
+  // Set once the server confirms the student's own record informed an answer.
+  const [personalized, setPersonalized] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // In-flight answer; aborted when the window closes or the component unmounts.
@@ -51,8 +59,8 @@ export const ChatBot: React.FC<Props> = ({
     }
   }, [open, messages]);
 
-  const send = async () => {
-    const q = input.trim();
+  const send = async (preset?: string) => {
+    const q = (preset ?? input).trim();
     if (!q || loading) return;
     setInput("");
     // The API accepts at most 20 prior turns of up to 4000 chars each;
@@ -70,7 +78,8 @@ export const ChatBot: React.FC<Props> = ({
     inflight.current = controller;
     setLoading(true);
     try {
-      await streamModuleChatbot(q, moduleTitle, moduleId, history, setAnswer, controller.signal);
+      await streamModuleChatbot(q, moduleTitle, moduleId, history, setAnswer, controller.signal,
+        (meta) => { if (meta.personalized) setPersonalized(true); });
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setMessages((prev) => (prev.at(-1)?.content ? prev : prev.slice(0, -1)));
@@ -118,10 +127,14 @@ export const ChatBot: React.FC<Props> = ({
                   <BookOpen className="w-3 h-3" />
                   {moduleTitle}
                 </p>
+                {personalized && (
+                  <p className="text-[11px] text-white/80 leading-tight mt-0.5">Using your marks and feedback</p>
+                )}
               </div>
             </div>
             <button
               onClick={() => setOpen(false)}
+              aria-label="Close chat"
               className="p-1 hover:bg-white/20 rounded-lg transition-colors"
             >
               <X className="w-4 h-4 text-white" />
@@ -148,6 +161,20 @@ export const ChatBot: React.FC<Props> = ({
                 </div>
               </div>
             ))}
+            {messages.length === 1 && moduleId != null && (
+              <div className="flex flex-col items-start gap-1.5 pt-1">
+                {SUGGESTIONS.map((sgt) => (
+                  <button
+                    key={sgt}
+                    type="button"
+                    onClick={() => send(sgt)}
+                    className="text-left text-xs px-3 py-1.5 rounded-full border border-violet-200 text-violet-700 hover:bg-violet-50 transition-colors"
+                  >
+                    {sgt}
+                  </button>
+                ))}
+              </div>
+            )}
             {loading && !messages.at(-1)?.content && (
               <div className="flex justify-start">
                 <div className="bg-slate-100 px-3 py-2.5 rounded-2xl rounded-bl-md flex items-center gap-1">
@@ -181,7 +208,8 @@ export const ChatBot: React.FC<Props> = ({
               className="flex-1 text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-200 disabled:opacity-50 placeholder:text-slate-400"
             />
             <button
-              onClick={send}
+              onClick={() => send()}
+              aria-label="Send"
               disabled={!input.trim() || loading}
               className="w-9 h-9 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-200 text-white rounded-xl flex items-center justify-center transition-colors shrink-0"
             >

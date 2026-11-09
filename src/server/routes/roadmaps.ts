@@ -143,7 +143,9 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
            WHERE s.student_id = $1
              AND m.course_id  = $2
              AND s.ai_feedback IS NOT NULL
-             AND s.ai_feedback != 'null'`,
+             AND s.ai_feedback != 'null'
+             -- Only work an instructor has graded: AI drafts stay private until reviewed.
+             AND s.grade IS NOT NULL`,
           [studentId, courseId]
         ),
 
