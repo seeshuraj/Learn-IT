@@ -117,7 +117,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
               <span className="text-slate-400">•</span>
               <span className="text-sm text-slate-500">{course.instructor_name}</span>
             </div>
-            <h1 className="text-4xl font-bold text-slate-900">{course.name}</h1>
+            <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">{course.name}</h1>
           </div>
           <div className="flex gap-3">
             <button className="px-6 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-all">

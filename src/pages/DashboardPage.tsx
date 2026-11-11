@@ -182,7 +182,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
     <div className="max-w-7xl mx-auto space-y-8">
       <Toaster richColors />
       <div>
-        <h1 className="text-4xl font-bold text-slate-900">
+        <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">
           Welcome back, {user.name.split(' ')[0]}! 👋
         </h1>
         <p className="text-slate-500 mt-1">Here's what's happening in your courses today.</p>
