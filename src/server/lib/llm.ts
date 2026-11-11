@@ -23,12 +23,31 @@ import { log } from './log.js';
 
 const NIM_BASE = 'https://integrate.api.nvidia.com/v1';
 
-/** Preference order; quality first, then availability. Verify with GET /v1/models. */
+/**
+ * Preference order: fast, inexpensive models first (most traffic is tutoring
+ * and short summaries), larger ones as fallbacks. The startup probe moves the
+ * ones that actually answer to the front, so a model NVIDIA retires or
+ * overloads costs nothing. Verify against GET /v1/models when editing.
+ * (2026-11-11: nemotron-3-super and nemotron-nano-3 return 404.)
+ */
 export const DEFAULT_CHAT_MODELS = [
-  'nvidia/nemotron-3-super-120b-a12b',
-  'openai/gpt-oss-20b',
+  'nvidia/nemotron-3.5-lightning-30b-a3b',
+  'z-ai/glm-5.3-flash',
+  'minimaxai/minimax-m3.1-flash',
+  'deepseek-ai/deepseek-v4.1-flash',
+  'google/gemma-4-31b-it',
   'nvidia/nemotron-3-ultra-550b-a55b',
+  'openai/gpt-oss-20b',
 ];
+
+/**
+ * NVIDIA answers 400 with "DEGRADED" (or similar) when a hosted model's
+ * function is unhealthy. That is a provider-side outage of that one model,
+ * not a bad request, so it should fail over like a 503.
+ */
+export function isDegradedModelResponse(status: number, body: string): boolean {
+  return status === 400 && /DEGRAD|function id .* (is )?(not ready|unavailable|inactive)/i.test(body);
+}
 
 export interface ChatMessage { role: string; content: string }
 export interface ChatOptions {
@@ -206,6 +225,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
     }
     if (!res.ok) {
       const body = await res.text();
+      if (isDegradedModelResponse(res.status, body)) throw new ModelUnavailable(`${model} degraded (${res.status})`, false);
       log.error('nim chat request failed', { status: res.status, model });
       throw new Error(`NVIDIA NIM ${res.status}: ${body.slice(0, 300)}`);
     }
@@ -323,6 +343,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       }
       if (!res.ok || !res.body) {
         const body = await res.text().catch(() => '');
+        if (isDegradedModelResponse(res.status, body)) throw new ModelUnavailable(`${model} degraded (${res.status})`, false);
         log.error('nim chat stream request failed', { status: res.status, model });
         throw new Error(`NVIDIA NIM ${res.status}: ${body.slice(0, 300)}`);
       }

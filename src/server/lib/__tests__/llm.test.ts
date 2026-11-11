@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createNimChat, chatModelsFromEnv, modelRequestExtras, stripReasoning, DEFAULT_CHAT_MODELS,
+  createNimChat, chatModelsFromEnv, modelRequestExtras, stripReasoning, DEFAULT_CHAT_MODELS, isDegradedModelResponse,
 } from '../llm.js';
 
 /** fetch stub routing by path; `chat` decides per requested model. */
@@ -36,6 +36,10 @@ test('candidate list: env override first, defaults after, no duplicates; retired
   assert.equal(m[0], 'a/x');
   assert.equal(m.filter(x => x === 'openai/gpt-oss-20b').length, 1);
   assert.ok(!DEFAULT_CHAT_MODELS.includes('meta/llama-3.3-70b-instruct'));
+  // Retired on NVIDIA (404) as of 2026-11-11.
+  assert.ok(!DEFAULT_CHAT_MODELS.includes('nvidia/nemotron-3-super-120b-a12b'));
+  assert.ok(!DEFAULT_CHAT_MODELS.includes('nvidia/nemotron-nano-3-30b-a3b'));
+  assert.ok(DEFAULT_CHAT_MODELS.length >= 5, 'enough fallbacks that one provider outage is survivable');
 });
 
 test('a retired model (410) fails over to the next and the working one is reused', async () => {
@@ -254,4 +258,19 @@ test('a caller abort (user closed the chat) stops the stream without failover', 
   const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: nim.impl });
   await assert.rejects(c.chatStream(msgs, {}, { onDelta: () => {}, signal: outer.signal }), (e: unknown) => e instanceof ChatAborted);
   assert.deepEqual(nim.models, ['m1']);
+});
+
+test('a model NVIDIA reports as DEGRADED fails over to the next one', async () => {
+  const nim = fakeNim(model => model === 'a/degraded'
+    ? [400, { status: 400, title: 'Bad Request', detail: "Function id '48c6': DEGRADED function cannot be invoked" }]
+    : [200, answer('fine')]);
+  const c = createNimChat({ apiKey: 'k', models: ['a/degraded', 'b/ok'], isProduction: true, fetchImpl: nim.impl });
+  assert.equal(await c.chat(msgs), 'fine');
+  assert.deepEqual(nim.chatCalls().map(x => x.body.model), ['a/degraded', 'b/ok']);
+});
+
+test('ordinary 400s are still real errors, not failover', () => {
+  assert.ok(isDegradedModelResponse(400, '{"detail":"Function id \'x\': DEGRADED function cannot be invoked"}'));
+  assert.ok(!isDegradedModelResponse(400, '{"detail":"max_tokens must be positive"}'));
+  assert.ok(!isDegradedModelResponse(503, 'DEGRADED'));
 });
