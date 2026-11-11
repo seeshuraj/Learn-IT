@@ -63,6 +63,11 @@ import { sendServerError } from './src/server/lib/httpErrors.js';
 import { log, errorFields } from './src/server/lib/log.js';
 import { TtlCache } from './src/server/lib/ttlCache.js';
 import {
+  aiContextMiddleware, currentAiContext, setAiCourse, AiUsageRecorder, AiBudgetGuard,
+  AiBudgetExceeded, defaultBudgetFromEnv,
+} from './src/server/lib/aiUsage.js';
+import { createAiUsageAdminRouter } from './src/server/routes/aiUsageAdmin.js';
+import {
   loadLearnerProfile, formatLearnerProfile, weakTopicsOf, wantsStudyGuidance,
 } from './src/server/lib/learnerProfile.js';
 import {
@@ -425,10 +430,37 @@ async function retrieveChunks(
 
 // Chat model failover: NVIDIA_CHAT_MODEL (optional, comma-separated) then the
 // defaults in lib/llm.ts; retired models (404/410) are skipped automatically.
+// Every model call is metered per college/user/feature/course and checked
+// against the college's monthly allowance (lib/aiUsage.ts).
+const aiUsageRecorder = new AiUsageRecorder(pool);
+const aiBudget = new AiBudgetGuard(pool, { defaultBudget: defaultBudgetFromEnv() });
+
 const chatClient = createNimChat({
   apiKey: process.env.NVIDIA_API_KEY,
   models: chatModelsFromEnv(),
   isProduction,
+  beforeCall: async () => {
+    const ctx = currentAiContext();
+    if (!ctx) return;
+    try {
+      await aiBudget.check(ctx.institutionId);
+    } catch (e) {
+      if (e instanceof AiBudgetExceeded) throw e;
+      // A failed budget lookup must not take AI features down; usage is still recorded.
+      log.warn("ai budget check failed; allowing call", errorFields(e));
+    }
+  },
+  onUsage: usage => {
+    const ctx = currentAiContext();
+    if (!ctx) return;
+    aiUsageRecorder.record(ctx, usage);
+    aiBudget.add(ctx.institutionId, usage.promptTokens + usage.completionTokens);
+  },
+});
+
+// Flush metered usage before Render stops the instance on a deploy.
+process.once("SIGTERM", () => {
+  void aiUsageRecorder.flush().finally(() => process.exit(0));
 });
 const nimChat = chatClient.chat;
 
@@ -448,6 +480,7 @@ async function startServer() {
 
   app.use(attachRequestId);
   app.use(requestLogger);
+  app.use(aiContextMiddleware);
 
   app.use("/api", ipBackstopLimiter);
 
@@ -519,6 +552,7 @@ async function startServer() {
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
   app.use("/api/submissions",        createGradingRouter(pool, nimChat));
+  app.use("/api/admin/ai-usage",     createAiUsageAdminRouter(pool, aiBudget));
   app.use("/api/admin/users/import", createUserImportRouter(pool, supabaseAdmin));
 
   // ── Health ────────────────────────────────────────────────────────────────
@@ -1505,6 +1539,7 @@ async function startServer() {
       const mod = await queryOne("SELECT name, course_id FROM modules WHERE id = $1", [moduleId]);
       await assertCanAccessCourse(pool, caller, mod?.course_id ?? null);
       moduleName = mod.name ?? moduleName;
+      setAiCourse(Number(mod.course_id));
 
       // The student's own record in this course: exam topics, graded work
       // and feedback, open study-plan steps. Never another student's.
@@ -1618,6 +1653,10 @@ async function startServer() {
       send("done", { model: result.model });
     } catch (e: any) {
       if (e instanceof ChatAborted) return void res.end();
+      if (e instanceof AiBudgetExceeded) {
+        send("error", { error: e.message });
+        return void res.end();
+      }
       log.error("chat stream failed", { requestId: (req as any).id, ...errorFields(e) });
       send("error", { error: "The AI assistant is temporarily unavailable. Please try again in a minute." });
     }

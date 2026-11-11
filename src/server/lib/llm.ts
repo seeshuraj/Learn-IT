@@ -124,7 +124,32 @@ interface ChatClientOptions {
   deadlineMs?: number;
   /** Clock, injectable for tests. */
   now?: () => number;
+  /**
+   * Runs before every chat()/chatStream() call; throw to refuse the call
+   * (e.g. a college's monthly AI allowance is used up). Not run for probes.
+   */
+  beforeCall?: () => void | Promise<void>;
+  /** Reports each finished chat()/chatStream() call, success or failure. */
+  onUsage?: (usage: LlmUsage) => void;
 }
+
+export interface LlmUsage {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  /** True when the provider didn't report token counts and they were estimated from text length. */
+  estimated: boolean;
+  latencyMs: number;
+  status: 'ok' | 'error';
+  stream: boolean;
+}
+
+/** Rough token count (~4 characters per token) for when the provider reports none. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+const promptText = (messages: ChatMessage[]) => messages.map(m => m.content).join('\n');
 
 export function createNimChat(opts: ChatClientOptions): ChatClient {
   const doFetch = opts.fetchImpl ?? fetch;
@@ -148,7 +173,14 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
     }
   }
 
-  async function callModel(model: string, messages: ChatMessage[], o: ChatOptions, timeoutMs: number): Promise<string> {
+  interface ModelAnswer { content: string; promptTokens?: number; completionTokens?: number }
+
+  function report(u: Omit<LlmUsage, 'latencyMs'>, start: number) {
+    try { opts.onUsage?.({ ...u, latencyMs: now() - start }); }
+    catch (e: any) { log.warn('usage hook failed', { reason: e?.message }); }
+  }
+
+  async function callModel(model: string, messages: ChatMessage[], o: ChatOptions, timeoutMs: number): Promise<ModelAnswer> {
     let res: Response;
     try {
       res = await request('/chat/completions', {
@@ -185,7 +217,12 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       log.error('nim chat returned no content', { model, finishReason: choice?.finish_reason });
       throw new Error(`NVIDIA NIM returned an empty answer (${choice?.finish_reason ?? 'unknown'})`);
     }
-    return content;
+    const usage = data.usage ?? {};
+    return {
+      content,
+      promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : undefined,
+      completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : undefined,
+    };
   }
 
   /** Live candidates: preferred first, then preference order; benched models last. */
@@ -210,11 +247,16 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       if (opts.isProduction) throw new Error('NVIDIA_API_KEY is not set; cannot call the chat model');
       return '[Mock AI] Set NVIDIA_API_KEY in .env to enable real AI responses.';
     }
+    await opts.beforeCall?.();
+    const start = now();
     // Long generations (grading, roadmaps) get a longer attempt; keep room for one fallback.
     const attemptMs = o.timeoutMs ?? ATTEMPT_TIMEOUT_MS;
-    const deadline = now() + (opts.deadlineMs ?? Math.max(CALL_DEADLINE_MS, attemptMs + ATTEMPT_TIMEOUT_MS));
+    const deadline = start + (opts.deadlineMs ?? Math.max(CALL_DEADLINE_MS, attemptMs + ATTEMPT_TIMEOUT_MS));
     const order = attemptOrder();
     const tried: string[] = [];
+    const failed = () => report({
+      model: tried.at(-1) ?? 'none', promptTokens: 0, completionTokens: 0, estimated: false, status: 'error', stream: false,
+    }, start);
     for (const model of order) {
       const remaining = deadline - now();
       if (remaining < 2_000) break;
@@ -224,12 +266,20 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
         if (preferred !== model) log.info('chat model selected', { model });
         preferred = model;
         benchedUntil.delete(model);
-        return answer;
+        const estimated = answer.promptTokens === undefined || answer.completionTokens === undefined;
+        report({
+          model,
+          promptTokens: answer.promptTokens ?? estimateTokens(promptText(messages)),
+          completionTokens: answer.completionTokens ?? estimateTokens(answer.content),
+          estimated, status: 'ok', stream: false,
+        }, start);
+        return answer.content;
       } catch (err) {
-        if (!(err instanceof ModelUnavailable)) throw err;
+        if (!(err instanceof ModelUnavailable)) { failed(); throw err; }
         markUnavailable(model, err);
       }
     }
+    failed();
     throw new Error(`No NVIDIA chat model answered (tried: ${tried.join(', ') || 'none'}). Set NVIDIA_CHAT_MODEL.`);
   };
 
@@ -331,9 +381,16 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       h.onDelta(mock);
       return { model: 'mock', text: mock };
     }
+    await opts.beforeCall?.();
+    const start = now();
     const attemptMs = o.timeoutMs ?? ATTEMPT_TIMEOUT_MS;
-    const deadline = now() + (opts.deadlineMs ?? Math.max(CALL_DEADLINE_MS, attemptMs + ATTEMPT_TIMEOUT_MS));
+    const deadline = start + (opts.deadlineMs ?? Math.max(CALL_DEADLINE_MS, attemptMs + ATTEMPT_TIMEOUT_MS));
     const tried: string[] = [];
+    // Streams don't carry token counts here, so both sides are estimated from text length.
+    const failed = (completion = '') => report({
+      model: tried.at(-1) ?? 'none', promptTokens: completion ? estimateTokens(promptText(messages)) : 0,
+      completionTokens: estimateTokens(completion), estimated: true, status: 'error', stream: true,
+    }, start);
     for (const model of attemptOrder()) {
       const remaining = deadline - now();
       if (remaining < 2_000) break;
@@ -343,13 +400,18 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
         if (preferred !== model) log.info('chat model selected', { model });
         preferred = model;
         benchedUntil.delete(model);
+        report({
+          model, promptTokens: estimateTokens(promptText(messages)), completionTokens: estimateTokens(result.text),
+          estimated: true, status: 'ok', stream: true,
+        }, start);
         return result;
       } catch (err) {
         // Only a model that produced nothing visible can be replaced.
-        if (!(err instanceof ModelUnavailable)) throw err;
+        if (!(err instanceof ModelUnavailable)) { failed(); throw err; }
         markUnavailable(model, err);
       }
     }
+    failed();
     throw new Error(`No NVIDIA chat model answered (tried: ${tried.join(', ') || 'none'}). Set NVIDIA_CHAT_MODEL.`);
   }
 
@@ -359,7 +421,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
     const results = await Promise.all(candidates.filter(m => !dead.has(m)).map(async (model): Promise<ProbeResult> => {
       const start = now();
       try {
-        await callModel(model, ping, { temperature: 0, maxTokens: 128 }, ATTEMPT_TIMEOUT_MS);
+        await callModel(model, ping, { temperature: 0, maxTokens: 128 }, ATTEMPT_TIMEOUT_MS);   // not metered
         return { model, ok: true, ms: now() - start };
       } catch (err: any) {
         if (err instanceof ModelUnavailable) markUnavailable(model, err);

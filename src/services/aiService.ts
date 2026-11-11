@@ -63,7 +63,7 @@ export async function askModuleChatbot(
   } catch (err: any) {
     const message: string = err?.message ?? "";
     throw new Error(
-      message.startsWith("Too many requests")
+      isUserFacing(message)
         ? message
         : "The AI assistant is temporarily unavailable. Please try again in a minute."
     );
@@ -73,6 +73,11 @@ export async function askModuleChatbot(
   return res.retrieval === "unavailable"
     ? `${answer}${UNGROUNDED_NOTE}`
     : answer;
+}
+
+/** Server messages worth showing as-is: rate limits and a used-up college AI allowance. */
+function isUserFacing(message: string): boolean {
+  return message.startsWith("Too many requests") || /AI allowance/.test(message);
 }
 
 const UNAVAILABLE = "The AI assistant is temporarily unavailable. Please try again in a minute.";
@@ -114,7 +119,7 @@ export async function streamModuleChatbot(
       onText(text);
       return text;
     }
-    throw new Error(message.startsWith("Too many requests") ? message : UNAVAILABLE);
+    throw new Error(isUserFacing(message) ? message : UNAVAILABLE);
   }
   if (!text.trim()) throw new Error("The AI assistant returned an empty answer. Please try again.");
   if (ungrounded) { text += UNGROUNDED_NOTE; onText(text); }
