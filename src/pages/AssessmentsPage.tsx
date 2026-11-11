@@ -199,7 +199,7 @@ function Step1({
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">Exam Date</label>
           <input
@@ -222,7 +222,7 @@ function Step1({
         <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
           Performance Band Thresholds (%)
         </p>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-slate-500 mb-1">Strong ≥</label>
             <input

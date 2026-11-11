@@ -41,6 +41,9 @@ const AppContent: React.FC = () => {
   });
   const [forceChange, setForceChange] = React.useState(false);
   const [authChecked, setAuthChecked] = React.useState(false);
+  // Navigation drawer on phones/tablets (below the lg breakpoint).
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const closeMenu = React.useCallback(() => setMenuOpen(false), []);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -112,10 +115,12 @@ const AppContent: React.FC = () => {
         currentPath={location.pathname}
         onNavigate={(path) => navigate(path)}
         userRole={user?.role}
+        open={menuOpen}
+        onClose={closeMenu}
       />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <Header user={user} onLogout={handleLogout} />
-        <main className="flex-1 overflow-y-auto p-8">
+      <div className="flex-1 flex flex-col min-w-0">
+        <Header user={user} onLogout={handleLogout} onOpenMenu={() => setMenuOpen(true)} menuOpen={menuOpen} />
+        <main className="app-main flex-1 min-w-0 px-4 py-5 sm:p-6 lg:p-8">
           <Routes>
             <Route path="/" element={
               user?.role === "instructor" ? <InstructorDashboard user={user} /> :

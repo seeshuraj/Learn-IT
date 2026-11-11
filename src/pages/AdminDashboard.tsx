@@ -38,7 +38,7 @@ export const AdminDashboard: React.FC = () => {
     <div className="max-w-7xl mx-auto space-y-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-4xl font-bold text-slate-900">Admin Command Center</h1>
+          <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Admin Command Center</h1>
           <p className="text-slate-500 mt-1">Global system overview and analytics.</p>
         </div>
         <div className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-full text-xs font-bold">

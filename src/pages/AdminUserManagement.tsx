@@ -208,7 +208,7 @@ export const AdminUserManagement: React.FC = () => {
 
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-4xl font-bold text-slate-900">User Management</h1>
+          <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">User Management</h1>
           <p className="text-slate-500 mt-1">Manage students, instructors, and administrators.</p>
         </div>
         <div className="flex flex-wrap gap-3">

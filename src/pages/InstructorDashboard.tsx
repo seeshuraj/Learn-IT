@@ -179,7 +179,7 @@ function CreateAssignmentModal({
               className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="Describe what students need to do." />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Due Date</label>
               <input type="date" value={dueDate} min={minDateStr} onChange={e => setDueDate(e.target.value)}
@@ -760,7 +760,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-4xl font-bold text-slate-900">Instructor Dashboard</h1>
+          <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Instructor Dashboard</h1>
           <p className="text-slate-500 mt-1">Manage your courses, grade submissions, and monitor student progress.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -772,10 +772,10 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-2xl text-sm font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-600/20">
             <Plus className="w-4 h-4" /> Create Assignment
           </button>
-          <div className="flex bg-white p-1 rounded-2xl border border-slate-100 shadow-sm">
+          <div role="tablist" className="flex max-w-full overflow-x-auto bg-white p-1 rounded-2xl border border-slate-100 shadow-sm">
             {(["submissions", "students", "analytics", "manage"] as const).map((tab) => (
-              <button key={tab} onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all capitalize ${
+              <button key={tab} role="tab" aria-selected={activeTab === tab} onClick={() => setActiveTab(tab)}
+                className={`shrink-0 px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all capitalize ${
                   activeTab === tab ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-500 hover:bg-slate-50"
                 }`}>{tab}</button>
             ))}
