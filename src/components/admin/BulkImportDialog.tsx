@@ -152,7 +152,7 @@ export const BulkImportDialog: React.FC<Props> = ({ onClose, onImported }) => {
         role="dialog"
         aria-modal="true"
         aria-labelledby="bulk-import-title"
-        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 text-ink shadow-2xl sm:p-8"
+        className="max-h-[90dvh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 text-ink shadow-2xl sm:p-8"
         onClick={e => e.stopPropagation()}
       >
         <div className="mb-6 flex items-start justify-between gap-4">

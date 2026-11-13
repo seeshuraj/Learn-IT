@@ -143,7 +143,7 @@ function CreateAssignmentModal({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white rounded-[28px] shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto"
+        className="bg-white rounded-[28px] shadow-2xl w-full max-w-lg max-h-[90dvh] overflow-y-auto"
       >
         <div className="flex items-center justify-between px-7 py-5 border-b border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">Create Assignment</h2>
@@ -267,7 +267,7 @@ function UploadNotesModal({ courses, onClose }: { courses: Course[]; onClose: ()
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white rounded-[28px] shadow-2xl w-full max-w-md overflow-hidden"
+        className="bg-white rounded-[28px] shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto"
       >
         <div className="flex items-center justify-between px-7 py-5 border-b border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">Upload Module Notes</h2>

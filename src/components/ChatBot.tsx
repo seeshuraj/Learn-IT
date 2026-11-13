@@ -135,7 +135,7 @@ export const ChatBot: React.FC<Props> = ({
             <button
               onClick={() => setOpen(false)}
               aria-label="Close chat"
-              className="p-1 hover:bg-white/20 rounded-lg transition-colors"
+              className="-mr-1 p-2.5 hover:bg-white/20 rounded-lg transition-colors"
             >
               <X className="w-4 h-4 text-white" />
             </button>

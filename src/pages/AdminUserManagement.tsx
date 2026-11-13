@@ -31,7 +31,7 @@ const TempPasswordModal: React.FC<TempPasswordModalProps> = ({ name, email, pass
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 10 }}
         transition={{ duration: 0.15 }}
-        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8"
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 sm:p-8 max-h-[90dvh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         {/* Icon */}
@@ -157,7 +157,7 @@ export const AdminUserManagement: React.FC = () => {
       {/* Add User form modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setIsModalOpen(false)}>
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 sm:p-8 max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h2 className="text-xl font-bold text-slate-900 mb-1">Add New User</h2>
             <p className="text-sm text-slate-500 mb-6">Create a new account for LearnIT.</p>
             <form onSubmit={handleAddUser} className="space-y-4">

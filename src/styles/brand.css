@@ -103,3 +103,15 @@
     .app-main td { white-space: nowrap; }
   }
 }
+
+/* ── Touch devices ───────────────────────────────────────────────────────
+   iOS Safari zooms the whole page when a focused field's text is under
+   16px; keep form text at 16px on phones and tablets so it never does.
+   Deliberately outside @layer so it wins over text-sm/text-xs utilities. */
+@media (max-width: 1023px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea { font-size: 16px; }
+}
+/* No grey flash on tap; buttons respond immediately. */
+button, a, [role="button"] { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
