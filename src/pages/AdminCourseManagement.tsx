@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../services/api';
+import { api, asPage } from '../services/api';
 import { ClipboardCopy, CheckCheck } from 'lucide-react';
 
 interface Course {
@@ -58,10 +58,11 @@ export default function AdminCourseManagement() {
     try {
       const [coursesData, usersData]: any[] = await Promise.all([
         api.getAdminCourses(),
-        api.getAdminUsers(),
+        // Only instructors are needed here (course owner picker).
+        api.getAdminUsersPage({ role: 'instructor', limit: 200 }),
       ]);
       setCourses(Array.isArray(coursesData) ? coursesData : []);
-      setUsers(Array.isArray(usersData) ? usersData : []);
+      setUsers(asPage<User>(usersData).items);
     } finally {
       setLoading(false);
     }

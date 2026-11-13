@@ -28,7 +28,11 @@ const NotificationBell: React.FC = () => {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const unread = notifications.filter(n => !n.read).length;
+  // The badge comes from the cheap unread-count endpoint; the full list is
+  // fetched only when it can have changed or the panel is opened.
+  const [unreadCount, setUnreadCount] = useState(0);
+  const lastCount = useRef<number | null>(null);
+  const unread = unreadCount;
 
   const fetchNotifications = async () => {
     try {
@@ -36,14 +40,37 @@ const NotificationBell: React.FC = () => {
       if (!res.ok) return;
       const data = await res.json();
       setNotifications(data);
+      setUnreadCount(Array.isArray(data) ? data.filter((n: Notification) => !n.read).length : 0);
+    } catch {}
+  };
+
+  const pollUnread = async () => {
+    try {
+      const res = await apiFetch("/api/notifications/unread-count");
+      if (!res.ok) return;
+      const { count } = await res.json();
+      const n = Number(count) || 0;
+      setUnreadCount(n);
+      if (lastCount.current !== null && n > lastCount.current) fetchNotifications();
+      lastCount.current = n;
     } catch {}
   };
 
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30_000);
-    return () => clearInterval(interval);
+    // Poll every 60 s while the tab is visible; catch up as soon as it's shown again.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => { if (!timer) timer = setInterval(pollUnread, 60_000); };
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") { pollUnread(); start(); } else stop();
+    };
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
   }, []);
+
+  useEffect(() => { if (open) fetchNotifications(); }, [open]);
 
   // Close on outside click
   useEffect(() => {
@@ -58,15 +85,21 @@ const NotificationBell: React.FC = () => {
 
   const markRead = async (id: number) => {
     try {
+      const wasUnread = notifications.some(n => n.id === id && !n.read);
       await apiFetch(`/api/notifications/${id}/read`, { method: "PATCH" });
+      if (!wasUnread) return;
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+      setUnreadCount(c => Math.max(0, c - 1));
+      lastCount.current = Math.max(0, (lastCount.current ?? 1) - 1);
     } catch {}
   };
 
   const markAllRead = async () => {
     try {
-      await apiFetch("/api/notifications/read-all", { method: "PATCH" });
+      await apiFetch("/api/notifications/read-all", { method: "POST" });
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadCount(0);
+      lastCount.current = 0;
     } catch {}
   };
 

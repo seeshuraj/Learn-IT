@@ -3,7 +3,7 @@ import { User } from "../types";
 import { Users, Search, UserPlus, Upload, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { toast, Toaster } from "sonner";
-import { api } from "../services/api";
+import { api, asPage } from "../services/api";
 import { BulkImportDialog } from "../components/admin/BulkImportDialog";
 
 // ── Temp Password Modal ─────────────────────────────────────────────────────
@@ -100,15 +100,45 @@ export const AdminUserManagement: React.FC = () => {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [tempCreds, setTempCreds] = useState<{ name: string; email: string; password: string } | null>(null);
 
-  useEffect(() => {
-    api.getAdminUsers().then((data: any) => setUsers(Array.isArray(data) ? data : []));
-  }, []);
+  // Server-side search and paging: a college can have thousands of accounts.
+  const PAGE_SIZE = 50;
+  const [roleFilter, setRoleFilter] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
 
-  const filteredUsers = users.filter(
-    u =>
-      u.name.toLowerCase().includes(search.toLowerCase()) ||
-      u.email.toLowerCase().includes(search.toLowerCase())
-  );
+  // Debounce typing so each keystroke doesn't hit the server.
+  useEffect(() => {
+    const t = setTimeout(() => { setQuery(search.trim()); setOffset(0); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const loadUsers = React.useCallback(() => {
+    setLoading(true);
+    return api.getAdminUsersPage({ q: query, role: roleFilter, limit: PAGE_SIZE, offset })
+      .then((data: any) => {
+        const page = asPage<User>(data);
+        // An older backend returns everything; filter and slice locally then.
+        if (Array.isArray(data)) {
+          const q = query.toLowerCase();
+          const all = page.items.filter(u =>
+            (!q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)) &&
+            (!roleFilter || u.role === roleFilter));
+          setUsers(all.slice(offset, offset + PAGE_SIZE));
+          setTotal(all.length);
+        } else {
+          setUsers(page.items);
+          setTotal(page.total);
+        }
+      })
+      .catch(() => toast.error("Could not load users"))
+      .finally(() => setLoading(false));
+  }, [query, roleFilter, offset]);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  const filteredUsers = users;
 
   const handleToggleStatus = async (user: User) => {
     const newStatus = (user as any).active === 1 ? 0 : 1;
@@ -136,7 +166,7 @@ export const AdminUserManagement: React.FC = () => {
     };
     try {
       const data: any = await api.createAdminUser(newUser);
-      setUsers(prev => [...prev, { ...newUser, id: data.id, active: 1 } as any]);
+      loadUsers();
       setIsModalOpen(false);
       form.reset();
       // Show temp password modal if backend returned one
@@ -230,12 +260,12 @@ export const AdminUserManagement: React.FC = () => {
       {isImportOpen && (
         <BulkImportDialog
           onClose={() => setIsImportOpen(false)}
-          onImported={() => api.getAdminUsers().then((data: any) => setUsers(Array.isArray(data) ? data : []))}
+          onImported={() => { loadUsers(); }}
         />
       )}
 
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-slate-100 flex items-center justify-between gap-4">
+        <div className="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
@@ -246,7 +276,18 @@ export const AdminUserManagement: React.FC = () => {
               className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 transition-all"
             />
           </div>
-          <span className="text-sm text-slate-500">Total: {users.length}</span>
+          <select
+            value={roleFilter}
+            onChange={e => { setRoleFilter(e.target.value); setOffset(0); }}
+            aria-label="Filter by role"
+            className="px-3 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="">All roles</option>
+            <option value="student">Students</option>
+            <option value="instructor">Instructors</option>
+            <option value="admin">Admins</option>
+          </select>
+          <span className="text-sm text-slate-500 whitespace-nowrap">{loading ? "Loading…" : `Total: ${total}`}</span>
         </div>
         <table className="w-full">
           <thead className="bg-slate-50 border-b border-slate-100">
@@ -311,6 +352,28 @@ export const AdminUserManagement: React.FC = () => {
             ))}
           </tbody>
         </table>
+        {total > PAGE_SIZE && (
+          <div className="flex items-center justify-between gap-4 px-6 py-4 border-t border-slate-100 text-sm text-slate-500">
+            <span>{offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}</span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setOffset(o => Math.max(0, o - PAGE_SIZE))}
+                disabled={offset === 0 || loading}
+                className="px-4 py-2 rounded-xl border border-slate-200 font-semibold disabled:opacity-40"
+              >Previous</button>
+              <button
+                type="button"
+                onClick={() => setOffset(o => o + PAGE_SIZE)}
+                disabled={offset + PAGE_SIZE >= total || loading}
+                className="px-4 py-2 rounded-xl border border-slate-200 font-semibold disabled:opacity-40"
+              >Next</button>
+            </div>
+          </div>
+        )}
+        {!loading && users.length === 0 && (
+          <p className="px-6 py-10 text-center text-sm text-slate-400">No users match.</p>
+        )}
       </div>
     </div>
   );

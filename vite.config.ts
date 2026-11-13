@@ -58,7 +58,9 @@ export default defineConfig(({ mode }) => {
           // by forcing supabase into its own isolated chunk.
           manualChunks: {
             'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-            'ui-vendor':    ['framer-motion', 'motion', 'lucide-react', 'recharts'],
+            'ui-vendor':    ['framer-motion', 'motion', 'lucide-react'],
+            // Charts only load with the dashboards that draw them.
+            'charts':       ['recharts'],
             'supabase':     ['@supabase/supabase-js'],
             'utils':        ['zod', 'clsx', 'tailwind-merge', 'sonner'],
             'markdown':     ['react-markdown'],
