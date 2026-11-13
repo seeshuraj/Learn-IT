@@ -71,8 +71,9 @@ import {
   loadLearnerProfile, formatLearnerProfile, weakTopicsOf, wantsStudyGuidance,
 } from './src/server/lib/learnerProfile.js';
 import {
-  createNimEmbedder, embedModelFromEnv, cosineSim, reembedStaleChunks,
+  createNimEmbedder, embedModelFromEnv, reembedStaleChunks,
 } from './src/server/lib/embeddings.js';
+import { searchModuleChunks, insertNoteChunks, type SourcedChunk } from './src/server/lib/noteSearch.js';
 import { createNimChat, chatModelsFromEnv, claudeFallbackFromEnv, ChatAborted } from './src/server/lib/llm.js';
 import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
@@ -366,41 +367,19 @@ function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
 }
 
 // visibleToStudentId: when set, only chunks from notes that student may read
-// (course material + their own notes) are considered.
-interface SourcedChunk { text: string; source: string; score: number }
+// (course material + their own notes) are considered. Ranking happens in
+// Postgres (lib/noteSearch.ts); only the top-K chunks come back.
 
-// Parsed chunk vectors per module, so a chat session doesn't re-parse every
-// 2048-dim embedding on each message. New notes show up within the TTL.
-const moduleChunkCache = new TtlCache<Array<{ text: string; source: string; emb: number[] }>>(2 * 60_000, 64);
+// Query embeddings for repeated questions ("explain unit 3") within a few minutes.
+const queryEmbedCache = new TtlCache<number[]>(10 * 60_000, 500);   // ~8 MB at 2048 dims
 
-async function moduleChunks(moduleId: string | number, visibleToStudentId?: number) {
-  const key = `${moduleId}:${embedder.model}:${visibleToStudentId ?? "all"}`;
-  const hit = moduleChunkCache.get(key);
+async function embedQuery(text: string): Promise<number[]> {
+  const key = `${embedder.model}:${text.trim().toLowerCase().slice(0, 1_000)}`;
+  const hit = queryEmbedCache.get(key);
   if (hit) return hit;
-  // Only vectors from the current model are comparable; chunks still on an
-  // older model are skipped until reembedStaleChunks() catches them up.
-  const rows = visibleToStudentId == null
-    ? await query(
-        `SELECT nc.chunk_text, nc.embedding, COALESCE(n.original_name, n.filename) AS source
-         FROM note_chunks nc
-         JOIN notes n ON nc.note_id = n.id
-         WHERE n.module_id = $1 AND nc.embedding_model = $2`,
-        [moduleId, embedder.model]
-      )
-    : await query(
-        `SELECT nc.chunk_text, nc.embedding, COALESCE(n.original_name, n.filename) AS source
-         FROM note_chunks nc
-         JOIN notes n ON nc.note_id = n.id
-         WHERE n.module_id = $1 AND nc.embedding_model = $2 AND ${studentVisibleNotes("$3")}`,
-        [moduleId, embedder.model, visibleToStudentId]
-      );
-  const parsed = rows.map((c: any) => ({
-    text: c.chunk_text as string,
-    source: String(c.source ?? "Course notes"),
-    emb: JSON.parse(c.embedding ?? "[]") as number[],
-  }));
-  moduleChunkCache.set(key, parsed);
-  return parsed;
+  const [vec] = await embedder.embed([text], "query");
+  queryEmbedCache.set(key, vec);
+  return vec;
 }
 
 /** Top-K note chunks for a query, with the note each came from (for citations). */
@@ -410,13 +389,9 @@ async function retrieveSourcedChunks(
   topK = 5,
   visibleToStudentId?: number
 ): Promise<SourcedChunk[]> {
-  const chunks = await moduleChunks(moduleId, visibleToStudentId);
-  if (!chunks.length) return [];
-  const [queryEmbed] = await embedder.embed([queryText], "query");
-  return chunks
-    .map(c => ({ text: c.text, source: c.source, score: cosineSim(queryEmbed, c.emb) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  return searchModuleChunks(pool, {
+    moduleId, model: embedder.model, queryVector: await embedQuery(queryText), topK, visibleToStudentId,
+  });
 }
 
 async function retrieveChunks(
@@ -762,15 +737,7 @@ async function startServer() {
           } catch (embErr) {
             log.error("note embedding failed; chunks queued for re-embedding", { noteId: note.id, ...errorFields(embErr) });
           }
-          for (let i = 0; i < chunks.length; i++) {
-            await run(
-              `INSERT INTO note_chunks (note_id, chunk_index, chunk_text, embedding, embedding_model)
-               VALUES ($1,$2,$3,$4,$5)`,
-              [note.id, i, chunks[i],
-               embeddings ? JSON.stringify(embeddings[i]) : null,
-               embeddings ? embedder.model : null]
-            );
-          }
+          await insertNoteChunks(pool, note.id, chunks, embeddings, embedder.model);
         }
       }
 
