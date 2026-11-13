@@ -171,10 +171,10 @@ export async function reembedStaleChunks(pool: Pool, embedder: Embedder, maxChun
         const vectors = await embedder.embed(rows.map((r: any) => r.chunk_text), 'passage');
         await client.query(
           `UPDATE note_chunks nc
-           SET embedding = v.embedding, embedding_model = $1
-           FROM unnest($2::int[], $3::text[]) AS v(id, embedding)
+           SET embedding_vec = v.vec::extensions.halfvec, embedding = NULL, embedding_model = $1
+           FROM unnest($2::int[], $3::text[]) AS v(id, vec)
            WHERE nc.id = v.id`,
-          [embedder.model, rows.map((r: any) => r.id), vectors.map(v => JSON.stringify(v))]
+          [embedder.model, rows.map((r: any) => r.id), vectors.map(v => `[${v.join(',')}]`)]
         );
         done += rows.length;
       }
