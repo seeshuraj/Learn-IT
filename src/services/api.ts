@@ -203,6 +203,24 @@ export async function resultOfJob(started: unknown): Promise<any> {
   throw new Error('Still working on it. Check back in a minute.');
 }
 
+/** Query string from defined, non-empty values. */
+function toQuery(params: Record<string, string | number | null | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  return q.toString();
+}
+
+/**
+ * A page from a list endpoint. Accepts the older plain-array shape too, so the
+ * site keeps working while the backend deploy catches up with the frontend.
+ */
+export function asPage<T>(data: unknown): { items: T[]; total: number; nextCursor: string | null } {
+  if (Array.isArray(data)) return { items: data as T[], total: data.length, nextCursor: null };
+  const d = (data ?? {}) as { items?: T[]; total?: number; nextCursor?: string | null };
+  const items = Array.isArray(d.items) ? d.items : [];
+  return { items, total: Number(d.total ?? items.length), nextCursor: d.nextCursor ?? null };
+}
+
 // ── Public API surface ──────────────────────────────────────────────────────────
 
 export const api = {
@@ -289,6 +307,9 @@ export const api = {
   getSubmissionFiles: (submissionId: number) =>
     request(`/api/submissions/${submissionId}/files`),
   getInstructorSubmissions: () => request('/api/instructor/submissions'),
+  /** One page of the grading queue: { items, total, nextCursor }. */
+  getSubmissionQueue: (opts: { status?: 'pending' | 'graded' | 'all'; courseId?: number; cursor?: string | null; limit?: number } = {}) =>
+    request(`/api/instructor/submissions?${toQuery({ limit: opts.limit ?? 25, status: opts.status ?? 'pending', courseId: opts.courseId, cursor: opts.cursor })}`),
 
   // Student — all resolve the student from the JWT on the server side,
   // so the id param is kept for backwards compat with existing callers.
@@ -363,6 +384,10 @@ export const api = {
 
   // Admin
   getAdminUsers:    () => request('/api/admin/users'),
+  /** One page of college users: { items, total }. */
+  getAdminUsersPage: (opts: { q?: string; role?: string; limit?: number; offset?: number } = {}) =>
+    request(`/api/admin/users?${toQuery({ limit: opts.limit ?? 50, offset: opts.offset, q: opts.q, role: opts.role })}`),
+  getUserRoleCounts: () => request('/api/admin/users/role-counts'),
   getAdminStats:    () => request('/api/admin/stats'),
   getAdminSettings: () => request('/api/admin/settings'),
   saveAdminSetting: (key: string, value: string) =>

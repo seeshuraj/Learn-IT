@@ -4,7 +4,7 @@ import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, S
 import { motion, AnimatePresence } from "motion/react";
 import { getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
-import { api } from "../services/api";
+import { api, asPage } from "../services/api";
 import InstructorRoadmapView from "./InstructorRoadmapView";
 
 interface InstructorDashboardProps {
@@ -538,22 +538,49 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     courseName: string;
   } | null>(null);
 
+  // Grading queue, one page at a time (newest first). File counts come with
+  // each row, so there is no per-submission request.
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [queueCursor, setQueueCursor] = useState<string | null>(null);
+  const [queueLoadingMore, setQueueLoadingMore] = useState(false);
+
+  function absorbPage(page: { items: any[]; total: number; nextCursor: string | null }, append: boolean) {
+    setSubmissions(prev => {
+      if (!append) return page.items;
+      const seen = new Set(prev.map(s => s.id));
+      return [...prev, ...page.items.filter(s => !seen.has(s.id))];
+    });
+    setSubmissionFileCount(prev => {
+      const next = append ? { ...prev } : {};
+      for (const s of page.items) if (s.file_count != null) next[s.id] = Number(s.file_count);
+      return next;
+    });
+    setQueueTotal(page.total);
+    setQueueCursor(page.nextCursor);
+  }
+
   function loadSubmissions() {
-    api.getInstructorSubmissions()
+    api.getSubmissionQueue({ status: 'pending' })
       .then((d: any) => {
-        const subs = Array.isArray(d) ? d : [];
-        setSubmissions(subs);
-        // Fetch file counts for each submission in parallel (best-effort)
-        subs.forEach((s: any) => {
+        const page = asPage<any>(d);
+        absorbPage(page, false);
+        // Older backend without file counts: fall back to one request per row.
+        page.items.filter(s => s.file_count == null).forEach((s: any) => {
           api.getSubmissionFiles(s.id)
-            .then((files: any) => {
-              const count = Array.isArray(files) ? files.length : 0;
-              setSubmissionFileCount(prev => ({ ...prev, [s.id]: count }));
-            })
+            .then((files: any) => setSubmissionFileCount(prev => ({ ...prev, [s.id]: Array.isArray(files) ? files.length : 0 })))
             .catch(() => {});
         });
       })
       .catch(() => {});
+  }
+
+  function loadMoreSubmissions() {
+    if (!queueCursor || queueLoadingMore) return;
+    setQueueLoadingMore(true);
+    api.getSubmissionQueue({ status: 'pending', cursor: queueCursor })
+      .then((d: any) => absorbPage(asPage<any>(d), true))
+      .catch(() => toast.error('Could not load more submissions.'))
+      .finally(() => setQueueLoadingMore(false));
   }
 
   function loadStudents() {
@@ -729,6 +756,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
       await api.gradeSubmission(selectedSubmission.id, grade, feedback);
       toast.success('Grade published successfully!');
       setSubmissions(prev => prev.filter(s => s.id !== selectedSubmission.id));
+      setQueueTotal(t => Math.max(0, t - 1));
       setSelectedSubmission(null); setAiResult(null);
     } catch { toast.error('Failed to publish grade.'); }
     finally { setIsSubmitting(false); }
@@ -785,7 +813,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
-          { label: "Pending Grading",  value: submissions.length,                              sub: "Action required",  icon: Clock,         color: "indigo"  },
+          { label: "Pending Grading",  value: queueTotal,                                      sub: "Action required",  icon: Clock,         color: "indigo"  },
           { label: "Class Average",     value: classAvg > 0 ? `${classAvg}%` : '—',            sub: "Across all courses", icon: CheckCircle2,   color: "emerald" },
           { label: "At-Risk Students",  value: students.filter(s => s.status === 'At Risk').length, sub: "Flagged by AI", icon: AlertCircle,    color: "red"     },
         ].map((kpi, i) => (
@@ -810,7 +838,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
           <div className="lg:col-span-1 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Grading Queue</h3>
-              <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{submissions.length}</span>
+              <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{queueTotal}</span>
             </div>
             <div className="space-y-3">
               {submissions.map(sub => {
@@ -865,6 +893,16 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                   </button>
                 );
               })}
+              {queueCursor && (
+                <button
+                  type="button"
+                  onClick={loadMoreSubmissions}
+                  disabled={queueLoadingMore}
+                  className="w-full py-3 rounded-2xl border border-slate-200 bg-white text-sm font-semibold text-indigo-600 hover:border-indigo-300 disabled:opacity-60"
+                >
+                  {queueLoadingMore ? "Loading…" : `Load more (${Math.max(0, queueTotal - submissions.length)} left)`}
+                </button>
+              )}
               {submissions.length === 0 && (
                 <div className="p-8 text-center bg-white rounded-2xl border border-dashed border-slate-200">
                   <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />

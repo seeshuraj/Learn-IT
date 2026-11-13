@@ -49,12 +49,17 @@ export const AdminDashboard: React.FC = () => {
     api.getAiUsage(30)
       .then((data: any) => setUsage(data))
       .catch(() => setUsageError(true));
-    api.getAdminUsers()
-      .then((list: any) => {
+    api.getUserRoleCounts()
+      .then((counts: any) => {
+        if (!counts || typeof counts !== "object" || Array.isArray(counts)) throw new Error("unexpected");
+        setRoles(Object.entries(counts as Record<string, number>).map(([role, value]) => ({ name: ROLE_LABELS[role] ?? role, value })));
+      })
+      // Older backend without the counts endpoint.
+      .catch(() => api.getAdminUsers().then((list: any) => {
         const counts: Record<string, number> = {};
         for (const u of Array.isArray(list) ? list : []) counts[u.role] = (counts[u.role] ?? 0) + 1;
         setRoles(Object.entries(counts).map(([role, value]) => ({ name: ROLE_LABELS[role] ?? role, value })));
-      })
+      }))
       .catch(() => setRoles([]));
   }, []);
 
