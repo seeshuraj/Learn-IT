@@ -24,7 +24,11 @@ Prices are approximate, at ₹95 per US$1. Check the vendor pricing pages before
 
 At ₹300 per student per semester, one university of 1,500 students brings in ₹4.5 lakh per semester. The infrastructure for that stage is under ₹10,000 per month.
 
-The database region is currently `eu-west-1` (Ireland). Before the first contract, create the production project in `ap-south-1` (Mumbai) and migrate. This removes about 150 ms from every query for Indian users, and is simplest while there is little data.
+The database is in `ap-south-1` (Mumbai) and the backend in Singapore, the closest Render region.
+
+## Note search (tutor retrieval)
+
+Note chunks are ranked inside Postgres with pgvector (`note_chunks.embedding_vec`, halfvec). Each tutor question returns only the top 5 chunks of one module, so backend memory per question is constant regardless of module size or how many students ask at once. Search is exact within a module, using the `notes(module_id)` and `note_chunks(note_id)` indexes; its cost grows with the module, not the database. Repeated questions reuse their query embedding for 10 minutes.
 
 ## Settings to change when a college signs
 
