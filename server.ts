@@ -73,7 +73,7 @@ import {
 import {
   createNimEmbedder, embedModelFromEnv, cosineSim, reembedStaleChunks,
 } from './src/server/lib/embeddings.js';
-import { createNimChat, chatModelsFromEnv, ChatAborted } from './src/server/lib/llm.js';
+import { createNimChat, chatModelsFromEnv, claudeFallbackFromEnv, ChatAborted } from './src/server/lib/llm.js';
 import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
   assertManagesCourse, assertCanAccessCourse, loadNoteForCaller,
@@ -430,6 +430,7 @@ async function retrieveChunks(
 
 // Chat model failover: NVIDIA_CHAT_MODEL (optional, comma-separated) then the
 // defaults in lib/llm.ts; retired models (404/410) are skipped automatically.
+// If CLAUDE_API is set, Claude answers only when no NVIDIA model can.
 // Every model call is metered per college/user/feature/course and checked
 // against the college's monthly allowance (lib/aiUsage.ts).
 const aiUsageRecorder = new AiUsageRecorder(pool);
@@ -438,6 +439,8 @@ const aiBudget = new AiBudgetGuard(pool, { defaultBudget: defaultBudgetFromEnv()
 const chatClient = createNimChat({
   apiKey: process.env.NVIDIA_API_KEY,
   models: chatModelsFromEnv(),
+  // Paid last resort when every NVIDIA model is down (CLAUDE_API / CLAUDE_MODEL).
+  claude: claudeFallbackFromEnv(),
   isProduction,
   beforeCall: async () => {
     const ctx = currentAiContext();

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createNimChat, chatModelsFromEnv, modelRequestExtras, stripReasoning, DEFAULT_CHAT_MODELS, isDegradedModelResponse,
+  claudeFallbackFromEnv, toClaudeMessages, DEFAULT_CLAUDE_MODEL,
 } from '../llm.js';
 
 /** fetch stub routing by path; `chat` decides per requested model. */
@@ -61,7 +62,7 @@ test('a rate limit (429) does not fail over: it applies to the key, not the mode
 test('when every candidate is retired the error says so and names the env var', async () => {
   const nim = fakeNim(() => [404, 'not found']);
   const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: nim.impl });
-  await assert.rejects(c.chat(msgs), /No NVIDIA chat model answered \(tried: m1, m2\).*NVIDIA_CHAT_MODEL/);
+  await assert.rejects(c.chat(msgs), /No chat model answered \(tried: m1, m2\).*NVIDIA_CHAT_MODEL or CLAUDE_API/);
 });
 
 test('discovery keeps only listed models; a failed discovery keeps all candidates', async () => {
@@ -273,4 +274,150 @@ test('ordinary 400s are still real errors, not failover', () => {
   assert.ok(isDegradedModelResponse(400, '{"detail":"Function id \'x\': DEGRADED function cannot be invoked"}'));
   assert.ok(!isDegradedModelResponse(400, '{"detail":"max_tokens must be positive"}'));
   assert.ok(!isDegradedModelResponse(503, 'DEGRADED'));
+});
+
+// ── Paid Claude fallback ─────────────────────────────────────────────────────
+
+const claude = { apiKey: 'ck', model: 'claude-haiku-5-5' };
+
+/** fetch stub that answers NVIDIA by `nim(model)` and Anthropic by `anth(body)`. */
+function twoProviders(nim: (model: string) => [number, unknown] | 'hang', anth: (body: any) => [number, unknown]) {
+  const calls: { host: string; model: string; headers: any; body: any }[] = [];
+  const impl = (async (url: string, init: any) => {
+    const u = new URL(url);
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    calls.push({ host: u.host, model: body?.model, headers: init.headers, body });
+    const r = u.host === 'api.anthropic.com' ? anth(body) : nim(body.model);
+    if (r === 'hang') {
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+        const e = new Error('This operation was aborted'); e.name = 'AbortError'; reject(e);
+      }));
+    }
+    const [status, payload] = r;
+    return new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+const claudeAnswer = (text: string) => ({ content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 30, output_tokens: 4 } });
+
+test('claudeFallbackFromEnv: off without a key; CLAUDE_API or ANTHROPIC_API_KEY; model override', () => {
+  assert.equal(claudeFallbackFromEnv({}), null);
+  assert.equal(claudeFallbackFromEnv({ CLAUDE_API: '  ' }), null);
+  assert.deepEqual(claudeFallbackFromEnv({ CLAUDE_API: 'k' }), { apiKey: 'k', model: DEFAULT_CLAUDE_MODEL });
+  assert.deepEqual(claudeFallbackFromEnv({ ANTHROPIC_API_KEY: 'k', CLAUDE_MODEL: 'claude-sonnet-5-5' }), { apiKey: 'k', model: 'claude-sonnet-5-5' });
+});
+
+test('toClaudeMessages: system lifted out, roles merged, conversation starts with the user', () => {
+  assert.deepEqual(toClaudeMessages([
+    { role: 'system', content: 'S1' }, { role: 'system', content: 'S2' },
+    { role: 'assistant', content: 'Hi' }, { role: 'user', content: 'a' }, { role: 'user', content: 'b' },
+  ]), {
+    system: 'S1\n\nS2',
+    messages: [{ role: 'user', content: '(continue)' }, { role: 'assistant', content: 'Hi' }, { role: 'user', content: 'a\n\nb' }],
+  });
+  assert.deepEqual(toClaudeMessages([{ role: 'user', content: 'q' }]), { messages: [{ role: 'user', content: 'q' }] });
+});
+
+test('Claude answers only after every NVIDIA model fails, with real token counts, and is not kept as preferred', async () => {
+  const usage: any[] = [];
+  let nimUp = false;
+  const p = twoProviders(m => nimUp ? [200, answer(`ok from ${m}`)] : [503, 'down'], () => [200, claudeAnswer('from claude')]);
+  const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: p.impl, claude, onUsage: u => usage.push(u) });
+  assert.equal(await c.chat([{ role: 'system', content: 'be brief' }, ...msgs]), 'from claude');
+  assert.deepEqual(p.calls.map(x => x.model), ['m1', 'm2', 'claude-haiku-5-5']);
+  const req = p.calls[2];
+  assert.equal(req.headers['x-api-key'], 'ck');
+  assert.equal(req.headers['anthropic-version'], '2023-06-01');
+  assert.equal(req.body.system, 'be brief');
+  assert.equal(usage[0].model, 'anthropic:claude-haiku-5-5');
+  assert.equal(usage[0].promptTokens, 30);
+  assert.equal(usage[0].estimated, false);
+  assert.equal(c.currentModel(), 'm1', 'paid fallback never becomes the default');
+
+  // NVIDIA recovers after its cooldown: the next call goes back to it, not Claude.
+  nimUp = true;
+  const c2 = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: p.impl, claude });
+  assert.equal(await c2.chat(msgs), 'ok from m1');
+});
+
+test('slow NVIDIA attempts leave time for Claude inside the deadline', async () => {
+  const p = twoProviders(() => 'hang', () => [200, claudeAnswer('rescued')]);
+  // 22.5 s deadline with 20 s reserved: NVIDIA may only use the first ~2.5 s.
+  const c = createNimChat({ apiKey: 'k', models: ['slow1', 'slow2'], isProduction: true, fetchImpl: p.impl, claude, deadlineMs: 22_500 });
+  assert.equal(await c.chat(msgs, { timeoutMs: 100 }), 'rescued');
+  assert.deepEqual(p.calls.map(x => x.model), ['slow1', 'slow2', 'claude-haiku-5-5']);
+
+  // With no reserve to spare, NVIDIA is skipped rather than starving Claude.
+  const p2 = twoProviders(() => 'hang', () => [200, claudeAnswer('rescued')]);
+  const c2 = createNimChat({ apiKey: 'k', models: ['slow1'], isProduction: true, fetchImpl: p2.impl, claude, deadlineMs: 21_000 });
+  assert.equal(await c2.chat(msgs, { timeoutMs: 100 }), 'rescued');
+  assert.deepEqual(p2.calls.map(x => x.model), ['claude-haiku-5-5']);
+});
+
+test('Claude overload (529) is a failure, a bad key disables it, and 400s are real errors', async () => {
+  let status = 529;
+  const p = twoProviders(() => [404, 'gone'], () => [status, { type: 'error' }]);
+  const c = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: p.impl, claude });
+  await assert.rejects(c.chat(msgs), /No chat model answered.*anthropic:claude-haiku-5-5/);
+
+  status = 401;
+  const c2 = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: p.impl, claude });
+  await assert.rejects(c2.chat(msgs), /No chat model answered/);
+  const before = p.calls.length;
+  await assert.rejects(c2.chat(msgs), /No chat model answered/);
+  assert.equal(p.calls.length, before, 'dead model and rejected key are both skipped');
+
+  status = 400;
+  const c3 = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: p.impl, claude });
+  await assert.rejects(c3.chat(msgs), /Claude 400/);
+});
+
+test('probe and discovery never touch Claude, and it stays last', async () => {
+  const p = twoProviders(m => m === 'm2' ? [200, answer('ok')] : [503, 'x'], () => [200, claudeAnswer('no')]);
+  const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: p.impl, claude });
+  const results = await c.probe();
+  assert.deepEqual(results.map(r => r.model).sort(), ['m1', 'm2']);
+  assert.ok(!p.calls.some(x => x.host === 'api.anthropic.com'));
+  assert.equal(c.currentModel(), 'm2');
+});
+
+test('with only a Claude key, Claude serves every call', async () => {
+  const p = twoProviders(() => [500, 'unused'], () => [200, claudeAnswer('only claude')]);
+  const c = createNimChat({ apiKey: undefined, models: ['m1'], isProduction: true, fetchImpl: p.impl, claude });
+  assert.equal(await c.chat(msgs), 'only claude');
+  assert.ok(p.calls.every(x => x.host === 'api.anthropic.com'));
+});
+
+test('Claude streaming: text deltas in order, real token counts, mid-stream error after text propagates', async () => {
+  const ev = (o: unknown) => `event: x\ndata: ${JSON.stringify(o)}\n\n`;
+  const okStream = [
+    ev({ type: 'message_start', message: { usage: { input_tokens: 50 } } }),
+    ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'KD-trees ' } }),
+    ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'split space.' } }),
+    ev({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 6 } }),
+    ev({ type: 'message_stop' }),
+  ].join('');
+  const usage: any[] = [];
+  let mode: 'ok' | 'overloaded' | 'broken' = 'ok';
+  const impl = (async (url: string, init: any) => {
+    if (new URL(url).host !== 'api.anthropic.com') return new Response('x', { status: 503 });
+    assert.equal(JSON.parse(init.body).stream, true);
+    if (mode === 'overloaded') return streamResponse([ev({ type: 'error', error: { type: 'overloaded_error' } })]);
+    if (mode === 'broken') return streamResponse([okStream.split('message_delta')[0].replace(/event: x\ndata: $/, ''), ev({ type: 'error', error: { type: 'api_error' } })]);
+    return streamResponse([okStream.slice(0, 90), okStream.slice(90)]);
+  }) as unknown as typeof fetch;
+  const c = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: impl, claude, onUsage: u => usage.push(u) });
+  const deltas: string[] = [];
+  const r = await c.chatStream(msgs, {}, { onDelta: d => deltas.push(d) });
+  assert.equal(r.text, 'KD-trees split space.');
+  assert.equal(deltas.join(''), r.text);
+  assert.equal(r.model, 'anthropic:claude-haiku-5-5');
+  assert.deepEqual([usage[0].promptTokens, usage[0].completionTokens, usage[0].estimated], [50, 6, false]);
+
+  mode = 'overloaded';
+  await assert.rejects(c.chatStream(msgs, {}, { onDelta: () => {} }), /No chat model answered/);
+  mode = 'broken';
+  const c2 = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: impl, claude });
+  await assert.rejects(c2.chatStream(msgs, {}, { onDelta: () => {} }), /stream error \(api_error\)/);
 });

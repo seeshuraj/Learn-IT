@@ -21,5 +21,7 @@ services:
         sync: false
       - key: NVIDIA_API_KEY
         sync: false
+      - key: CLAUDE_API
+        sync: false
       - key: ALLOWED_ORIGIN
         sync: false
