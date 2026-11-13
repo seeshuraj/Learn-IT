@@ -13,6 +13,8 @@ interface Note {
   chunk_count: number;
   module_id: number;
   text_content?: string;
+  /** Background text extraction: pending → ready | failed. */
+  processing_status?: 'pending' | 'ready' | 'failed';
 }
 
 interface Module {
@@ -51,20 +53,36 @@ export default function NotesPage({ user }: Props) {
     return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, [blobUrl]);
 
+  // While uploads are still being read in the background, refresh the list
+  // every 5 s so they switch to ready (or failed) without a reload.
+  const hasPending = notes.some(n => n.processing_status === 'pending');
+  useEffect(() => {
+    if (!hasPending || !user) return;
+    const t = setTimeout(async () => {
+      const data = await api.getStudentNotes(user.id).catch(() => null);
+      if (Array.isArray(data)) setNotes(data);
+    }, 5_000);
+    return () => clearTimeout(t);
+  }, [hasPending, notes, user?.id]);
+
   async function loadData() {
     setLoading(true);
     try {
       const courses = await api.getStudentCourses(user.id).catch(() => []);
+      const courseList: any[] = Array.isArray(courses) ? courses : [];
+      // Modules of every course and the notes list load in parallel, not one after another.
+      const [moduleLists, notesData] = await Promise.all([
+        Promise.all(courseList.map(course => api.getCourseModules(course.id).catch(() => []))),
+        api.getStudentNotes(user.id).catch(() => []),
+      ]);
       const allModules: Module[] = [];
-      for (const course of (Array.isArray(courses) ? courses : [])) {
-        const mods = await api.getCourseModules(course.id).catch(() => []);
+      moduleLists.forEach((mods: any, i) =>
         (Array.isArray(mods) ? mods : []).forEach((m: any) =>
-          allModules.push({ id: m.id, name: m.name, course_name: course.name })
-        );
-      }
+          allModules.push({ id: m.id, name: m.name, course_name: courseList[i].name })
+        )
+      );
       setModules(allModules);
 
-      const notesData = await api.getStudentNotes(user.id).catch(() => []);
       const fetchedNotes: Note[] = Array.isArray(notesData) ? notesData : [];
       setNotes(fetchedNotes);
 
@@ -300,7 +318,11 @@ export default function NotesPage({ user }: Props) {
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-slate-800 truncate">{note.original_name}</p>
                         <p className="text-xs text-slate-400 mt-0.5">
-                          {note.chunk_count > 0 ? `${note.chunk_count} chunks · ` : 'Processing · '}
+                          {note.processing_status === 'failed'
+                            ? <span className="text-red-500">Couldn't read this file · </span>
+                            : note.processing_status === 'pending'
+                              ? 'Processing… · '
+                              : note.chunk_count > 0 ? `${note.chunk_count} sections · ` : 'No readable text · '}
                           {new Date(note.uploaded_at).toLocaleDateString('en-IE', {
                             day: 'numeric', month: 'short', year: 'numeric',
                           })}

@@ -6,6 +6,7 @@
  * Routes:
  *   GET    /api/roadmaps/:courseId          — get student's roadmap + milestones
  *   POST   /api/roadmaps/:courseId/generate — AI-generate (or regenerate) roadmap
+ *                                              (?async=1 queues it: 202 { jobId })
  *   PATCH  /api/roadmaps/milestones/:id     — update a milestone's status
  *   DELETE /api/roadmaps/:courseId          — delete roadmap (cascade milestones)
  *
@@ -25,6 +26,7 @@ import {
 } from '../middleware/auth.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
+import type { JobQueue } from '../lib/jobs.js';
 
 type PgPool = InstanceType<typeof Pool>;
 
@@ -33,7 +35,19 @@ type NimChatFn = (
   opts?: { temperature?: number; maxTokens?: number; timeoutMs?: number }
 ) => Promise<string>;
 
-export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
+export class RoadmapNotEnrolled extends Error {
+  constructor() { super('Not enrolled in this course.'); this.name = 'RoadmapNotEnrolled'; }
+}
+
+let generateRoadmapImpl: ((studentId: number, courseId: string, institutionId: string) => Promise<unknown>) | null = null;
+
+/** Generates a roadmap outside a request (background job). Requires the router to be created first. */
+export function generateRoadmap(studentId: number, courseId: number, institutionId: string): Promise<unknown> {
+  if (!generateRoadmapImpl) throw new Error('roadmap router not initialised');
+  return generateRoadmapImpl(studentId, String(courseId), institutionId);
+}
+
+export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: JobQueue): Router {
   const router = Router();
 
   async function q(sql: string, params: any[] = []) {
@@ -76,308 +90,335 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn): Router {
   });
 
   // ── POST /api/roadmaps/:courseId/generate ───────────────────────────────
+  /**
+   * Builds (or rebuilds) a student's roadmap for a course and returns it.
+   * Idempotent: the roadmap row is upserted and its milestones replaced.
+   * Used directly by the route and by the "roadmap.generate" background job.
+   */
+  async function generate(studentId: number, courseId: string, institutionId: string) {
+
+    // ─ Verify enrollment ─────────────────────────────────────────────────
+    const enrollment = await q1(
+      `SELECT e.id FROM enrollments e
+       JOIN courses c ON e.course_id = c.id
+       WHERE e.student_id = $1 AND e.course_id = $2 AND e.institution_id = $3 AND c.archived = 0`,
+      [studentId, courseId, institutionId]
+    );
+    if (!enrollment) {
+      throw new RoadmapNotEnrolled();
+    }
+
+    // ─ Gather all context in parallel ────────────────────────────────────
+    const [
+      course,
+      modules,
+      gradeHistory,
+      pendingAssignments,
+      feedbackRows,
+      examRows,
+    ] = await Promise.all([
+      q1(`SELECT name, code FROM courses WHERE id = $1`, [courseId]),
+
+      q(`SELECT name FROM modules WHERE course_id = $1 ORDER BY display_order ASC`, [courseId]),
+
+      q(
+        `SELECT a.title, s.grade, s.submitted_at, a.due_date, a.max_points,
+                CASE
+                  WHEN a.due_date IS NOT NULL
+                   AND s.submitted_at::date > a.due_date::date THEN true
+                  ELSE false
+                END AS late
+         FROM submissions s
+         JOIN assignments a ON s.assignment_id = a.id
+         JOIN modules m ON a.module_id = m.id
+         WHERE s.student_id = $1 AND m.course_id = $2
+         ORDER BY s.submitted_at ASC`,
+        [studentId, courseId]
+      ),
+
+      q(
+        `SELECT a.title, a.due_date
+         FROM assignments a
+         JOIN modules m ON a.module_id = m.id
+         WHERE m.course_id = $1
+           AND a.status = 'active'
+           AND NOT EXISTS (
+             SELECT 1 FROM submissions s
+             WHERE s.assignment_id = a.id AND s.student_id = $2
+           )
+         ORDER BY a.due_date ASC NULLS LAST`,
+        [courseId, studentId]
+      ),
+
+      // Grading AI feedback from submissions
+      q(
+        `SELECT s.ai_feedback, a.title AS assignment_title
+         FROM submissions s
+         JOIN assignments a ON s.assignment_id = a.id
+         JOIN modules m     ON a.module_id = m.id
+         WHERE s.student_id = $1
+           AND m.course_id  = $2
+           AND s.ai_feedback IS NOT NULL
+           AND s.ai_feedback != 'null'
+           -- Only work an instructor has graded: AI drafts stay private until reviewed.
+           AND s.grade IS NOT NULL`,
+        [studentId, courseId]
+      ),
+
+      // Unit exam results for this course
+      q(
+        `SELECT r.marks_obtained, r.percentage, r.performance_band, r.topic_breakdown,
+                ue.title AS exam_title, ue.exam_date, ue.max_marks
+         FROM unit_exam_results r
+         JOIN unit_exams ue ON r.unit_exam_id = ue.id
+         WHERE r.student_id = $1 AND ue.course_id = $2
+         ORDER BY ue.exam_date ASC NULLS LAST, r.created_at ASC`,
+        [studentId, courseId]
+      ),
+    ]);
+
+    // ─ Aggregate strengths + improvements from AI feedback ───────────────
+    const allStrengths:    string[] = [];
+    const allImprovements: string[] = [];
+
+    for (const row of feedbackRows) {
+      try {
+        const fb = typeof row.ai_feedback === 'string'
+          ? JSON.parse(row.ai_feedback)
+          : row.ai_feedback;
+        for (const s   of (fb?.strengths    ?? [])) { if (s) allStrengths.push(s); }
+        for (const imp of (fb?.improvements ?? [])) { if (imp) allImprovements.push(imp); }
+      } catch { /* skip malformed */ }
+    }
+
+    const uniqueStrengths    = [...new Set(allStrengths)].slice(0, 5);
+    const uniqueImprovements = [...new Set(allImprovements)].slice(0, 5);
+
+    // ─ Aggregate unit exam weak topics + trend ───────────────────────────
+    const examWeakTopics: Record<string, number> = {};
+    for (const r of examRows) {
+      if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
+      const td: Record<string, number> =
+        typeof r.topic_breakdown === 'string'
+          ? JSON.parse(r.topic_breakdown)
+          : r.topic_breakdown;
+      for (const topic of Object.keys(td)) {
+        examWeakTopics[topic] = (examWeakTopics[topic] ?? 0) + 1;
+      }
+    }
+    const topExamWeakTopics = Object.entries(examWeakTopics)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([t]) => t);
+
+    // Determine exam trend (improving / declining / stable)
+    let examTrend = '';
+    if (examRows.length >= 2) {
+      const pcts = examRows.map((r: any) => parseFloat(r.percentage));
+      const first = pcts.slice(0, Math.ceil(pcts.length / 2));
+      const last  = pcts.slice(Math.floor(pcts.length / 2));
+      const avgFirst = first.reduce((a: number, b: number) => a + b, 0) / first.length;
+      const avgLast  = last.reduce((a: number, b: number) => a + b, 0) / last.length;
+      if (avgLast - avgFirst >= 5)        examTrend = 'improving';
+      else if (avgFirst - avgLast >= 5)   examTrend = 'declining';
+      else                                examTrend = 'stable';
+    }
+
+    const latestExam = examRows[examRows.length - 1] ?? null;
+
+    // ─ Build prompt context ───────────────────────────────────────────────
+    const moduleList = modules.map((m: any) => m.name).join(', ');
+
+    const gradeLines = gradeHistory.length > 0
+      ? gradeHistory.map((g: any) =>
+          `  - ${g.title}: ${g.grade != null ? g.grade + '%' : 'ungraded'}${
+            g.late ? ' (LATE)' : ''
+          }`
+        ).join('\n')
+      : '  (no submissions yet)';
+
+    const pendingLines = pendingAssignments.length > 0
+      ? pendingAssignments.map((a: any) =>
+          `  - ${a.title}${
+            a.due_date ? ' (due ' + new Date(a.due_date).toLocaleDateString() + ')' : ''
+          }`
+        ).join('\n')
+      : '  (none pending)';
+
+    const avgGrade = gradeHistory.length > 0
+      ? Math.round(
+          gradeHistory
+            .filter((g: any) => g.grade != null)
+            .reduce((sum: number, g: any) => sum + g.grade, 0) /
+          Math.max(1, gradeHistory.filter((g: any) => g.grade != null).length)
+        )
+      : null;
+
+    const feedbackSection = feedbackRows.length > 0
+      ? [
+          ``,
+          `AI GRADING FEEDBACK (from ${feedbackRows.length} graded submission(s)):`,
+          uniqueStrengths.length > 0
+            ? `RECURRING STRENGTHS:\n${uniqueStrengths.map(s => `  + ${s}`).join('\n')}`
+            : '',
+          uniqueImprovements.length > 0
+            ? `AREAS TO IMPROVE (shape milestones around these):\n${uniqueImprovements.map(i => `  ! ${i}`).join('\n')}`
+            : '',
+        ].filter(Boolean).join('\n')
+      : '';
+
+    // Unit exam section — only included if there are exam results
+    const examSection = examRows.length > 0
+      ? [
+          ``,
+          `UNIT EXAM RESULTS (${examRows.length} exam(s) in this course):`,
+          ...examRows.map((r: any) =>
+            `  - ${r.exam_title ?? 'Exam'}${
+              r.exam_date ? ' (' + new Date(r.exam_date).toLocaleDateString() + ')' : ''
+            }: ${parseFloat(r.percentage).toFixed(1)}% — ${r.performance_band?.toUpperCase() ?? 'N/A'}`
+          ),
+          latestExam
+            ? `LATEST EXAM BAND: ${latestExam.performance_band?.toUpperCase()}`
+            : '',
+          examTrend
+            ? `EXAM SCORE TREND: ${examTrend}`
+            : '',
+          topExamWeakTopics.length > 0
+            ? `MEASURED WEAK TOPICS (from exam topic breakdown, highest priority for milestones):\n${
+                topExamWeakTopics.map(t => `  !! ${t}`).join('\n')
+              }`
+            : '',
+        ].filter(Boolean).join('\n')
+      : '';
+
+    const prompt = [
+      `COURSE: ${course.code} — ${course.name}`,
+      `MODULES: ${moduleList}`,
+      ``,
+      `STUDENT GRADE HISTORY:`,
+      gradeLines,
+      `OVERALL AVERAGE: ${avgGrade != null ? avgGrade + '%' : 'N/A'}`,
+      ``,
+      `PENDING ASSIGNMENTS:`,
+      pendingLines,
+      feedbackSection,
+      examSection,
+    ].join('\n');
+
+    // ─ Call AI ───────────────────────────────────────────────────────────
+    const systemMsg = [
+      'You are an academic learning path advisor AI.',
+      'Given a student\'s course context and performance, generate a personalised learning roadmap.',
+      'Priority order for milestone topics:',
+      '  1. MEASURED WEAK TOPICS from unit exam topic breakdown (highest signal — address these first)',
+      '  2. AREAS TO IMPROVE from AI grading feedback',
+      '  3. Pending assignments that need immediate attention',
+      '  4. Consolidation of strengths and forward advancement',
+      'If EXAM SCORE TREND is "declining", add a motivational recovery milestone early.',
+      'Respond ONLY with valid JSON in this exact shape (no markdown fences):',
+      '{',
+      '  "title": "<short roadmap title>",',
+      '  "summary": "<2-3 sentence overview referencing exam performance, trend, and key weaknesses>",',
+      '  "milestones": [',
+      '    {',
+      '      "title": "<step title>",',
+      '      "description": "<1-2 sentence explanation — be specific, reference actual topics and exam names>",',
+      '      "resource_hint": "<where in the course to find help, or null>"',
+      '    }',
+      '  ]',
+      '}',
+      'Generate 5-8 milestones. Reference actual module names, assignment titles, exam names, and improvement areas.',
+      'Be specific and actionable. Avoid generic advice.',
+    ].join('\n');
+
+    const raw = await nimChat(
+      [
+        { role: 'system', content: systemMsg },
+        { role: 'user',   content: prompt },
+      ],
+      { temperature: 0.4, maxTokens: 1400, timeoutMs: 45_000 }
+    );
+
+    let parsed: { title: string; summary: string; milestones: any[] };
+    try {
+      parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    } catch {
+      parsed = { title: 'Learning Roadmap', summary: raw.slice(0, 300), milestones: [] };
+    }
+
+    const title      = parsed.title   || 'My Learning Roadmap';
+    const summary    = parsed.summary || null;
+    const milestones: any[] = Array.isArray(parsed.milestones) ? parsed.milestones : [];
+
+    // ─ Upsert roadmap row ─────────────────────────────────────────────────
+    const upsertResult = await pool.query(
+      `INSERT INTO student_roadmaps (student_id, course_id, title, summary, generated_at, updated_at)
+       VALUES ($1, $2, $3, $4, NOW(), NOW())
+       ON CONFLICT (student_id, course_id)
+       DO UPDATE SET
+         title        = EXCLUDED.title,
+         summary      = EXCLUDED.summary,
+         generated_at = NOW(),
+         updated_at   = NOW()
+       RETURNING id`,
+      [studentId, courseId, title, summary]
+    );
+    const roadmapId: number = upsertResult.rows[0].id;
+
+    // ─ Replace all milestones ─────────────────────────────────────────────
+    await pool.query(`DELETE FROM roadmap_milestones WHERE roadmap_id = $1`, [roadmapId]);
+
+    for (let i = 0; i < milestones.length; i++) {
+      const m = milestones[i];
+      await pool.query(
+        `INSERT INTO roadmap_milestones
+           (roadmap_id, step_order, title, description, resource_hint)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          roadmapId, i + 1,
+          (m.title        || `Step ${i + 1}`).slice(0, 200),
+          m.description   || null,
+          m.resource_hint || null,
+        ]
+      );
+    }
+
+    const saved = await q(
+      `SELECT id, step_order, title, description, resource_hint, status, completed_at
+       FROM roadmap_milestones WHERE roadmap_id = $1 ORDER BY step_order ASC`,
+      [roadmapId]
+    );
+
+    return {
+      id: roadmapId, student_id: studentId, course_id: parseInt(courseId),
+      title, summary, generated_at: new Date().toISOString(), milestones: saved,
+    };
+  }
+  generateRoadmapImpl = generate;
+
+  // ── POST /api/roadmaps/:courseId/generate ─────────────────────────────
+  // ?async=1 (with a job queue) queues the work and answers 202 { jobId };
+  // poll GET /api/jobs/:id. Without it the roadmap is generated in the request.
   router.post('/:courseId/generate', requireAuth, requireRole('student'), async (req, res) => {
     try {
-      const studentId = (req as AuthenticatedRequest).auth.legacyUserId;
-      const courseId  = req.params.courseId;
-
-      // ─ Verify enrollment ─────────────────────────────────────────────────
-      const enrollment = await q1(
-        `SELECT e.id FROM enrollments e
-         JOIN courses c ON e.course_id = c.id
-         WHERE e.student_id = $1 AND e.course_id = $2 AND e.institution_id = $3 AND c.archived = 0`,
-        [studentId, courseId, (req as AuthenticatedRequest).auth.institutionId]
-      );
-      if (!enrollment) {
-        return res.status(403).json({ error: 'Not enrolled in this course.' });
-      }
-
-      // ─ Gather all context in parallel ────────────────────────────────────
-      const [
-        course,
-        modules,
-        gradeHistory,
-        pendingAssignments,
-        feedbackRows,
-        examRows,
-      ] = await Promise.all([
-        q1(`SELECT name, code FROM courses WHERE id = $1`, [courseId]),
-
-        q(`SELECT name FROM modules WHERE course_id = $1 ORDER BY display_order ASC`, [courseId]),
-
-        q(
-          `SELECT a.title, s.grade, s.submitted_at, a.due_date, a.max_points,
-                  CASE
-                    WHEN a.due_date IS NOT NULL
-                     AND s.submitted_at::date > a.due_date::date THEN true
-                    ELSE false
-                  END AS late
-           FROM submissions s
-           JOIN assignments a ON s.assignment_id = a.id
-           JOIN modules m ON a.module_id = m.id
-           WHERE s.student_id = $1 AND m.course_id = $2
-           ORDER BY s.submitted_at ASC`,
-          [studentId, courseId]
-        ),
-
-        q(
-          `SELECT a.title, a.due_date
-           FROM assignments a
-           JOIN modules m ON a.module_id = m.id
-           WHERE m.course_id = $1
-             AND a.status = 'active'
-             AND NOT EXISTS (
-               SELECT 1 FROM submissions s
-               WHERE s.assignment_id = a.id AND s.student_id = $2
-             )
-           ORDER BY a.due_date ASC NULLS LAST`,
-          [courseId, studentId]
-        ),
-
-        // Grading AI feedback from submissions
-        q(
-          `SELECT s.ai_feedback, a.title AS assignment_title
-           FROM submissions s
-           JOIN assignments a ON s.assignment_id = a.id
-           JOIN modules m     ON a.module_id = m.id
-           WHERE s.student_id = $1
-             AND m.course_id  = $2
-             AND s.ai_feedback IS NOT NULL
-             AND s.ai_feedback != 'null'
-             -- Only work an instructor has graded: AI drafts stay private until reviewed.
-             AND s.grade IS NOT NULL`,
-          [studentId, courseId]
-        ),
-
-        // Unit exam results for this course
-        q(
-          `SELECT r.marks_obtained, r.percentage, r.performance_band, r.topic_breakdown,
-                  ue.title AS exam_title, ue.exam_date, ue.max_marks
-           FROM unit_exam_results r
-           JOIN unit_exams ue ON r.unit_exam_id = ue.id
-           WHERE r.student_id = $1 AND ue.course_id = $2
-           ORDER BY ue.exam_date ASC NULLS LAST, r.created_at ASC`,
-          [studentId, courseId]
-        ),
-      ]);
-
-      // ─ Aggregate strengths + improvements from AI feedback ───────────────
-      const allStrengths:    string[] = [];
-      const allImprovements: string[] = [];
-
-      for (const row of feedbackRows) {
-        try {
-          const fb = typeof row.ai_feedback === 'string'
-            ? JSON.parse(row.ai_feedback)
-            : row.ai_feedback;
-          for (const s   of (fb?.strengths    ?? [])) { if (s) allStrengths.push(s); }
-          for (const imp of (fb?.improvements ?? [])) { if (imp) allImprovements.push(imp); }
-        } catch { /* skip malformed */ }
-      }
-
-      const uniqueStrengths    = [...new Set(allStrengths)].slice(0, 5);
-      const uniqueImprovements = [...new Set(allImprovements)].slice(0, 5);
-
-      // ─ Aggregate unit exam weak topics + trend ───────────────────────────
-      const examWeakTopics: Record<string, number> = {};
-      for (const r of examRows) {
-        if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
-        const td: Record<string, number> =
-          typeof r.topic_breakdown === 'string'
-            ? JSON.parse(r.topic_breakdown)
-            : r.topic_breakdown;
-        for (const topic of Object.keys(td)) {
-          examWeakTopics[topic] = (examWeakTopics[topic] ?? 0) + 1;
-        }
-      }
-      const topExamWeakTopics = Object.entries(examWeakTopics)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([t]) => t);
-
-      // Determine exam trend (improving / declining / stable)
-      let examTrend = '';
-      if (examRows.length >= 2) {
-        const pcts = examRows.map((r: any) => parseFloat(r.percentage));
-        const first = pcts.slice(0, Math.ceil(pcts.length / 2));
-        const last  = pcts.slice(Math.floor(pcts.length / 2));
-        const avgFirst = first.reduce((a: number, b: number) => a + b, 0) / first.length;
-        const avgLast  = last.reduce((a: number, b: number) => a + b, 0) / last.length;
-        if (avgLast - avgFirst >= 5)        examTrend = 'improving';
-        else if (avgFirst - avgLast >= 5)   examTrend = 'declining';
-        else                                examTrend = 'stable';
-      }
-
-      const latestExam = examRows[examRows.length - 1] ?? null;
-
-      // ─ Build prompt context ───────────────────────────────────────────────
-      const moduleList = modules.map((m: any) => m.name).join(', ');
-
-      const gradeLines = gradeHistory.length > 0
-        ? gradeHistory.map((g: any) =>
-            `  - ${g.title}: ${g.grade != null ? g.grade + '%' : 'ungraded'}${
-              g.late ? ' (LATE)' : ''
-            }`
-          ).join('\n')
-        : '  (no submissions yet)';
-
-      const pendingLines = pendingAssignments.length > 0
-        ? pendingAssignments.map((a: any) =>
-            `  - ${a.title}${
-              a.due_date ? ' (due ' + new Date(a.due_date).toLocaleDateString() + ')' : ''
-            }`
-          ).join('\n')
-        : '  (none pending)';
-
-      const avgGrade = gradeHistory.length > 0
-        ? Math.round(
-            gradeHistory
-              .filter((g: any) => g.grade != null)
-              .reduce((sum: number, g: any) => sum + g.grade, 0) /
-            Math.max(1, gradeHistory.filter((g: any) => g.grade != null).length)
-          )
-        : null;
-
-      const feedbackSection = feedbackRows.length > 0
-        ? [
-            ``,
-            `AI GRADING FEEDBACK (from ${feedbackRows.length} graded submission(s)):`,
-            uniqueStrengths.length > 0
-              ? `RECURRING STRENGTHS:\n${uniqueStrengths.map(s => `  + ${s}`).join('\n')}`
-              : '',
-            uniqueImprovements.length > 0
-              ? `AREAS TO IMPROVE (shape milestones around these):\n${uniqueImprovements.map(i => `  ! ${i}`).join('\n')}`
-              : '',
-          ].filter(Boolean).join('\n')
-        : '';
-
-      // Unit exam section — only included if there are exam results
-      const examSection = examRows.length > 0
-        ? [
-            ``,
-            `UNIT EXAM RESULTS (${examRows.length} exam(s) in this course):`,
-            ...examRows.map((r: any) =>
-              `  - ${r.exam_title ?? 'Exam'}${
-                r.exam_date ? ' (' + new Date(r.exam_date).toLocaleDateString() + ')' : ''
-              }: ${parseFloat(r.percentage).toFixed(1)}% — ${r.performance_band?.toUpperCase() ?? 'N/A'}`
-            ),
-            latestExam
-              ? `LATEST EXAM BAND: ${latestExam.performance_band?.toUpperCase()}`
-              : '',
-            examTrend
-              ? `EXAM SCORE TREND: ${examTrend}`
-              : '',
-            topExamWeakTopics.length > 0
-              ? `MEASURED WEAK TOPICS (from exam topic breakdown, highest priority for milestones):\n${
-                  topExamWeakTopics.map(t => `  !! ${t}`).join('\n')
-                }`
-              : '',
-          ].filter(Boolean).join('\n')
-        : '';
-
-      const prompt = [
-        `COURSE: ${course.code} — ${course.name}`,
-        `MODULES: ${moduleList}`,
-        ``,
-        `STUDENT GRADE HISTORY:`,
-        gradeLines,
-        `OVERALL AVERAGE: ${avgGrade != null ? avgGrade + '%' : 'N/A'}`,
-        ``,
-        `PENDING ASSIGNMENTS:`,
-        pendingLines,
-        feedbackSection,
-        examSection,
-      ].join('\n');
-
-      // ─ Call AI ───────────────────────────────────────────────────────────
-      const systemMsg = [
-        'You are an academic learning path advisor AI.',
-        'Given a student\'s course context and performance, generate a personalised learning roadmap.',
-        'Priority order for milestone topics:',
-        '  1. MEASURED WEAK TOPICS from unit exam topic breakdown (highest signal — address these first)',
-        '  2. AREAS TO IMPROVE from AI grading feedback',
-        '  3. Pending assignments that need immediate attention',
-        '  4. Consolidation of strengths and forward advancement',
-        'If EXAM SCORE TREND is "declining", add a motivational recovery milestone early.',
-        'Respond ONLY with valid JSON in this exact shape (no markdown fences):',
-        '{',
-        '  "title": "<short roadmap title>",',
-        '  "summary": "<2-3 sentence overview referencing exam performance, trend, and key weaknesses>",',
-        '  "milestones": [',
-        '    {',
-        '      "title": "<step title>",',
-        '      "description": "<1-2 sentence explanation — be specific, reference actual topics and exam names>",',
-        '      "resource_hint": "<where in the course to find help, or null>"',
-        '    }',
-        '  ]',
-        '}',
-        'Generate 5-8 milestones. Reference actual module names, assignment titles, exam names, and improvement areas.',
-        'Be specific and actionable. Avoid generic advice.',
-      ].join('\n');
-
-      const raw = await nimChat(
-        [
-          { role: 'system', content: systemMsg },
-          { role: 'user',   content: prompt },
-        ],
-        { temperature: 0.4, maxTokens: 1400, timeoutMs: 45_000 }
-      );
-
-      let parsed: { title: string; summary: string; milestones: any[] };
-      try {
-        parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
-      } catch {
-        parsed = { title: 'Learning Roadmap', summary: raw.slice(0, 300), milestones: [] };
-      }
-
-      const title      = parsed.title   || 'My Learning Roadmap';
-      const summary    = parsed.summary || null;
-      const milestones: any[] = Array.isArray(parsed.milestones) ? parsed.milestones : [];
-
-      // ─ Upsert roadmap row ─────────────────────────────────────────────────
-      const upsertResult = await pool.query(
-        `INSERT INTO student_roadmaps (student_id, course_id, title, summary, generated_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
-         ON CONFLICT (student_id, course_id)
-         DO UPDATE SET
-           title        = EXCLUDED.title,
-           summary      = EXCLUDED.summary,
-           generated_at = NOW(),
-           updated_at   = NOW()
-         RETURNING id`,
-        [studentId, courseId, title, summary]
-      );
-      const roadmapId: number = upsertResult.rows[0].id;
-
-      // ─ Replace all milestones ─────────────────────────────────────────────
-      await pool.query(`DELETE FROM roadmap_milestones WHERE roadmap_id = $1`, [roadmapId]);
-
-      for (let i = 0; i < milestones.length; i++) {
-        const m = milestones[i];
-        await pool.query(
-          `INSERT INTO roadmap_milestones
-             (roadmap_id, step_order, title, description, resource_hint)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            roadmapId, i + 1,
-            (m.title        || `Step ${i + 1}`).slice(0, 200),
-            m.description   || null,
-            m.resource_hint || null,
-          ]
+      const { legacyUserId: studentId, institutionId } = (req as AuthenticatedRequest).auth;
+      const courseId = String(req.params.courseId);
+      if (!/^\d+$/.test(courseId)) return res.status(400).json({ error: 'Invalid course id.' });
+      if (req.query.async === '1' && queue) {
+        const enrolled = await q1(
+          `SELECT 1 FROM enrollments e JOIN courses c ON c.id = e.course_id
+           WHERE e.student_id = $1 AND e.course_id = $2 AND e.institution_id = $3 AND c.archived = 0`,
+          [studentId, courseId, institutionId]
         );
+        if (!enrolled) return res.status(403).json({ error: 'Not enrolled in this course.' });
+        const job = await queue.enqueue('roadmap.generate', { studentId, courseId: Number(courseId) }, {
+          institutionId, createdBy: studentId, dedupeKey: `roadmap:${studentId}:${courseId}`, maxAttempts: 3,
+        });
+        return res.status(202).json({ jobId: job.id, status: 'queued' });
       }
-
-      const saved = await q(
-        `SELECT id, step_order, title, description, resource_hint, status, completed_at
-         FROM roadmap_milestones WHERE roadmap_id = $1 ORDER BY step_order ASC`,
-        [roadmapId]
-      );
-
-      res.json({
-        id: roadmapId, student_id: studentId, course_id: parseInt(courseId),
-        title, summary, generated_at: new Date().toISOString(), milestones: saved,
-      });
+      res.json(await generate(studentId, courseId, institutionId));
     } catch (e: any) {
+      if (e instanceof RoadmapNotEnrolled) return res.status(403).json({ error: e.message });
       log.error('roadmap generation failed', errorFields(e));
       sendServerError(res, e);
     }

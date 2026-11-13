@@ -2,7 +2,7 @@
  * AI usage metering and per-college monthly budgets.
  *
  * Every chat-model call made while handling a request is attributed to the
- * request's college, user, feature and (when known) course, and written to
+ * request's (or queued job's) college, user, feature and (when known) course, and written to
  * ai_usage_events in small batches off the request path. Before each call
  * the college's month-to-date tokens are checked against its allowance
  * (institutions.ai_monthly_token_budget, else AI_MONTHLY_TOKEN_BUDGET;
@@ -19,7 +19,7 @@ import { log, errorFields } from './log.js';
 
 // ── Request context ──────────────────────────────────────────────────────────
 
-interface Store { req?: Request; feature: string; courseId?: number }
+interface Store { req?: Request; feature: string; courseId?: number; job?: { institutionId: string; userId: number | null } }
 const als = new AsyncLocalStorage<Store>();
 
 const FEATURES: Array<[RegExp, string]> = [
@@ -50,8 +50,23 @@ export function setAiCourse(courseId: number | null | undefined): void {
 
 export interface AiContext { institutionId: string; userId: number | null; feature: string; courseId: number | null }
 
+/**
+ * Runs background work (a queued job) with the same attribution as a request:
+ * its AI calls are metered to the college and checked against its allowance.
+ */
+export function runWithAiContext<T>(ctx: Omit<AiContext, 'courseId'> & { courseId?: number | null }, fn: () => Promise<T>): Promise<T> {
+  return als.run({
+    feature: ctx.feature,
+    courseId: ctx.courseId ?? undefined,
+    job: { institutionId: ctx.institutionId, userId: ctx.userId },
+  }, fn);
+}
+
 export function currentAiContext(): AiContext | null {
   const store = als.getStore();
+  if (store?.job) {
+    return { institutionId: store.job.institutionId, userId: store.job.userId, feature: store.feature, courseId: store.courseId ?? null };
+  }
   const auth = (store?.req as any)?.auth as { institutionId?: string; legacyUserId?: number } | undefined;
   if (!store || !auth?.institutionId) return null;
   return {

@@ -76,6 +76,17 @@ update institutions set ai_monthly_token_budget = 20000000 where slug = '<colleg
 
 Sizing: a tutor answer is about 2,500 tokens with notes and the student record included, and AI grading about 3,000. A 2,000-account college averaging 40 tutor questions per student per month uses roughly 200M tokens. Start the allowance from the plan's AI tier and adjust it from the dashboard numbers after the first month.
 
+### Background jobs
+
+Note text extraction and embedding, AI grading drafts and study roadmaps run as background jobs (`jobs` table, `src/server/lib/jobs.ts`). Requests return immediately; the browser polls `GET /api/jobs/:id`. Jobs retry with backoff, survive restarts (a job whose worker stopped is requeued after 15 minutes), and never run twice at the same time.
+
+| Variable | Default | When to change |
+|---|---|---|
+| `PROCESS_ROLE` | `all` | `all` serves the API and runs jobs in one process. For 2+ colleges, run a second Render service from the same repo as a **Background Worker** with `PROCESS_ROLE=worker` (same env vars, start command `npm start`), and set the web service to `PROCESS_ROLE=api`. PDF parsing then never competes with page loads. |
+| `JOB_CONCURRENCY` | 2 | Jobs one process runs at once (max 8). Raise on a worker with more CPU and memory. Each running job holds at most one extra database connection. |
+
+Finished jobs are deleted after 14 days by the scheduled cleanup.
+
 ### Render → Settings
 
 - Health check path: `/api/health`. Render then replaces a hung instance automatically.
