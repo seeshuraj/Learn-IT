@@ -47,7 +47,7 @@ export function apiRoleOf(memberRole: MemberRole): 'student' | 'instructor' | 'a
 // ── Extended request type ────────────────────────────────────────────────────
 export interface AuthenticatedRequest extends Request {
   auth: {
-    authUserId: string;       // Supabase Auth UUID (from getUser())
+    authUserId: string;       // Supabase Auth UUID (token subject)
     legacyUserId: number;     // public.users integer PK
     role: 'student' | 'instructor' | 'admin';
     memberRole: MemberRole;   // institution_members.role (admin vs owner kept distinct)
@@ -56,14 +56,24 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-// ── Verified-session cache ───────────────────────────────────────────────────
-// Each API call used to make a network round trip to Supabase Auth. Caching a
-// successful verification for a short time removes most of those calls under
-// load. Trade-off: a revoked session keeps working on this instance for at most
-// AUTH_CACHE_TTL_MS (default 60 s; set 0 to disable). Tokens are stored only as
-// SHA-256 hashes. Role and institution are still read from the DB every call.
+// ── Token verification ───────────────────────────────────────────────────────
+// AUTH_VERIFY_MODE=local (default): the access token's signature is checked
+// here against the project's published signing keys (ES256, JWKS fetched once
+// and cached by supabase-js). No call to Supabase Auth per request, so no
+// per-IP auth rate limit to hit and no extra round trip.
+//   Trade-off: a token stays valid until it expires even after sign-out. Keep
+//   the JWT expiry short (Supabase → Auth → Sessions; 15–30 min) and rely on
+//   the membership check below, which blocks deactivated or removed accounts
+//   within AUTH_CACHE_TTL_MS.
+// AUTH_VERIFY_MODE=remote: every new token is checked with Supabase Auth
+// (getUser), which also sees revoked sessions; counted against the "sign-ups
+// and sign-ins" per-IP limit, so raise that limit if you use it.
+//
+// Successful verifications are cached for AUTH_CACHE_TTL_MS (default 60 s;
+// 0 disables), keyed by a SHA-256 hash of the token, never past its expiry.
 type VerifiedUser = { id: string; email: string };
 const authCacheTtlMs = Math.max(0, Number(process.env.AUTH_CACHE_TTL_MS ?? 60_000) || 0);
+const verifyMode: 'local' | 'remote' = process.env.AUTH_VERIFY_MODE === 'remote' ? 'remote' : 'local';
 const verifiedSessions = new TtlCache<VerifiedUser>(authCacheTtlMs, 20_000);
 
 async function verifyToken(token: string): Promise<VerifiedUser | null> {
@@ -71,10 +81,20 @@ async function verifyToken(token: string): Promise<VerifiedUser | null> {
   const cached = verifiedSessions.get(key);
   if (cached) return cached;
 
-  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !user) return null;
-
-  const verified = { id: user.id, email: user.email ?? '' };
+  let verified: VerifiedUser;
+  if (verifyMode === 'local') {
+    const expSec = jwtExpiry(token);
+    if (!expSec || expSec * 1000 <= Date.now()) return null;
+    const { data, error } = await supabaseAdmin.auth.getClaims(token);
+    const claims = data?.claims as Record<string, unknown> | undefined;
+    // Only signed-in users' tokens: not the anon or service-role keys.
+    if (error || !claims || typeof claims.sub !== 'string' || claims.role !== 'authenticated') return null;
+    verified = { id: claims.sub, email: typeof claims.email === 'string' ? claims.email : '' };
+  } else {
+    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+    if (error || !user) return null;
+    verified = { id: user.id, email: user.email ?? '' };
+  }
   // Never cache past the token's own expiry.
   const expSec = jwtExpiry(token);
   const ttl = expSec ? Math.min(authCacheTtlMs, expSec * 1000 - Date.now()) : authCacheTtlMs;
@@ -92,17 +112,28 @@ function jwtExpiry(token: string): number | null {
   }
 }
 
-// ── Core: validate bearer token with Supabase Auth server-side ───────────────
+// ── Membership cache ─────────────────────────────────────────────────────────
+// Saves one database round trip per request (the API and database are in
+// different regions). Cleared on this instance whenever an admin changes users.
+const memberships = new TtlCache<any[]>(authCacheTtlMs, 20_000);
+
+/** Call after changing anyone's role, status or membership. */
+export function clearMembershipCache(): void {
+  memberships.clear();
+}
+
+// ── Core: validate bearer token ──────────────────────────────────────────────
 /**
  * requireAuth
  *
  * 1. Extracts `Authorization: Bearer <token>` header.
- * 2. Calls supabase.auth.getUser(token) — makes a live network call to
- *    Supabase Auth to verify the token and check session validity.
- *    This is the ONLY safe way to verify a user server-side.
- *    getClaims() / JWT decode is NOT used here — it does not detect revoked sessions.
+ * 2. Verifies the token (see "Token verification" above: signature check by
+ *    default, or a call to Supabase Auth with AUTH_VERIFY_MODE=remote).
  * 3. Resolves legacyUserId from public.user_identity_map, then the caller's
  *    single active membership in an active institution. No membership → 403.
+ *    The lookup is cached per auth user for AUTH_CACHE_TTL_MS, so a role
+ *    change or deactivation applies within that window on every instance
+ *    (immediately on the instance that made the change).
  * 4. Attaches result to req.auth.
  */
 export async function requireAuth(
@@ -118,8 +149,6 @@ export async function requireAuth(
 
   const token = authHeader.slice(7);
 
-  // getUser() validates the token against Supabase Auth server — not just JWT sig.
-  // Successful verifications are cached briefly (see verifyToken).
   let user: VerifiedUser | null;
   try {
     user = await verifyToken(token);
@@ -136,7 +165,8 @@ export async function requireAuth(
   // The partial unique index on institution_members guarantees ≤ 1 active row.
   let rows: any[];
   try {
-    rows = await dbQuery(
+    const cachedMembership = memberships.get(user.id);
+    rows = cachedMembership ?? await dbQuery(
       `SELECT uim.legacy_user_id, im.role, im.institution_id
        FROM public.user_identity_map uim
        JOIN public.institution_members im
@@ -146,6 +176,8 @@ export async function requireAuth(
        WHERE uim.auth_user_id = $1 AND uim.is_active = true`,
       [user.id]
     );
+    // Cache found memberships only, so a newly added account works at once.
+    if (!cachedMembership && rows.length) memberships.set(user.id, rows);
   } catch (err) {
     next(err);
     return;

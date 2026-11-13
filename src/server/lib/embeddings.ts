@@ -11,13 +11,15 @@
 
 import type pkg from 'pg';
 import { log, errorFields } from './log.js';
+import { nimBaseFromEnv } from './llm.js';
 
 type Pool = InstanceType<typeof pkg.Pool>;
 
 // nv-embedqa-e5-v5 reached end of life on 2026-08-25 (HTTP 410).
 export const DEFAULT_EMBED_MODEL = 'nvidia/nemotron-3-embed-1b';
 export const EMBED_BATCH_SIZE    = 32;
-const NIM_EMBED_URL = 'https://integrate.api.nvidia.com/v1/embeddings';
+/** Same endpoint as chat (NVIDIA_BASE_URL), so a partner or self-hosted NIM serves both. */
+const NIM_EMBED_URL = `${nimBaseFromEnv()}/embeddings`;
 
 /** Model tag for development vectors, so a later real key re-embeds them. */
 export const DEV_RANDOM_MODEL = 'dev-random';

@@ -2,13 +2,14 @@
  * logger.ts — structured JSON request logger (P1-4 / P1-7)
  *
  * Logs every request as a single JSON line at response finish.
- * Fields: requestId, method, path, statusCode, durationMs, userId.
+ * Fields: requestId, method, path, statusCode, durationMs, dbQueries, dbMs, userId.
  * Never logs secrets, tokens, passwords, or PII body content.
  */
 
 import { Request, Response, NextFunction } from 'express';
 import { RequestWithId } from './requestId.js';
 import { AuthenticatedRequest } from './auth.js';
+import { withRequestStats, RequestStats } from '../lib/requestStats.js';
 
 export function requestLogger(
   req: Request,
@@ -16,6 +17,7 @@ export function requestLogger(
   next: NextFunction
 ): void {
   const start = Date.now();
+  let stats: RequestStats | null = null;
   res.on('finish', () => {
     const entry: Record<string, unknown> = {
       requestId:  (req as RequestWithId).id ?? 'unknown',
@@ -24,6 +26,10 @@ export function requestLogger(
       statusCode: res.statusCode,
       durationMs: Date.now() - start,
     };
+    if (stats?.dbQueries) {
+      entry.dbQueries = stats.dbQueries;
+      entry.dbMs = Math.round(stats.dbMs);
+    }
     const auth = (req as AuthenticatedRequest).auth;
     if (auth) entry.userId = auth.legacyUserId;
     // Only emit as structured JSON in production; pretty-print in dev.
@@ -34,5 +40,5 @@ export function requestLogger(
       console.log(`[${statusCode}] ${method} ${path}  ${durationMs}ms`);
     }
   });
-  next();
+  stats = withRequestStats(next);
 }
