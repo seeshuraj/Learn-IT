@@ -11,25 +11,58 @@ import { supabase } from "./services/supabaseClient";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { User } from "./types";
-import { DashboardPage } from "./pages/DashboardPage";
-import { CoursesPage } from "./pages/CoursesPage";
-import { CourseDetailPage } from "./pages/CourseDetailPage";
-import AssignmentsPage from "./pages/AssignmentsPage";
-import AnalyticsPage from "./pages/AnalyticsPage";
-import NotesPage from "./pages/NotesPage";
 import LoginPage from "./pages/LoginPage";
 import LandingPage from "./pages/LandingPage";
-import { InstructorDashboard } from "./pages/InstructorDashboard";
-import { AdminDashboard } from "./pages/AdminDashboard";
-import { AdminUserManagement } from "./pages/AdminUserManagement";
-import AdminCourseManagement from "./pages/AdminCourseManagement";
-import { AdminSettings } from "./pages/AdminSettings";
-import ChangePasswordPage from "./pages/ChangePasswordPage";
 import { API_BASE } from "./services/api";
-import ForgotPasswordPage from "./pages/ForgotPasswordPage";
-import ResetPasswordPage from "./pages/ResetPasswordPage";
-import RoadmapPage from "./pages/RoadmapPage";
-import AssessmentsPage from "./pages/AssessmentsPage";
+
+// Every page behind sign-in (and the password pages) loads on first visit, so
+// the landing and login pages don't download charts, grading or admin code.
+// After a deploy, an open tab may ask for a page file that no longer exists.
+// Reload once to pick up the new build instead of showing a blank screen.
+function loadPage<T>(load: () => Promise<T>): () => Promise<T> {
+  return () => load().then(
+    m => { try { sessionStorage.removeItem("learnit_chunk_reload"); } catch {} return m; },
+    err => {
+      let reloaded = false;
+      try { reloaded = sessionStorage.getItem("learnit_chunk_reload") === "1"; } catch {}
+      if (!reloaded) {
+        try { sessionStorage.setItem("learnit_chunk_reload", "1"); } catch {}
+        window.location.reload();
+        return new Promise<T>(() => {});
+      }
+      throw err;
+    },
+  );
+}
+
+const lazyPage = (load: () => Promise<{ default: React.ComponentType<any> }>) => React.lazy(loadPage(load));
+const named = <T, K extends keyof T>(load: () => Promise<T>, key: K) =>
+  React.lazy(loadPage(() => load().then(m => ({ default: m[key] as unknown as React.ComponentType<any> }))));
+
+const DashboardPage         = named(() => import("./pages/DashboardPage"), "DashboardPage");
+const CoursesPage           = named(() => import("./pages/CoursesPage"), "CoursesPage");
+const CourseDetailPage      = named(() => import("./pages/CourseDetailPage"), "CourseDetailPage");
+const InstructorDashboard   = named(() => import("./pages/InstructorDashboard"), "InstructorDashboard");
+const AdminDashboard        = named(() => import("./pages/AdminDashboard"), "AdminDashboard");
+const AdminUserManagement   = named(() => import("./pages/AdminUserManagement"), "AdminUserManagement");
+const AdminSettings         = named(() => import("./pages/AdminSettings"), "AdminSettings");
+const AssignmentsPage       = lazyPage(() => import("./pages/AssignmentsPage"));
+const AnalyticsPage         = lazyPage(() => import("./pages/AnalyticsPage"));
+const NotesPage             = lazyPage(() => import("./pages/NotesPage"));
+const AdminCourseManagement = lazyPage(() => import("./pages/AdminCourseManagement"));
+const ChangePasswordPage    = lazyPage(() => import("./pages/ChangePasswordPage"));
+const ForgotPasswordPage    = lazyPage(() => import("./pages/ForgotPasswordPage"));
+const ResetPasswordPage     = lazyPage(() => import("./pages/ResetPasswordPage"));
+const RoadmapPage           = lazyPage(() => import("./pages/RoadmapPage"));
+const AssessmentsPage       = lazyPage(() => import("./pages/AssessmentsPage"));
+
+/** Shown while a page's code downloads (usually well under a second). */
+const PageLoading: React.FC = () => (
+  <div className="flex items-center justify-center py-24" role="status" aria-live="polite">
+    <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-indigo-600" />
+    <span className="sr-only">Loading…</span>
+  </div>
+);
 
 
 const AppContent: React.FC = () => {
@@ -100,13 +133,13 @@ const AppContent: React.FC = () => {
 
   if (location.pathname === "/landing") return <LandingPage />;
   if (location.pathname === "/login") return <LoginPage onLogin={handleLogin} />;
-  if (location.pathname === "/forgot-password") return <ForgotPasswordPage />;
-  if (location.pathname === "/reset-password") return <ResetPasswordPage />;
+  if (location.pathname === "/forgot-password") return <React.Suspense fallback={<PageLoading />}><ForgotPasswordPage /></React.Suspense>;
+  if (location.pathname === "/reset-password") return <React.Suspense fallback={<PageLoading />}><ResetPasswordPage /></React.Suspense>;
   if (!user) return <Navigate to="/landing" replace />;
   if (!authChecked) return null;
 
   if (forceChange) {
-    return <ChangePasswordPage onSuccess={handlePasswordChanged} />;
+    return <React.Suspense fallback={<PageLoading />}><ChangePasswordPage onSuccess={handlePasswordChanged} /></React.Suspense>;
   }
 
   return (
@@ -121,6 +154,7 @@ const AppContent: React.FC = () => {
       <div className="flex-1 flex flex-col min-w-0">
         <Header user={user} onLogout={handleLogout} onOpenMenu={() => setMenuOpen(true)} menuOpen={menuOpen} />
         <main className="app-main flex-1 min-w-0 px-4 py-5 sm:p-6 lg:p-8">
+          <React.Suspense fallback={<PageLoading />}>
           <Routes>
             <Route path="/" element={
               user?.role === "instructor" ? <InstructorDashboard user={user} /> :
@@ -147,6 +181,7 @@ const AppContent: React.FC = () => {
             )}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </React.Suspense>
         </main>
       </div>
     </div>

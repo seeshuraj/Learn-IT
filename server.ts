@@ -62,6 +62,7 @@ import { notify } from "./src/server/lib/notify.js";
 import { sendServerError } from './src/server/lib/httpErrors.js';
 import { log, errorFields } from './src/server/lib/log.js';
 import { TtlCache } from './src/server/lib/ttlCache.js';
+import { parseLimit, parseOffset, encodeCursor, decodeCursor, likePattern } from './src/server/lib/paging.js';
 import {
   aiContextMiddleware, currentAiContext, setAiCourse, AiUsageRecorder, AiBudgetGuard,
   AiBudgetExceeded, defaultBudgetFromEnv,
@@ -942,28 +943,71 @@ async function startServer() {
   });
 
   // ── Instructor ────────────────────────────────────────────────────────────
+  // Grading queue. With ?limit it returns one page: { items, total, nextCursor },
+  // newest first, filtered by status (pending | graded | all) and course.
+  // Without ?limit (older clients) it returns a plain array of at most 500
+  // pending submissions.
   app.get("/api/instructor/submissions", requireAuth, requireRole("instructor","admin"), async (req, res) => {
     try {
       const caller = callerOf(req);
-      const subs = await query(
-        `SELECT s.*,
-                u.name  AS student_name,
-                a.title AS assignment_title,
-                a.description AS assignment_description,
-                a.rubric,
-                a.max_points,
-                a.module_id,
-                m.name  AS module_name
-         FROM submissions s
-         JOIN users u       ON s.student_id    = u.id
+      const paged = req.query.limit !== undefined;
+      const limit = paged ? parseLimit(req.query.limit, 25, 100) : 500;
+      const status = paged ? String(req.query.status ?? "pending") : "pending";
+      const courseId = Number(req.query.courseId);
+      const cursor = decodeCursor(req.query.cursor);
+
+      const where: string[] = ["c.institution_id = $1", "($2::text = 'admin' OR c.instructor_id = $3)"];
+      const params: unknown[] = [caller.institutionId, caller.role, caller.legacyUserId];
+      if (status === "pending") where.push("s.grade IS NULL");
+      else if (status === "graded") where.push("s.grade IS NOT NULL");
+      if (Number.isInteger(courseId) && courseId > 0) { params.push(courseId); where.push(`c.id = $${params.length}`); }
+      const filter = where.join(" AND ");
+      const from = `FROM submissions s
          JOIN assignments a ON s.assignment_id = a.id
          JOIN modules m     ON a.module_id     = m.id
-         JOIN courses c     ON m.course_id     = c.id
-         WHERE c.institution_id = $3 AND ($1::text = 'admin' OR c.instructor_id = $2)
-         ORDER BY s.submitted_at DESC`,
-        [caller.role, caller.legacyUserId, caller.institutionId]
-      );
-      res.json(subs);
+         JOIN courses c     ON m.course_id     = c.id`;
+
+      const pageParams = [...params];
+      let pageFilter = filter;
+      if (cursor) {
+        pageParams.push(cursor.at, cursor.id);
+        pageFilter += ` AND (s.submitted_at, s.id) < ($${pageParams.length - 1}::timestamptz, $${pageParams.length})`;
+      }
+      pageParams.push(limit + 1);
+
+      const [rows, total] = await Promise.all([
+        query(
+          `SELECT s.*,
+                  u.name  AS student_name,
+                  a.title AS assignment_title,
+                  a.description AS assignment_description,
+                  a.rubric,
+                  a.max_points,
+                  a.module_id,
+                  m.name  AS module_name,
+                  c.id    AS course_id,
+                  c.name  AS course_name,
+                  (SELECT COUNT(*)::int FROM submission_files f WHERE f.submission_id = s.id) AS file_count
+           ${from}
+           JOIN users u ON s.student_id = u.id
+           WHERE ${pageFilter}
+           ORDER BY s.submitted_at DESC, s.id DESC
+           LIMIT $${pageParams.length}`,
+          pageParams
+        ),
+        paged ? queryOne(`SELECT COUNT(*)::int AS n ${from} WHERE ${filter}`, params) : Promise.resolve(null),
+      ]);
+
+      const items = rows.slice(0, limit);
+      if (!paged) return res.json(items);
+      const last = items.at(-1);
+      res.json({
+        items,
+        total: Number(total?.n ?? 0),
+        nextCursor: rows.length > limit && last
+          ? encodeCursor({ at: new Date(last.submitted_at).toISOString(), id: last.id })
+          : null,
+      });
     } catch (e: any) { sendServerError(res, e); }
   });
 
@@ -1160,20 +1204,50 @@ async function startServer() {
   const PG_UNIQUE = "23505";
   const PG_FK     = "23503";
 
+  // College users. With ?limit it returns one page: { items, total }, filtered
+  // by ?q (name or email) and ?role, alphabetical. Without ?limit (older
+  // clients) it returns the plain array.
   app.get("/api/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
     try {
-      const users = await query(
-        `SELECT u.id, u.name, u.email,
+      const paged = req.query.limit !== undefined;
+      const params: unknown[] = [callerOf(req).institutionId];
+      const where = ["im.institution_id = $1", "im.status <> 'removed'"];
+      const pattern = likePattern(req.query.q);
+      if (pattern) { params.push(pattern); where.push(`(u.name ILIKE $${params.length} OR u.email ILIKE $${params.length})`); }
+      const role = String(req.query.role ?? "");
+      if (role === "admin") where.push("im.role IN ('institution_admin','institution_owner')");
+      else if (role === "student" || role === "instructor") { params.push(role); where.push(`im.role = $${params.length}`); }
+      const from = `FROM institution_members im JOIN users u ON u.id = im.user_id WHERE ${where.join(" AND ")}`;
+      const select = `SELECT u.id, u.name, u.email,
                 CASE WHEN im.role IN ('institution_admin','institution_owner') THEN 'admin' ELSE im.role END AS role,
                 CASE WHEN im.status = 'active' THEN u.active ELSE 0 END AS active,
                 u.year, u.major, u.gpa, im.role AS member_role, im.status AS member_status
-         FROM institution_members im
-         JOIN users u ON u.id = im.user_id
-         WHERE im.institution_id = $1 AND im.status <> 'removed'
-         ORDER BY u.name`,
+         ${from}
+         ORDER BY u.name, u.id`;
+      if (!paged) return res.json(await query(select, params));
+
+      const limit = parseLimit(req.query.limit, 50, 200);
+      const offset = parseOffset(req.query.offset);
+      const [items, total] = await Promise.all([
+        query(`${select} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, offset]),
+        queryOne(`SELECT COUNT(*)::int AS n ${from}`, params),
+      ]);
+      res.json({ items, total: Number(total?.n ?? 0) });
+    } catch (e: any) { sendServerError(res, e); }
+  });
+
+  // Head counts by role for the admin dashboard (no user rows).
+  app.get("/api/admin/users/role-counts", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const rows = await query(
+        `SELECT CASE WHEN role IN ('institution_admin','institution_owner') THEN 'admin' ELSE role END AS role,
+                COUNT(*)::int AS count
+         FROM institution_members
+         WHERE institution_id = $1 AND status <> 'removed'
+         GROUP BY 1`,
         [callerOf(req).institutionId]
       );
-      res.json(users);
+      res.json(Object.fromEntries(rows.map((r: any) => [r.role, Number(r.count)])));
     } catch (e: any) { sendServerError(res, e); }
   });
 
