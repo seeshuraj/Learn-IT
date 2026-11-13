@@ -69,6 +69,7 @@ import {
   AiBudgetExceeded, defaultBudgetFromEnv,
 } from './src/server/lib/aiUsage.js';
 import { createAiUsageAdminRouter } from './src/server/routes/aiUsageAdmin.js';
+import { createDataExportRouter } from './src/server/routes/dataExport.js';
 import {
   loadLearnerProfile, formatLearnerProfile, weakTopicsOf, wantsStudyGuidance,
 } from './src/server/lib/learnerProfile.js';
@@ -700,6 +701,7 @@ async function startServer() {
   app.use("/api/student",            createGradingInsightsRouter(pool));
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
+  app.use("/api/admin/export",       createDataExportRouter(pool));
   app.use("/api/submissions",        createGradingRouter(pool, nimChat));
   app.use("/api/admin/ai-usage",     createAiUsageAdminRouter(pool, aiBudget));
   app.use("/api/admin/users/import", createUserImportRouter(pool, supabaseAdmin));

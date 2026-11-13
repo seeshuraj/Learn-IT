@@ -99,6 +99,23 @@ async function request<T = any>(
   }
 }
 
+/** Downloads a college data export (CSV) and saves it in the browser. */
+export async function downloadExport(dataset: 'users' | 'enrollments' | 'grades' | 'exam-results'): Promise<void> {
+  const res = await fetch(`${BASE}/api/admin/export/${dataset}`, { headers: await authHeaders(), credentials: 'include' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error((data as any)?.error ?? `Export failed (HTTP ${res.status})`);
+  }
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? `learnit-${dataset}.csv`;
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 // ── Streaming chat (server-sent events) ─────────────────────────────────────
 
 export interface ChatStreamHandlers {
@@ -395,6 +412,9 @@ export const api = {
   createAdminUser:  (data: any) =>
     request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
   getAiUsage: (days = 30) => request(`/api/admin/ai-usage?days=${days}`),
+  /** One page of the college audit log: { total, limit, offset, rows }. */
+  getAuditLogs: (opts: { action?: string; since?: string; until?: string; limit?: number; offset?: number } = {}) =>
+    request(`/api/admin/audit-logs?${toQuery({ limit: opts.limit ?? 50, offset: opts.offset, action: opts.action, since: opts.since, until: opts.until })}`),
   previewUserImport: (file: File) => uploadFile('/api/admin/users/import/preview', 'file', file),
   commitUserImport: (mode: 'invite' | 'temp_password', rows: unknown[]) =>
     request('/api/admin/users/import/commit', { method: 'POST', body: JSON.stringify({ mode, rows }) }),
