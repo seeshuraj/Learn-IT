@@ -49,7 +49,8 @@ import {
 import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
 import { startCronJobs } from "./src/server/jobs/cron.js";
-import { createRoadmapRouter } from "./src/server/routes/roadmaps.js";
+import { createRoadmapRouter, generateRoadmap, RoadmapNotEnrolled } from "./src/server/routes/roadmaps.js";
+import { JobQueue, PermanentJobError } from "./src/server/lib/jobs.js";
 import { createNotificationsRouter } from "./src/server/routes/notifications.js";
 import { createAuthRouter } from "./src/server/routes/auth.js";
 import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights.js";
@@ -63,7 +64,7 @@ import { sendServerError } from './src/server/lib/httpErrors.js';
 import { log, errorFields } from './src/server/lib/log.js';
 import { TtlCache } from './src/server/lib/ttlCache.js';
 import {
-  aiContextMiddleware, currentAiContext, setAiCourse, AiUsageRecorder, AiBudgetGuard,
+  aiContextMiddleware, currentAiContext, setAiCourse, AiUsageRecorder, AiBudgetGuard, runWithAiContext,
   AiBudgetExceeded, defaultBudgetFromEnv,
 } from './src/server/lib/aiUsage.js';
 import { createAiUsageAdminRouter } from './src/server/routes/aiUsageAdmin.js';
@@ -437,8 +438,10 @@ const chatClient = createNimChat({
 });
 
 // Flush metered usage before Render stops the instance on a deploy.
+// Let running jobs finish (they're retried if cut off) and flush metered usage
+// before Render stops the instance on a deploy.
 process.once("SIGTERM", () => {
-  void aiUsageRecorder.flush().finally(() => process.exit(0));
+  void Promise.allSettled([jobQueue.stop(15_000), aiUsageRecorder.flush()]).finally(() => process.exit(0));
 });
 const nimChat = chatClient.chat;
 
@@ -450,6 +453,173 @@ const embedder = createNimEmbedder({
 });
 
 const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
+
+// ── Background jobs ──────────────────────────────────────────────────────────
+// PROCESS_ROLE: "all" (default) serves the API and runs jobs in one process;
+// "api" only serves requests; "worker" only runs jobs (a Render background
+// worker). Split them when uploads or AI drafts start slowing the API down.
+const PROCESS_ROLE = (["api", "worker", "all"] as const).find(r => r === process.env.PROCESS_ROLE) ?? "all";
+const jobQueue = new JobQueue(pool, {
+  workerId: `${process.env.RENDER_INSTANCE_ID ?? "local"}-${process.pid}`,
+  concurrency: Math.min(8, Math.max(1, Number(process.env.JOB_CONCURRENCY) || 2)),
+});
+
+/**
+ * Extracts a note's text, chunks and embeds it. Idempotent: the note's chunks
+ * are replaced in one transaction, so a retry or a re-run never duplicates.
+ */
+async function processNote(noteId: number): Promise<{ chunks: number; embedded: boolean } | { skipped: string }> {
+  const note = await queryOne(
+    "SELECT id, storage_path, file_type, original_name FROM notes WHERE id = $1",
+    [noteId]
+  );
+  if (!note) return { skipped: "note deleted" };
+  if (!note.storage_path) throw new PermanentJobError("note has no stored file");
+  const file = await downloadFromStorage(NOTES_BUCKET, note.storage_path);
+  if (!file) throw new Error("note file not available in storage yet");
+
+  const text = await extractTextFromBuffer(file.buffer, note.file_type, note.original_name ?? "");
+  const chunks = text.trim().length > 50 ? chunkText(text) : [];
+  // If embedding fails the chunks are still stored, without vectors;
+  // reembedStaleChunks() fills them in on its next run.
+  let vectors: number[][] | null = null;
+  if (chunks.length) {
+    try { vectors = await embedder.embed(chunks, "passage"); }
+    catch (embErr) { log.error("note embedding failed; chunks queued for re-embedding", { noteId, ...errorFields(embErr) }); }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM note_chunks WHERE note_id = $1", [noteId]);
+    await insertNoteChunks(client, noteId, chunks, vectors, embedder.model);
+    await client.query(
+      `UPDATE notes SET content_text = $2, processing_status = 'ready', processing_error = NULL WHERE id = $1`,
+      [noteId, text.slice(0, 5000)]
+    );
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  return { chunks: chunks.length, embedded: vectors !== null };
+}
+
+jobQueue
+  .register("note.process", job => processNote(Number(job.payload.noteId)))
+  .onFailure("note.process", async job => {
+    await run(
+      `UPDATE notes SET processing_status = 'failed', processing_error = $2 WHERE id = $1`,
+      [Number(job.payload.noteId), "This file could not be read. Try a text-based PDF, DOCX or TXT."]
+    );
+  })
+  .register("submission.ai_grade", job => {
+    const p = job.payload as { caller: Caller; submission_id: number; rubric: string; module_id?: number | null };
+    return runWithAiContext(
+      { institutionId: p.caller.institutionId, userId: p.caller.legacyUserId, feature: "grading" },
+      () => draftAiGrade(p.caller, p).catch(e => {
+        // Wrong module or lost access won't fix itself; an unreadable AI reply might.
+        if (e instanceof HttpProblem && e.status < 500) throw new PermanentJobError(e.message);
+        if (e instanceof AccessDenied) throw new PermanentJobError("You no longer have access to this submission.");
+        throw e;
+      }),
+    );
+  })
+  .register("roadmap.generate", async job => {
+    const p = job.payload as { studentId: number; courseId: number };
+    const institutionId = String(job.institution_id);
+    try {
+      return await runWithAiContext(
+        { institutionId, userId: p.studentId, feature: "roadmap", courseId: p.courseId },
+        () => generateRoadmap(p.studentId, p.courseId, institutionId),
+      );
+    } catch (e) {
+      if (e instanceof RoadmapNotEnrolled) throw new PermanentJobError(e.message);
+      throw e;
+    }
+  });
+
+// Parse a model reply into a grading suggestion. Returns null when the reply
+// is not usable; callers must surface that as an error, never invent a grade.
+function parseGradingSuggestion(reply: string, maxPoints: number) {
+  try {
+    const json = JSON.parse(reply.match(/\{[\s\S]*\}/)?.[0] ?? reply);
+    const raw = Number(json.score ?? json.grade);
+    if (!Number.isFinite(raw)) return null;
+    const list = (v: unknown) => (Array.isArray(v) ? v.filter(x => typeof x === "string").slice(0, 10) : []);
+    return {
+      score:        Math.max(0, Math.min(Math.round(raw), maxPoints)),
+      feedback:     typeof json.feedback === "string" ? json.feedback.slice(0, 5000) : "",
+      strengths:    list(json.strengths),
+      improvements: list(json.improvements),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Error with an HTTP status, raised by work that runs in a request or a job. */
+class HttpProblem extends Error {
+  constructor(readonly status: number, message: string, readonly field?: string) { super(message); }
+}
+
+/**
+ * AI grading draft for one submission (files + course material + rubric).
+ * Saved to submissions.ai_score / ai_feedback for the instructor to review;
+ * never a final grade. Re-checks the caller's access, so a queued draft for
+ * someone who has since lost access fails.
+ */
+async function draftAiGrade(caller: Caller, body: { submission_id: number; rubric: string; module_id?: number | null }) {
+  const { submission_id, rubric, module_id } = body;
+  const sub = await loadSubmissionForCaller(pool, caller, Number(submission_id), "grade");
+  if (module_id && (await courseOfModule(pool, Number(module_id))) !== sub.course_id) {
+    throw new HttpProblem(400, "module_id must belong to the submission's course", "module_id");
+  }
+  setAiCourse(Number(sub.course_id));
+  const maxPoints = Number(sub.max_points) > 0 ? Number(sub.max_points) : 100;
+
+  const files = await query(
+    "SELECT storage_path, file_type, original_name FROM submission_files WHERE submission_id=$1",
+    [submission_id]
+  );
+  let content = sub.content ?? "";
+  for (const file of files) {
+    const result = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
+    if (result) {
+      const extracted = await extractTextFromBuffer(result.buffer, file.file_type, file.original_name);
+      if (extracted) content += "\n" + extracted;
+    }
+  }
+
+  let context = "";
+  if (module_id) {
+    try {
+      const chunks = await retrieveChunks(module_id, content.slice(0, 500));
+      if (chunks.length) context = "\n\nRelevant course material:\n" + chunks.join("\n---\n");
+    } catch (retrievalErr) {
+      // Grade from the rubric alone; this is a draft an instructor reviews.
+      log.warn("course material retrieval failed; drafting without it", errorFields(retrievalErr));
+    }
+  }
+
+  const prompt = `You are a university grading assistant.${context}\n\nRubric:\n${rubric}\n\nStudent submission:\n${content.slice(0, 4000)}\n\nThe submission is scored out of ${maxPoints}. Respond with JSON only: {"score": integer 0-${maxPoints}, "feedback": string, "strengths": string[], "improvements": string[]}`;
+  const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024, timeoutMs: 40_000 });
+  const result = parseGradingSuggestion(response, maxPoints);
+  if (!result) throw new HttpProblem(502, "The AI response could not be read. Please try again or grade manually.");
+
+  await run(
+    "UPDATE submissions SET ai_score=$1, ai_feedback=$2, updated_at=NOW() WHERE id=$3",
+    [result.score, JSON.stringify(result), submission_id]
+  );
+  writeAudit({
+    action: "submission.ai_draft", resourceType: "submission", resourceId: String(submission_id),
+    actorUserId: caller.legacyUserId, actorRole: caller.role,
+    metadata: { ai_score: result.score, max_points: maxPoints },
+  });
+  return result;
+}
 
 async function startServer() {
   const app = express();
@@ -523,7 +693,7 @@ async function startServer() {
   app.use(express.json());
 
   // ── Routers ───────────────────────────────────────────────────────────────
-  app.use("/api/roadmaps",           createRoadmapRouter(pool, nimChat));
+  app.use("/api/roadmaps",           createRoadmapRouter(pool, nimChat, jobQueue));
   app.use("/api/notifications",      createNotificationsRouter(pool));
   app.use("/api/auth",               createAuthRouter(pool));
   app.use("/api/student",            createGradingInsightsRouter(pool));
@@ -713,33 +883,21 @@ async function startServer() {
 
       await uploadToStorage(NOTES_BUCKET, objectPath, file.buffer, file.mimetype);
 
-      const extractedText = await extractTextFromBuffer(file.buffer, file.mimetype, file.originalname);
-
       // student_id keeps its legacy meaning (set only for a student's own
-      // notes); uploaded_by records the uploader for every note.
+      // notes); uploaded_by records the uploader for every note. Text
+      // extraction and embedding run as a background job ("note.process"), so
+      // the upload returns as soon as the file is stored.
       const note = await queryOne(
         `INSERT INTO notes (module_id, uploaded_by, student_id, filename, original_name,
-                            file_type, file_size, storage_path, content_text)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+                            file_type, file_size, storage_path, content_text, processing_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'','pending') RETURNING *`,
         [moduleId, userId, authReq.auth.role === "student" ? userId : null,
          path.basename(objectPath), file.originalname, file.mimetype,
-         file.size, objectPath, extractedText.slice(0, 5000)]
+         file.size, objectPath]
       );
-
-      if (extractedText.trim().length > 50) {
-        const chunks = chunkText(extractedText);
-        if (chunks.length > 0) {
-          // If embedding fails the chunks are still stored, without vectors;
-          // reembedStaleChunks() fills them in on its next run.
-          let embeddings: number[][] | null = null;
-          try {
-            embeddings = await embedder.embed(chunks, "passage");
-          } catch (embErr) {
-            log.error("note embedding failed; chunks queued for re-embedding", { noteId: note.id, ...errorFields(embErr) });
-          }
-          await insertNoteChunks(pool, note.id, chunks, embeddings, embedder.model);
-        }
-      }
+      await jobQueue.enqueue("note.process", { noteId: note.id }, {
+        institutionId: authReq.auth.institutionId, createdBy: userId, dedupeKey: `note:${note.id}`,
+      });
 
       res.status(201).json(note);
     } catch (e: any) { sendServerError(res, e); }
@@ -1404,25 +1562,6 @@ async function startServer() {
   });
 
   // ── AI ────────────────────────────────────────────────────────────────────
-  // Parse a model reply into a grading suggestion. Returns null when the reply
-  // is not usable; callers must surface that as an error, never invent a grade.
-  function parseGradingSuggestion(reply: string, maxPoints: number) {
-    try {
-      const json = JSON.parse(reply.match(/\{[\s\S]*\}/)?.[0] ?? reply);
-      const raw = Number(json.score ?? json.grade);
-      if (!Number.isFinite(raw)) return null;
-      const list = (v: unknown) => (Array.isArray(v) ? v.filter(x => typeof x === "string").slice(0, 10) : []);
-      return {
-        score:        Math.max(0, Math.min(Math.round(raw), maxPoints)),
-        feedback:     typeof json.feedback === "string" ? json.feedback.slice(0, 5000) : "",
-        strengths:    list(json.strengths),
-        improvements: list(json.improvements),
-      };
-    } catch {
-      return null;
-    }
-  }
-
   // Text-only suggestion; nothing is persisted.
   app.post("/api/ai/grade", requireAuth, requireRole("instructor","admin"), aiLimiter, async (req, res) => {
     try {
@@ -1438,57 +1577,40 @@ async function startServer() {
   // RAG-assisted suggestion from the submitted files. Saved as an AI draft on
   // the submission (ai_score / ai_feedback); the final grade is only ever set
   // by an instructor through POST /api/submissions/:id/grade.
+  // ?async=1 queues the draft and answers 202 { jobId } (poll GET /api/jobs/:id);
+  // without it the draft is produced within the request.
   app.post("/api/ai/grade-pdf", requireAuth, requireRole("instructor","admin"), aiGradeLimiter, validateBody(gradePdfSchema), async (req, res) => {
     try {
+      const caller = callerOf(req);
       const { submission_id, rubric, module_id } = req.body;
-      const sub = await loadSubmissionForCaller(pool, callerOf(req), Number(submission_id), "grade");
-      if (module_id && (await courseOfModule(pool, Number(module_id))) !== sub.course_id) {
-        return res.status(400).json({ error: "module_id must belong to the submission's course", field: "module_id" });
+      if (req.query.async === "1") {
+        // Fail fast on access before queuing; the job checks again when it runs.
+        await loadSubmissionForCaller(pool, caller, Number(submission_id), "grade");
+        const job = await jobQueue.enqueue("submission.ai_grade",
+          { caller, submission_id: Number(submission_id), rubric, module_id: module_id ? Number(module_id) : null },
+          { institutionId: caller.institutionId, createdBy: caller.legacyUserId, dedupeKey: `ai_grade:${submission_id}`, maxAttempts: 2 });
+        return res.status(202).json({ jobId: job.id, status: "queued" });
       }
-      const maxPoints = Number(sub.max_points) > 0 ? Number(sub.max_points) : 100;
+      res.json(await draftAiGrade(caller, req.body));
+    } catch (e: any) {
+      if (e instanceof HttpProblem) return res.status(e.status).json({ error: e.message, ...(e.field ? { field: e.field } : {}) });
+      sendServerError(res, e);
+    }
+  });
 
-      const files = await query(
-        "SELECT * FROM submission_files WHERE submission_id=$1",
-        [submission_id]
-      );
-
-      let content = sub.content ?? "";
-      for (const file of files) {
-        const result = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
-        if (result) {
-          const extracted = await extractTextFromBuffer(result.buffer, file.file_type, file.original_name);
-          if (extracted) content += "\n" + extracted;
-        }
+  // Status of a queued job. Visible to the user who queued it and to the
+  // college's admins; result is the job's output (a grading draft, roadmap…).
+  app.get("/api/jobs/:id", requireAuth, validateParams(routeParamId), async (req, res) => {
+    try {
+      const caller = callerOf(req);
+      const id = Number(req.params.id);
+      const owner = await jobQueue.ownerOf(id, caller.institutionId);
+      if (owner === null || (owner !== caller.legacyUserId && caller.role !== "admin")) {
+        return res.status(404).json({ error: "Job not found" });
       }
-
-      let context = "";
-      if (module_id) {
-        try {
-          const chunks = await retrieveChunks(module_id, content.slice(0, 500));
-          if (chunks.length) context = "\n\nRelevant course material:\n" + chunks.join("\n---\n");
-        } catch (retrievalErr) {
-          // Grade from the rubric alone; this is a draft an instructor reviews.
-          log.warn("course material retrieval failed; drafting without it", errorFields(retrievalErr));
-        }
-      }
-
-      const prompt = `You are a university grading assistant.${context}\n\nRubric:\n${rubric}\n\nStudent submission:\n${content.slice(0, 4000)}\n\nThe submission is scored out of ${maxPoints}. Respond with JSON only: {"score": integer 0-${maxPoints}, "feedback": string, "strengths": string[], "improvements": string[]}`;
-      const response = await nimChat([{ role: "user", content: prompt }], { temperature: 0.3, maxTokens: 1024, timeoutMs: 40_000 });
-      const result = parseGradingSuggestion(response, maxPoints);
-      if (!result) return res.status(502).json({ error: "The AI response could not be read. Please try again or grade manually." });
-
-      await run(
-        "UPDATE submissions SET ai_score=$1, ai_feedback=$2, updated_at=NOW() WHERE id=$3",
-        [result.score, JSON.stringify(result), submission_id]
-      );
-      writeAudit({
-        action: "submission.ai_draft", resourceType: "submission", resourceId: String(submission_id),
-        actorUserId: (req as AuthenticatedRequest).auth.legacyUserId,
-        actorRole: (req as AuthenticatedRequest).auth.role,
-        metadata: { ai_score: result.score, max_points: maxPoints }, req,
-      });
-
-      res.json(result);
+      const job = await jobQueue.get(id, caller.institutionId);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      res.set("Cache-Control", "no-store").json(job);
     } catch (e: any) { sendServerError(res, e); }
   });
 
@@ -1729,8 +1851,13 @@ async function startServer() {
     sendServerError(res, err);
   });
 
-  const PORT = Number(process.env.PORT ?? 10000);
-  app.listen(PORT, () => log.info("server listening", { port: PORT }));
+  if (PROCESS_ROLE !== "api") jobQueue.start();
+  if (PROCESS_ROLE === "worker") {
+    log.info("worker mode: not serving HTTP", { role: PROCESS_ROLE });
+  } else {
+    const PORT = Number(process.env.PORT ?? 10000);
+    app.listen(PORT, () => log.info("server listening", { port: PORT, role: PROCESS_ROLE }));
+  }
 
   // Run startup tasks after the server is already listening
   checkStorageConnectivity().catch(e => log.error("storage connectivity check crashed", errorFields(e)));
@@ -1738,7 +1865,11 @@ async function startServer() {
   chatClient.discover()
     .then(() => chatClient.probe())
     .catch(e => log.error("chat model discovery/probe crashed", errorFields(e)));
-  startCronJobs(pool, [() => reembedStaleChunks(pool, embedder)])
+  startCronJobs(pool, [
+    () => reembedStaleChunks(pool, embedder),
+    // Finished jobs are kept two weeks for support questions, then removed.
+    () => pool.query("DELETE FROM jobs WHERE status IN ('done','failed') AND finished_at < now() - interval '14 days'"),
+  ])
     .catch(e => log.error("cron startup failed", errorFields(e)));
 }
 

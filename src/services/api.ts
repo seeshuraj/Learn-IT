@@ -185,6 +185,24 @@ async function uploadFile(path: string, fieldName: string, file: File): Promise<
   return data;
 }
 
+/**
+ * Waits for a background job and returns its result. A response without a
+ * jobId is already the result (a backend that ran the work in the request).
+ * Polls every 1.5 s at first, backing off to 4 s; gives up after 3 minutes.
+ */
+export async function resultOfJob(started: unknown): Promise<any> {
+  const jobId = (started as { jobId?: number } | null)?.jobId;
+  if (!jobId) return started;
+  const deadline = Date.now() + 3 * 60_000;
+  for (let delay = 1_500; Date.now() < deadline; delay = Math.min(4_000, delay * 1.3)) {
+    await new Promise(r => setTimeout(r, delay));
+    const job = await request(`/api/jobs/${jobId}`) as { status: string; result?: unknown; error?: string | null };
+    if (job.status === 'done') return job.result;
+    if (job.status === 'failed') throw new Error(job.error || 'This took too long or failed. Please try again.');
+  }
+  throw new Error('Still working on it. Check back in a minute.');
+}
+
 // ── Public API surface ──────────────────────────────────────────────────────────
 
 export const api = {
@@ -398,8 +416,10 @@ export const api = {
   // AI
   aiGrade: (submissionContent: string, rubric: string) =>
     request('/api/ai/grade', { method: 'POST', body: JSON.stringify({ submissionContent, rubric }) }),
+  /** Queued AI grading draft; resolves with the draft once the job finishes. */
   aiGradePdf: (submissionId: number, rubric: string, moduleId?: number) =>
-    request('/api/ai/grade-pdf', { method: 'POST', body: JSON.stringify({ submission_id: submissionId, rubric, module_id: moduleId }) }),
+    request('/api/ai/grade-pdf?async=1', { method: 'POST', body: JSON.stringify({ submission_id: submissionId, rubric, module_id: moduleId }) })
+      .then(resultOfJob),
   aiChat: (question: string, moduleTitle: string, moduleId: number | null, history: any[]) =>
     request('/api/ai/chat', { method: 'POST', body: JSON.stringify({ question, moduleTitle, moduleId, history }) }),
   aiAnalyticsSummary: (analytics: StudentAnalyticsData) =>
@@ -410,7 +430,7 @@ export const api = {
   // Roadmaps
   getRoadmap:          (courseId: number) => request(`/api/roadmaps/${courseId}`),
   generateRoadmap:     (courseId: number) =>
-    request(`/api/roadmaps/${courseId}/generate`, { method: 'POST' }),
+    request(`/api/roadmaps/${courseId}/generate?async=1`, { method: 'POST' }).then(resultOfJob),
   updateMilestoneStatus: (milestoneId: number, status: 'pending' | 'in_progress' | 'completed') =>
     request(`/api/roadmaps/milestones/${milestoneId}`, {
       method: 'PATCH',

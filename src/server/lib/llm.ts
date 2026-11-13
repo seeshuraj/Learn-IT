@@ -245,7 +245,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
   interface ModelAnswer { content: string; promptTokens?: number; completionTokens?: number }
 
   /** URL, headers and body for one model; `stream` adds the provider's streaming flag. */
-  function buildRequest(model: string, messages: ChatMessage[], o: ChatOptions, stream: boolean) {
+  function buildRequest(model: string, messages: ChatMessage[], o: ChatOptions, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
     if (isClaudeModel(model)) {
       return {
         url: `${ANTHROPIC_BASE}/messages`,
@@ -451,10 +451,8 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       try {
         res = await doFetch(url, { method: 'POST', headers, body, signal: controller.signal });
       } catch (err) { return fail(err); }
-      if (!res.ok || !res.body) {
-        if (res.ok) throw new Error(`${provider} returned no stream body`);
-        await rejectResponse(model, res, true);
-      }
+      if (!res.ok) await rejectResponse(model, res, true);
+      if (!res.body) throw new Error(`${provider} returned no stream body`);
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
