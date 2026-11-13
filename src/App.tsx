@@ -46,6 +46,7 @@ const InstructorDashboard   = named(() => import("./pages/InstructorDashboard"),
 const AdminDashboard        = named(() => import("./pages/AdminDashboard"), "AdminDashboard");
 const AdminUserManagement   = named(() => import("./pages/AdminUserManagement"), "AdminUserManagement");
 const AdminSettings         = named(() => import("./pages/AdminSettings"), "AdminSettings");
+const AdminDataPage         = named(() => import("./pages/AdminDataPage"), "AdminDataPage");
 const AssignmentsPage       = lazyPage(() => import("./pages/AssignmentsPage"));
 const AnalyticsPage         = lazyPage(() => import("./pages/AnalyticsPage"));
 const NotesPage             = lazyPage(() => import("./pages/NotesPage"));
@@ -177,6 +178,7 @@ const AppContent: React.FC = () => {
                 <Route path="/admin/users" element={<AdminUserManagement />} />
                 <Route path="/admin/courses" element={<AdminCourseManagement />} />
                 <Route path="/admin/settings" element={<AdminSettings />} />
+                <Route path="/admin/data" element={<AdminDataPage />} />
               </>
             )}
             <Route path="*" element={<Navigate to="/" replace />} />
