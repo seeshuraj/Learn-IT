@@ -13,7 +13,13 @@
  *    yet never respond: nemotron-3-super timed out at 60 s on 2026-11-05);
  *  - at call time a 404/410 marks the model dead; a timeout or 5xx benches it
  *    for COOLDOWN_MS; either way the call moves to the next candidate within
- *    an overall deadline. 429 (rate limit) never switches models.
+ *    an overall deadline. A 429 never switches to another NVIDIA model (the
+ *    limit is per key, shared by every model); with the Claude fallback
+ *    configured, NVIDIA is paused for the Retry-After window and Claude
+ *    answers instead, otherwise the 429 is returned.
+ *  - NVIDIA_BASE_URL points chat (and embeddings) at a partner or self-hosted
+ *    NIM endpoint with the same OpenAI-compatible API; default is the hosted
+ *    build.nvidia.com API (about 40 requests/minute per key).
  *
  * Reasoning models spend max_tokens on hidden reasoning, so each known model
  * gets the request fields that keep its answer short and visible.
@@ -27,7 +33,17 @@
 
 import { log } from './log.js';
 
-const NIM_BASE = 'https://integrate.api.nvidia.com/v1';
+/** OpenAI-compatible NVIDIA endpoint: hosted API by default, or a partner / self-hosted NIM. */
+export function nimBaseFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = (env.NVIDIA_BASE_URL ?? '').trim().replace(/\/+$/, '');
+  if (!raw) return 'https://integrate.api.nvidia.com/v1';
+  const url = new URL(raw);   // throws on a malformed value at startup, not per request
+  if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) {
+    throw new Error('NVIDIA_BASE_URL must use https');
+  }
+  return raw;
+}
+const NIM_BASE = nimBaseFromEnv();
 const ANTHROPIC_BASE = 'https://api.anthropic.com/v1';
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -173,7 +189,18 @@ export class ChatAborted extends Error {
 }
 
 class ModelUnavailable extends Error {
-  constructor(message: string, readonly permanent: boolean) { super(message); }
+  constructor(message: string, readonly permanent: boolean, readonly rateLimitedForMs = 0) { super(message); }
+}
+
+/** Retry-After in ms (seconds or HTTP date), bounded to 5 s – 5 min; 30 s when absent. */
+export function retryAfterMs(header: string | null, nowMs = Date.now()): number {
+  let ms = 30_000;
+  if (header) {
+    const secs = Number(header);
+    if (Number.isFinite(secs)) ms = secs * 1000;
+    else if (!Number.isNaN(Date.parse(header))) ms = Date.parse(header) - nowMs;
+  }
+  return Math.min(300_000, Math.max(5_000, ms));
 }
 
 const TRANSIENT_STATUSES = new Set([500, 502, 503, 504]);
@@ -286,6 +313,10 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       log.error('claude fallback rejected the API key; disabled until restart', { status: res.status });
       throw new ModelUnavailable(`${model} key rejected (${res.status})`, true);
     }
+    if (!claude && res.status === 429 && opts.claude) {
+      // The NVIDIA limit is per key across all models: pause NVIDIA, let Claude answer.
+      throw new ModelUnavailable(`${model} rate limited (429)`, false, retryAfterMs(res.headers.get('retry-after'), now()));
+    }
     if (TRANSIENT_STATUSES.has(res.status) || (claude && res.status === 529)) {
       throw new ModelUnavailable(`${model} failed (${res.status})`, false);
     }
@@ -345,16 +376,26 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
   }
 
   /** Live candidates: preferred first, then preference order; benched models last. */
+  /** Until when NVIDIA is paused after a 429 (only used with the Claude fallback). */
+  let nimPausedUntil = 0;
+
   function attemptOrder(): string[] {
     const live = [preferred, ...candidates]
       .filter((m, i, a): m is string => !!m && a.indexOf(m) === i && !dead.has(m));
     const t = now();
+    // While NVIDIA is rate limited, don't spend the deadline on it at all.
+    if (t < nimPausedUntil && claudeId && !dead.has(claudeId)) return [claudeId];
     const ready   = live.filter(m => (benchedUntil.get(m) ?? 0) <= t);
     const benched = live.filter(m => (benchedUntil.get(m) ?? 0) > t);
     return [...ready, ...benched];   // benched ones only if nothing else answers
   }
 
   function markUnavailable(model: string, err: ModelUnavailable) {
+    if (err.rateLimitedForMs > 0) {
+      nimPausedUntil = Math.max(nimPausedUntil, now() + err.rateLimitedForMs);
+      log.warn('nvidia rate limited; using paid fallback', { model, pauseMs: err.rateLimitedForMs });
+      return;
+    }
     if (err.permanent) dead.add(model);
     else benchedUntil.set(model, now() + COOLDOWN_MS);
     if (preferred === model) preferred = null;
@@ -402,6 +443,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
       model: tried.at(-1) ?? 'none', promptTokens: 0, completionTokens: 0, estimated: false, status: 'error', stream: false,
     }, start);
     for (const [i, model] of order.entries()) {
+      if (!isClaudeModel(model) && now() < nimPausedUntil) continue;   // 429 earlier in this call
       const remaining = deadline - now();
       if (remaining < 2_000) break;
       const budget = attemptBudget(model, attemptMs, remaining, order.slice(i + 1).some(isClaudeModel));
@@ -533,6 +575,7 @@ export function createNimChat(opts: ChatClientOptions): ChatClient {
     }, start);
     const order = attemptOrder();
     for (const [i, model] of order.entries()) {
+      if (!isClaudeModel(model) && now() < nimPausedUntil) continue;   // 429 earlier in this call
       const remaining = deadline - now();
       if (remaining < 2_000) break;
       const budget = attemptBudget(model, attemptMs, remaining, order.slice(i + 1).some(isClaudeModel));

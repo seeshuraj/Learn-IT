@@ -9,7 +9,7 @@ import fs from "fs";
 import dns from "dns";
 import { createClient } from "@supabase/supabase-js";
 import {
-  requireAuth,
+  requireAuth, clearMembershipCache,
   requireRole,
   requireSelfOrAdmin,
   setPool,
@@ -17,6 +17,7 @@ import {
 } from "./src/server/middleware/auth.js";
 import { attachRequestId } from "./src/server/middleware/requestId.js";
 import { requestLogger } from "./src/server/middleware/logger.js";
+import { instrumentPool, measureDbRoundTrip } from "./src/server/lib/requestStats.js";
 import { validateBody, validateParams } from "./src/server/middleware/validate.js";
 import {
   loginLimiter,
@@ -243,6 +244,7 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
+instrumentPool(pool);   // dbQueries / dbMs in each request log line
 setPool(pool);
 setAuditPool(pool);
 
@@ -1471,6 +1473,9 @@ async function startServer() {
           await client.query("UPDATE user_identity_map SET role = $1 WHERE legacy_user_id = $2", [role, targetId]);
         }
         await client.query("COMMIT");
+        // Role or status changed: stop serving the cached membership on this
+        // instance now (other instances pick it up within AUTH_CACHE_TTL_MS).
+        clearMembershipCache();
         res.json(user.rows[0]);
       } catch (err: any) {
         await client.query("ROLLBACK");
@@ -1926,6 +1931,11 @@ async function startServer() {
     if (res.headersSent) return;
     sendServerError(res, err);
   });
+
+  // Network cost per query between this instance and the database (logged once).
+  measureDbRoundTrip(pool)
+    .then(ms => log.info("database round trip", { medianMs: ms }))
+    .catch(e => log.warn("database round trip check failed", errorFields(e)));
 
   if (PROCESS_ROLE !== "api") jobQueue.start();
   if (PROCESS_ROLE === "worker") {

@@ -8,7 +8,8 @@ Sizing assumption: one university is about 2,000 accounts (1,500+ students plus 
 
 - **Campus networks.** Hundreds of students share one public IP. Every rate limit on a signed-in route is counted per user (institution + user id). The only per-IP limit is a pre-sign-in backstop of 20,000 requests per 15 minutes.
 - **Several backend instances.** The API is stateless. Background jobs take a Postgres advisory lock, so only one instance runs each job.
-- **Auth round trips.** A verified session is cached for 60 seconds (`AUTH_CACHE_TTL_MS`). Role and college are still read from the database on every request.
+- **Auth round trips.** Access tokens are verified in the API against the project's ES256 signing keys, with no call to Supabase Auth per request (`AUTH_VERIFY_MODE=local`). Each user's role and college are cached for 60 seconds (`AUTH_CACHE_TTL_MS`), so most requests make one fewer database round trip.
+- **Request timing.** Every request log line includes `dbQueries` and `dbMs`, and startup logs `database round trip` (median ms for `SELECT 1`). Use these to decide whether the API and database should share a region (see below).
 - **Tunable limits.** Every limit can be changed per deployment without a deploy (see the environment variables below).
 
 ## Plans by stage
@@ -38,9 +39,9 @@ These limits are per IP. The defaults would block a campus where everyone signs 
 
 | Setting | Default | Per 2,000-account college |
 |---|---|---|
-| Sign-ups and sign-ins (per 5 min, per IP) | 30 | 500 |
+| Sign-ups and sign-ins (per 5 min, per IP). Also covers `/auth/v1/user`, which the API only calls with `AUTH_VERIFY_MODE=remote` | 30 | 500 |
 | Token refreshes (per 5 min, per IP) | 150 | 1,000 |
-| Token verifications (per 5 min, per IP) | 30 | 300 |
+| Verification requests: OTP and magic links (per 5 min, per IP) | 30 | 300 |
 | Emails sent (per hour) | 30 with custom SMTP | 500, or whatever your email plan allows |
 
 Add the values per college: two colleges need 1,000 sign-ins per 5 minutes, and so on. Raising the sign-in limit also gives a password-guessing attacker more attempts per IP, so turn on CAPTCHA and leaked-password protection, and watch the auth logs during the first weeks.
@@ -49,8 +50,10 @@ Add the values per college: two colleges need 1,000 sign-ins per 5 minutes, and 
 
 | Variable | Default | When to change |
 |---|---|---|
-| `DB_POOL_MAX` | 10 | Keep `instances × DB_POOL_MAX` below the database connection limit, or point `DATABASE_URL` at the Supabase pooler. Minimum 3, because background jobs hold one connection while they run. |
-| `AUTH_CACHE_TTL_MS` | 60000 | Set to `0` only if a revoked session must stop working instantly. |
+| `DB_POOL_MAX` | 10 | Keep `instances × DB_POOL_MAX` below the database connection limit. With more than one instance or a background worker, set `DATABASE_URL` to Supabase's **transaction pooler** (port 6543); the code keeps no session state, so it is compatible. Minimum 3, because background jobs hold one connection while they run. |
+| `AUTH_CACHE_TTL_MS` | 60000 | How long a verified token and a user's role/college are reused. A role change or deactivation applies within this time on other instances. |
+| `AUTH_VERIFY_MODE` | `local` | `local` checks token signatures in the API. A signed-out token keeps working until it expires, so set the JWT expiry to 15–30 minutes (Supabase → Authentication → Sessions). `remote` asks Supabase Auth for every new token and also sees revoked sessions, but counts against the per-IP sign-in limit. |
+| `NVIDIA_BASE_URL` | hosted API | OpenAI-compatible endpoint for chat and embeddings: a partner or self-hosted NIM for production volume. The hosted build.nvidia.com API allows about 40 requests per minute per key, shared by every model and by embeddings. |
 | `RATE_USER_MAX` | 600 per 15 min | Per-person cap on general API calls. |
 | `RATE_LOGIN_MAX` | 30 per 15 min | Per-person cap on sign-in profile loads. |
 | `RATE_AI_MAX` | 40 per hour | Per-person AI chat and summaries; the main lever for AI cost. |
@@ -87,6 +90,10 @@ Note text extraction and embedding, AI grading drafts and study roadmaps run as 
 
 Finished jobs are deleted after 14 days by the scheduled cleanup.
 
+### Regions
+
+Render has no India region; the API runs in Singapore and the database in Mumbai, so every query crosses that link. Check `database round trip` in the startup log and `dbMs` in request logs. If pages are slow because of it, move the API to India (for example Google Cloud Run `asia-south1` or DigitalOcean Bangalore) rather than moving the database out of India; colleges may require student data to stay in the country.
+
 ### Render → Settings
 
 - Health check path: `/api/health`. Render then replaces a hung instance automatically.
@@ -98,5 +105,5 @@ Finished jobs are deleted after 14 days by the scheduled cleanup.
 2. Backend on a paid Render plan in Singapore, with the health check path set.
 3. Supabase Auth rate limits raised for the college's size.
 4. Email plan sized for the invite batch; SPF and DKIM verified.
-5. NVIDIA API quota checked against `colleges × students × RATE_AI_MAX` at peak.
+5. AI capacity checked against peak demand: roughly (students online × questions per minute × 2 calls). The hosted NVIDIA API (~40/min per key) is for development only; production needs a partner or self-hosted NIM (`NVIDIA_BASE_URL`) or Claude carrying the load. When NVIDIA returns 429, requests go to Claude (if `CLAUDE_API` is set) for the Retry-After window.
 6. Load test of 25% of the college's accounts signing in and browsing within 10 minutes.

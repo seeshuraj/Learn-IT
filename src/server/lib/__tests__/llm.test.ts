@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createNimChat, chatModelsFromEnv, modelRequestExtras, stripReasoning, DEFAULT_CHAT_MODELS, isDegradedModelResponse,
-  claudeFallbackFromEnv, toClaudeMessages, DEFAULT_CLAUDE_MODEL,
+  claudeFallbackFromEnv, toClaudeMessages, DEFAULT_CLAUDE_MODEL, retryAfterMs, nimBaseFromEnv,
 } from '../llm.js';
 
 /** fetch stub routing by path; `chat` decides per requested model. */
@@ -420,4 +420,52 @@ test('Claude streaming: text deltas in order, real token counts, mid-stream erro
   mode = 'broken';
   const c2 = createNimChat({ apiKey: 'k', models: ['m1'], isProduction: true, fetchImpl: impl, claude });
   await assert.rejects(c2.chatStream(msgs, {}, { onDelta: () => {} }), /stream error \(api_error\)/);
+});
+
+// ── NVIDIA rate limits and endpoint ──────────────────────────────────────────
+
+test('retryAfterMs: seconds or HTTP date, bounded, 30 s default', () => {
+  const now = Date.UTC(2026, 10, 14, 0, 0, 0);
+  assert.equal(retryAfterMs(null, now), 30_000);
+  assert.equal(retryAfterMs('12', now), 12_000);
+  assert.equal(retryAfterMs('1', now), 5_000, 'at least 5 s');
+  assert.equal(retryAfterMs('9999', now), 300_000, 'at most 5 min');
+  assert.equal(retryAfterMs(new Date(now + 20_000).toUTCString(), now), 20_000);
+});
+
+test('NVIDIA_BASE_URL: default hosted API, trailing slash trimmed, https required', () => {
+  assert.equal(nimBaseFromEnv({}), 'https://integrate.api.nvidia.com/v1');
+  assert.equal(nimBaseFromEnv({ NVIDIA_BASE_URL: 'https://nim.partner.example/v1/' }), 'https://nim.partner.example/v1');
+  assert.equal(nimBaseFromEnv({ NVIDIA_BASE_URL: 'http://localhost:8000/v1' }), 'http://localhost:8000/v1');
+  assert.throws(() => nimBaseFromEnv({ NVIDIA_BASE_URL: 'http://nim.example/v1' }), /https/);
+  assert.throws(() => nimBaseFromEnv({ NVIDIA_BASE_URL: 'not a url' }));
+});
+
+test('NVIDIA 429 pauses every NVIDIA model and Claude answers until Retry-After passes', async () => {
+  let t = 1_000_000;
+  const p = twoProviders(() => [429, 'Too Many Requests'], () => [200, claudeAnswer('from claude')]);
+  // Retry-After header: wrap the stub to add it.
+  const impl = (async (url: string, init: any) => {
+    const res = await (p.impl as any)(url, init);
+    if (res.status !== 429) return res;
+    return new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '20' } });
+  }) as unknown as typeof fetch;
+  const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2', 'm3'], isProduction: true, fetchImpl: impl, claude, now: () => t });
+  assert.equal(await c.chat(msgs), 'from claude');
+  assert.deepEqual(p.calls.map(x => x.model), ['m1', 'claude-haiku-5-5'], 'other NVIDIA models skipped: the limit is per key');
+
+  t += 10_000;   // still inside Retry-After
+  await c.chat(msgs);
+  assert.deepEqual(p.calls.slice(2).map(x => x.model), ['claude-haiku-5-5'], 'NVIDIA not even tried while paused');
+
+  t += 15_000;   // past Retry-After: NVIDIA first again
+  await c.chat(msgs);
+  assert.equal(p.calls[3].model, 'm1');
+});
+
+test('without the Claude fallback a 429 is returned, not retried on other NVIDIA models', async () => {
+  const p = twoProviders(() => [429, 'Too Many Requests'], () => [500, 'unused']);
+  const c = createNimChat({ apiKey: 'k', models: ['m1', 'm2'], isProduction: true, fetchImpl: p.impl });
+  await assert.rejects(c.chat(msgs), /429/);
+  assert.deepEqual(p.calls.map(x => x.model), ['m1']);
 });
