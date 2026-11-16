@@ -108,6 +108,23 @@ export interface StudentMarks {
   gpa: { semesters: { semester: number; sgpa: number | null; credits: number; courses: number }[]; cgpa: number | null };
 }
 
+export interface UpcomingExam {
+  id: number;
+  exam_date: string;
+  session: 'FN' | 'AN' | null;
+  start_time: string | null;
+  end_time: string | null;
+  course_code: string | null;
+  course_name: string | null;
+  course_id: number | null;
+  title: string;
+  assessment_type: AssessmentType;
+  venue: string | null;
+  department_code: string | null;
+  year_of_study: number | null;
+  unit_exam_id: number | null;
+}
+
 export interface TimetableSummary {
   id: number;
   title: string;
@@ -498,6 +515,12 @@ export const api = {
   /** Put a course in a department and semester (null clears). */
   setCoursePlacement: (courseId: number, p: { department_id?: number | null; semester?: number | null }) =>
     request(`/api/admin/courses/${courseId}/placement`, { method: 'PATCH', body: JSON.stringify(p) }),
+
+  // ── Upcoming exams and the calendar link (everyone) ────────────────────────
+  getUpcomingExams: (days = 120) => request<UpcomingExam[]>(`/api/exams/upcoming?days=${days}`),
+  getCalendarLink: () => request<{ exists: boolean; created_at: string | null; last_used_at: string | null }>('/api/calendar/feed-link'),
+  createCalendarLink: () => request<{ url: string; webcal: string }>('/api/calendar/feed-link', { method: 'POST' }),
+  deleteCalendarLink: () => request('/api/calendar/feed-link', { method: 'DELETE' }),
 
   // ── Exam timetables (admin) ────────────────────────────────────────────────
   getTimetables: () => request<TimetableSummary[]>('/api/admin/timetables'),

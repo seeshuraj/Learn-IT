@@ -11,6 +11,7 @@ import {
   getAnalyticsSummary, hasGradedWork, toAISummaryData, StudentAnalyticsResponse,
 } from '../services/aiService';
 import { MarkdownMessage } from '../components/MarkdownMessage';
+import { UpcomingExamsCard } from '../components/exams/UpcomingExams';
 
 interface DashboardPageProps {
   user: User;
@@ -204,6 +205,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
       </div>
 
       {/* Unit Exam Performance Card — only renders when exam data exists */}
+      <UpcomingExamsCard />
       <ExamPerformanceCard userId={user.id} />
 
       {/* AI insight */}

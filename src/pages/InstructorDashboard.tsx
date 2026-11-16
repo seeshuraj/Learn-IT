@@ -6,6 +6,7 @@ import { getClassOverviewSummary, ClassOverviewData } from "../services/aiServic
 import { toast, Toaster } from "sonner";
 import { api, asPage } from "../services/api";
 import InstructorRoadmapView from "./InstructorRoadmapView";
+import { UpcomingExamsCard } from "../components/exams/UpcomingExams";
 
 interface InstructorDashboardProps {
   user: User;
@@ -824,6 +825,8 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
           </div>
         ))}
       </div>
+
+      <UpcomingExamsCard limit={3} />
 
       {activeTab === "submissions" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

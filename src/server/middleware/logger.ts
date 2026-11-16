@@ -22,7 +22,8 @@ export function requestLogger(
     const entry: Record<string, unknown> = {
       requestId:  (req as RequestWithId).id ?? 'unknown',
       method:     req.method,
-      path:       req.path,
+      // Calendar feed links carry a secret token in the path; never log it.
+      path:       req.path.replace(/^\/api\/calendar\/[^/]+\.ics$/, '/api/calendar/[link].ics'),
       statusCode: res.statusCode,
       durationMs: Date.now() - start,
     };

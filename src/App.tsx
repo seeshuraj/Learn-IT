@@ -58,6 +58,7 @@ const RoadmapPage           = lazyPage(() => import("./pages/RoadmapPage"));
 const AssessmentsPage       = lazyPage(() => import("./pages/AssessmentsPage"));
 const MyMarksPage           = lazyPage(() => import("./pages/MyMarksPage"));
 const AdminTimetablesPage   = lazyPage(() => import("./pages/AdminTimetablesPage"));
+const ExamsPage             = lazyPage(() => import("./pages/ExamsPage"));
 
 /** Shown while a page's code downloads (usually well under a second). */
 const PageLoading: React.FC = () => (
@@ -167,6 +168,9 @@ const AppContent: React.FC = () => {
             <Route path="/courses" element={<CoursesPage user={user!} />} />
             <Route path="/courses/:id" element={<CourseDetailPage user={user!} />} />
             <Route path="/notes" element={<NotesPage user={user!} />} />
+            {(user?.role === "student" || user?.role === "instructor") && (
+              <Route path="/exams" element={<ExamsPage user={user!} />} />
+            )}
             {user?.role === "instructor" && (
               <Route path="/assessments" element={<AssessmentsPage user={user!} />} />
             )}
