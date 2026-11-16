@@ -34,7 +34,8 @@ export default function MyMarksPage({ user }: Props) {
   const load = () => {
     setLoading(true); setErr('');
     api.getStudentExamInsights(user.id)
-      .then(setData)
+      // Older API versions sent no gpa; treat it as none.
+      .then(d => setData({ ...d, gpa: d.gpa ?? { semesters: [], cgpa: null }, weak_topics: d.weak_topics ?? [] }))
       .catch((e: any) => setErr(e.message))
       .finally(() => setLoading(false));
   };
