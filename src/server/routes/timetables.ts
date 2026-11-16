@@ -38,6 +38,7 @@ import {
   type Entry, type CourseRef, type RawEntry,
 } from '../lib/timetable.js';
 import type { JobQueue } from '../lib/jobs.js';
+import { markPlansStale } from './roadmaps.js';
 
 
 const require = createRequire(import.meta.url);
@@ -403,6 +404,9 @@ export function createTimetablesRouter(pool: pkg.Pool, supabaseAdmin: Pick<Supab
          ) s`,
         [t.id, auth.institutionId, republish ? `${what} was updated. Check your exam dates.` : `${what} is out. See your upcoming exams.`, meta]
       );
+      // Study plans for these courses now have new exam dates to plan to.
+      const courseIds = [...new Set(entries.filter((e: any) => e.course_id).map((e: any) => Number(e.course_id)))] as number[];
+      await markPlansStale(client, courseIds, republish ? `${t.title} dates changed` : `${t.title} dates are out`);
       await client.query('COMMIT');
       audit(req, republish ? 'exam_timetable.republish' : 'exam_timetable.publish', t.id, {
         exams: entries.length, assessments_created: created, assessments_moved: moved,

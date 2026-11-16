@@ -33,6 +33,7 @@ import { log, errorFields } from '../lib/log.js';
 import {
   computeResult, readSheetRow, usesGrades, allowedGrades, isAssessmentType, gpaSummary, type ResultRow,
 } from '../lib/examGrading.js';
+import { markPlansStale } from './roadmaps.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -163,6 +164,7 @@ export function createUnitExamsRouter(
   const EXAM_COLUMNS = `ue.id, ue.course_id, ue.title, ue.exam_date, ue.max_marks, ue.grading_schema,
     ue.assessment_type, ue.internal_max, ue.external_max, ue.credits, ue.semester, ue.grade_scale,
     ue.published_at, ue.published_by, ue.paper_storage_path, ue.analysis_status,
+    ue.portion_module_ids, ue.portion_notes,
     ue.created_by, ue.created_at, ue.updated_at`;
 
   const MAX_ROWS_PER_SAVE = 2000;
@@ -217,6 +219,10 @@ export function createUnitExamsRouter(
       external_max:    has('external_max') ? toNum(body.external_max) : toNum(current?.external_max),
       credits:         has('credits') ? toNum(body.credits) : toNum(current?.credits),
       semester:        has('semester') ? toNum(body.semester) : toNum(current?.semester),
+      portion_module_ids: has('portion_module_ids')
+        ? (Array.isArray(body.portion_module_ids) ? [...new Set(body.portion_module_ids.map(Number))] : null)
+        : current?.portion_module_ids ?? null,
+      portion_notes:   has('portion_notes') ? (String(body.portion_notes ?? '').trim().slice(0, 1000) || null) : current?.portion_notes ?? null,
     };
 
     if (!v.title) errors.title = 'Title is required';
@@ -237,7 +243,17 @@ export function createUnitExamsRouter(
     if (v.semester !== null && !(Number.isInteger(v.semester) && v.semester >= 1 && v.semester <= 12)) {
       errors.semester = 'Semester must be 1–12';
     }
+    if (v.portion_module_ids && (v.portion_module_ids.length > 100 || v.portion_module_ids.some((n: number) => !Number.isInteger(n) || n <= 0))) {
+      errors.portion_module_ids = 'Choose modules from the course';
+    }
     return Object.keys(errors).length ? { errors } : { values: v };
+  }
+
+  /** Portion modules must belong to the assessment's course. */
+  async function portionOk(courseId: number, ids: number[] | null): Promise<boolean> {
+    if (!ids || !ids.length) return true;
+    const r = await pool.query('SELECT count(*)::int AS n FROM modules WHERE course_id = $1 AND id = ANY($2::int[])', [courseId, ids]);
+    return r.rows[0].n === ids.length;
   }
 
   /** Upsert computed rows and delete cleared ones, in the caller's transaction. */
@@ -360,15 +376,19 @@ export function createUnitExamsRouter(
         const { values: v, errors } = readExamFields(req.body);
         if (errors) return res.status(422).json({ error: Object.values(errors)[0], fields: errors });
 
+        if (!(await portionOk(Number(course_id), v.portion_module_ids))) {
+          return res.status(422).json({ error: 'Choose modules from this course', fields: { portion_module_ids: 'Choose modules from this course' } });
+        }
         const schema = req.body.grading_schema ?? { strong: 75, moderate: 50 };
         const r = await pool.query(
           `INSERT INTO unit_exams
              (course_id, title, exam_date, max_marks, grading_schema, created_by,
-              assessment_type, internal_max, external_max, credits, semester)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+              assessment_type, internal_max, external_max, credits, semester, portion_module_ids, portion_notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
           [course_id, v.title, v.exam_date, v.max_marks, JSON.stringify(schema), auth.legacyUserId,
-           v.assessment_type, v.internal_max, v.external_max, v.credits, v.semester]
+           v.assessment_type, v.internal_max, v.external_max, v.credits, v.semester, v.portion_module_ids, v.portion_notes]
         );
+        if (v.exam_date) await markPlansStale(pool, [Number(course_id)], `${v.title} was scheduled`);
         const examId = r.rows[0].id;
         writeAudit({
           action: 'unit_exam.create', ...auditBase(auth, examId),
@@ -392,6 +412,9 @@ export function createUnitExamsRouter(
         const { values: v, errors } = readExamFields(req.body, exam);
         if (errors) return res.status(422).json({ error: Object.values(errors)[0], fields: errors });
 
+        if (!(await portionOk(exam.course_id, v.portion_module_ids))) {
+          return res.status(422).json({ error: 'Choose modules from this course', fields: { portion_module_ids: 'Choose modules from this course' } });
+        }
         const next = { ...exam, ...v };
         const out = await inTransaction(async client => {
           // Re-grade what is already entered against the new maximums.
@@ -426,10 +449,11 @@ export function createUnitExamsRouter(
 
           await client.query(
             `UPDATE unit_exams SET title=$2, exam_date=$3, assessment_type=$4, max_marks=$5,
-               internal_max=$6, external_max=$7, credits=$8, semester=$9, updated_at=NOW()
+               internal_max=$6, external_max=$7, credits=$8, semester=$9,
+               portion_module_ids=$10, portion_notes=$11, updated_at=NOW()
              WHERE id=$1`,
             [exam.id, v.title, v.exam_date, v.assessment_type, v.max_marks,
-             v.internal_max, v.external_max, v.credits, v.semester]
+             v.internal_max, v.external_max, v.credits, v.semester, v.portion_module_ids, v.portion_notes]
           );
           await writeResults(client, exam.id, rows, [], auth.legacyUserId);
           return { regraded: rows.length };
@@ -439,6 +463,12 @@ export function createUnitExamsRouter(
             error: `${out.problems!.length} entered result(s) don't fit the new settings. Fix or clear them first.`,
             results: out.problems!.slice(0, 50),
           });
+        }
+        const dateMoved = String(v.exam_date ?? '') !== String(dateOnly(exam.exam_date) ?? '');
+        const portionChanged = JSON.stringify(v.portion_module_ids ?? null) !== JSON.stringify(exam.portion_module_ids ?? null)
+          || (v.portion_notes ?? null) !== (exam.portion_notes ?? null);
+        if (dateMoved || portionChanged) {
+          await markPlansStale(pool, [exam.course_id], dateMoved ? `${v.title} date changed` : `${v.title} portion changed`);
         }
         writeAudit({
           action: 'unit_exam.update', ...auditBase(auth, exam.id),
@@ -653,6 +683,7 @@ export function createUnitExamsRouter(
           );
           return r.rowCount ?? 0;
         });
+        await markPlansStale(pool, [exam.course_id], `${exam.title} marks are out`);
         writeAudit({
           action: 'unit_exam.publish', ...auditBase(auth, exam.id),
           metadata: { results: count.n, notified }, req,
