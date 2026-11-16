@@ -58,6 +58,7 @@ import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights
 import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
 import { createDepartmentsRouter } from "./src/server/routes/departments.js";
 import { createTimetablesRouter, storeEntries, TIMETABLE_BUCKET } from "./src/server/routes/timetables.js";
+import { createExamCalendarRouter } from "./src/server/routes/examCalendar.js";
 import { resolveDepartmentId } from "./src/server/lib/departments.js";
 import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { createGradingRouter } from "./src/server/routes/grading.js";
@@ -763,6 +764,7 @@ async function startServer() {
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/admin",              createDepartmentsRouter(pool));
   app.use("/api/admin",              createTimetablesRouter(pool, supabaseAdmin, jobQueue));
+  app.use("/api",                    createExamCalendarRouter(pool, { publicApiUrl: process.env.PUBLIC_API_URL }));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
   app.use("/api/admin/export",       createDataExportRouter(pool));
   app.use("/api/submissions",        createGradingRouter(pool, nimChat));

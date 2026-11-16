@@ -15,6 +15,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Courses",          icon: BookOpen,        path: "/courses",      roles: ['student', 'instructor'] },
   { label: "Assignments",      icon: FileText,        path: "/assignments",  roles: ['student'] },
   { label: "Notes & AI Chat",  icon: StickyNote,      path: "/notes",       roles: ['student', 'instructor'] },
+  { label: "Exams",            icon: CalendarDays,    path: "/exams",       roles: ['student', 'instructor'] },
   { label: "Assessments",      icon: ClipboardList,   path: "/assessments", roles: ['instructor'] },
   { label: "My Marks",         icon: GraduationCap,   path: "/marks",       roles: ['student'] },
   { label: "My Roadmap",       icon: Map,             path: "/roadmap",     roles: ['student'] },
