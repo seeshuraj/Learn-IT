@@ -52,16 +52,19 @@ export const DATASETS: Record<string, Dataset> = {
                r.submitted_at, r.graded_at, r.grade, r.max_points, r.pct, r.feedback],
   },
   'exam-results': {
-    header: ['Course code', 'Exam', 'Exam date', 'Student ID', 'Student', 'Email', 'Marks', 'Out of', 'Percent', 'Band'],
-    sql: `SELECT r.id AS k, c.code, x.title, x.exam_date, u.id AS student_id, u.name, u.email,
-                 r.marks_obtained, x.max_marks, r.percentage, r.performance_band
+    header: ['Course code', 'Assessment', 'Type', 'Exam date', 'Published', 'Student ID', 'Student', 'Email',
+             'Absent', 'Internal', 'External', 'Marks', 'Out of', 'Percent', 'Grade', 'Grade point', 'Credits', 'Band'],
+    sql: `SELECT r.id AS k, c.code, x.title, x.assessment_type, x.exam_date, x.published_at,
+                 u.id AS student_id, u.name, u.email, r.is_absent, r.internal_marks, r.external_marks,
+                 r.marks_obtained, x.max_marks, r.percentage, r.grade, r.grade_point, x.credits, r.performance_band
           FROM unit_exam_results r
           JOIN unit_exams x ON x.id = r.unit_exam_id
           JOIN courses c    ON c.id = x.course_id
           JOIN users u      ON u.id = r.student_id
           WHERE r.institution_id = $1 AND r.id > $2
           ORDER BY r.id LIMIT $3`,
-    row: r => [r.code, r.title, r.exam_date, r.student_id, r.name, r.email,
-               r.marks_obtained, r.max_marks, r.percentage, r.performance_band],
+    row: r => [r.code, r.title, r.assessment_type, r.exam_date, r.published_at ? 'yes' : 'no', r.student_id, r.name, r.email,
+               r.is_absent ? 'yes' : 'no', r.internal_marks, r.external_marks, r.marks_obtained, r.max_marks,
+               r.percentage, r.grade, r.grade_point, r.credits, r.performance_band],
   },
 };

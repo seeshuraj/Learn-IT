@@ -172,6 +172,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
          FROM unit_exam_results r
          JOIN unit_exams ue ON r.unit_exam_id = ue.id
          WHERE r.student_id = $1 AND ue.course_id = $2
+           AND ue.published_at IS NOT NULL AND NOT r.is_absent
          ORDER BY ue.exam_date ASC NULLS LAST, r.created_at ASC`,
         [studentId, courseId]
       ),

@@ -179,6 +179,7 @@ export async function loadLearnerProfile(
        FROM unit_exam_results r
        JOIN unit_exams ue ON ue.id = r.unit_exam_id
        WHERE r.student_id = $1 AND ue.course_id = $2 AND r.institution_id = $3
+         AND ue.published_at IS NOT NULL AND NOT r.is_absent
        ORDER BY ue.exam_date DESC NULLS LAST, r.created_at DESC
        LIMIT 3`,
       params,
