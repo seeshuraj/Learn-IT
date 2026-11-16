@@ -27,8 +27,32 @@ import {
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
 import type { JobQueue } from '../lib/jobs.js';
+import { studentVisibleNotes } from '../lib/access.js';
+import {
+  schedulePlan, rankWeakTopics, revisionDays, milestoneCount, todayIst, daysBetween, addDays, type TargetExam,
+} from '../lib/studyPlan.js';
 
 type PgPool = InstanceType<typeof Pool>;
+
+const MILESTONE_COLUMNS = `id, step_order, title, description, resource_hint, status, completed_at,
+  to_char(due_date, 'YYYY-MM-DD') AS due_date, kind, topic, module_id, est_minutes`;
+
+/**
+ * Mark plans out of date when what they were built on changes (exam dates,
+ * portions, published marks). Students are asked to refresh; nothing is
+ * regenerated in bulk, so AI cost stays per request.
+ */
+export async function markPlansStale(
+  db: { query: (sql: string, params?: unknown[]) => Promise<unknown> },
+  courseIds: number[], reason: string, studentIds?: number[],
+): Promise<void> {
+  if (!courseIds.length) return;
+  await db.query(
+    `UPDATE student_roadmaps SET stale_reason = $2, stale_since = now()
+     WHERE course_id = ANY($1::int[]) AND ($3::int[] IS NULL OR student_id = ANY($3::int[]))`,
+    [courseIds, reason.slice(0, 200), studentIds ?? null]
+  );
+}
 
 type NimChatFn = (
   messages: { role: string; content: string }[],
@@ -59,6 +83,32 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
     return rows[0] ?? null;
   }
 
+  // ── GET /api/roadmaps/today — today's and overdue steps across courses ──
+  // Declared before /:courseId so "today" isn't read as a course id.
+  router.get('/today', requireAuth, async (req, res) => {
+    try {
+      const { legacyUserId: studentId, institutionId } = (req as AuthenticatedRequest).auth;
+      const today = todayIst();
+      const rows = await q(
+        `SELECT m.id, m.title, m.kind, m.topic, m.est_minutes, m.status,
+                to_char(m.due_date, 'YYYY-MM-DD') AS due_date,
+                r.course_id, c.code AS course_code, r.stale_reason,
+                to_char(r.target_exam_date, 'YYYY-MM-DD') AS exam_date
+         FROM roadmap_milestones m
+         JOIN student_roadmaps r ON r.id = m.roadmap_id
+         JOIN courses c ON c.id = r.course_id
+         WHERE r.student_id = $1 AND r.institution_id = $2
+           AND m.due_date IS NOT NULL AND m.due_date <= $3::date + 1
+           AND m.status <> 'completed'
+           AND (r.target_exam_date IS NULL OR r.target_exam_date >= $3::date)
+         ORDER BY m.due_date, c.code, m.step_order
+         LIMIT 30`,
+        [studentId, institutionId, today]
+      );
+      res.json({ today, items: rows });
+    } catch (e: any) { sendServerError(res, e); }
+  });
+
   // ── GET /api/roadmaps/:courseId ─────────────────────────────────────────
   router.get('/:courseId', requireAuth, async (req, res) => {
     try {
@@ -66,8 +116,13 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
       const courseId  = req.params.courseId;
 
       const roadmap = await q1(
-        `SELECT * FROM student_roadmaps
-         WHERE student_id = $1 AND course_id = $2 AND institution_id = $3`,
+        `SELECT r.id, r.student_id, r.course_id, r.title, r.summary, r.generated_at, r.updated_at,
+                r.stale_reason, r.stale_since, to_char(r.target_exam_date, 'YYYY-MM-DD') AS target_exam_date,
+                CASE WHEN ue.id IS NULL THEN NULL ELSE json_build_object(
+                  'unit_exam_id', ue.id, 'title', ue.title,
+                  'exam_date', to_char(ue.exam_date, 'YYYY-MM-DD')) END AS target_exam
+         FROM student_roadmaps r LEFT JOIN unit_exams ue ON ue.id = r.target_unit_exam_id
+         WHERE r.student_id = $1 AND r.course_id = $2 AND r.institution_id = $3`,
         [studentId, courseId, (req as AuthenticatedRequest).auth.institutionId]
       );
 
@@ -76,8 +131,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
       }
 
       const milestones = await q(
-        `SELECT id, step_order, title, description, resource_hint, status, completed_at
-         FROM roadmap_milestones
+        `SELECT ${MILESTONE_COLUMNS} FROM roadmap_milestones
          WHERE roadmap_id = $1
          ORDER BY step_order ASC`,
         [roadmap.id]
@@ -109,6 +163,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
     }
 
     // ─ Gather all context in parallel ────────────────────────────────────
+    const today = todayIst();
     const [
       course,
       modules,
@@ -116,10 +171,13 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
       pendingAssignments,
       feedbackRows,
       examRows,
+      nextExam,
+      otherExams,
+      noteTitles,
     ] = await Promise.all([
       q1(`SELECT name, code FROM courses WHERE id = $1`, [courseId]),
 
-      q(`SELECT name FROM modules WHERE course_id = $1 ORDER BY display_order ASC`, [courseId]),
+      q(`SELECT id, name FROM modules WHERE course_id = $1 ORDER BY display_order ASC, id`, [courseId]),
 
       q(
         `SELECT a.title, s.grade, s.submitted_at, a.due_date, a.max_points,
@@ -176,6 +234,44 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
          ORDER BY ue.exam_date ASC NULLS LAST, r.created_at ASC`,
         [studentId, courseId]
       ),
+
+      // The next exam in this course (from the timetable or set by the professor).
+      q1(
+        `SELECT ue.id AS unit_exam_id, ue.title, to_char(ue.exam_date, 'YYYY-MM-DD') AS exam_date,
+                ue.assessment_type, ue.portion_module_ids, ue.portion_notes,
+                te.session, te.start_time, te.venue
+         FROM unit_exams ue
+         LEFT JOIN LATERAL (
+           SELECT e.session, to_char(e.start_time, 'HH24:MI') AS start_time, e.venue
+           FROM exam_timetable_entries e
+           JOIN exam_timetables t ON t.id = e.timetable_id AND t.status = 'published'
+           WHERE e.unit_exam_id = ue.id ORDER BY e.id LIMIT 1
+         ) te ON true
+         WHERE ue.course_id = $1 AND ue.institution_id = $2 AND ue.exam_date >= $3::date
+         ORDER BY ue.exam_date, ue.id LIMIT 1`,
+        [courseId, institutionId, today]
+      ),
+
+      // The student's other exams in the next two months (to plan around them).
+      q(
+        `SELECT DISTINCT to_char(ue.exam_date, 'YYYY-MM-DD') AS exam_date, c.code, ue.title
+         FROM unit_exams ue
+         JOIN courses c ON c.id = ue.course_id
+         JOIN enrollments en ON en.course_id = ue.course_id AND en.student_id = $1
+         WHERE ue.institution_id = $3 AND ue.course_id <> $2
+           AND ue.exam_date BETWEEN $4::date AND $4::date + 60
+         ORDER BY 1 LIMIT 20`,
+        [studentId, courseId, institutionId, today]
+      ),
+
+      // Notes the student can open, by module (titles only), for resource hints.
+      q(
+        `SELECT n.module_id, coalesce(n.original_name, n.filename) AS title
+         FROM notes n JOIN modules m ON m.id = n.module_id
+         WHERE m.course_id = $1 AND n.processing_status = 'ready' AND ${studentVisibleNotes('$2')}
+         ORDER BY n.uploaded_at DESC LIMIT 60`,
+        [courseId, studentId]
+      ),
     ]);
 
     // ─ Aggregate strengths + improvements from AI feedback ───────────────
@@ -195,22 +291,15 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
     const uniqueStrengths    = [...new Set(allStrengths)].slice(0, 5);
     const uniqueImprovements = [...new Set(allImprovements)].slice(0, 5);
 
-    // ─ Aggregate unit exam weak topics + trend ───────────────────────────
-    const examWeakTopics: Record<string, number> = {};
-    for (const r of examRows) {
-      if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
-      const td: Record<string, number> =
-        typeof r.topic_breakdown === 'string'
-          ? JSON.parse(r.topic_breakdown)
-          : r.topic_breakdown;
-      for (const topic of Object.keys(td)) {
-        examWeakTopics[topic] = (examWeakTopics[topic] ?? 0) + 1;
-      }
-    }
-    const topExamWeakTopics = Object.entries(examWeakTopics)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([t]) => t);
+    // ─ The exam this plan counts down to, and its portion ────────────────
+    const target: (TargetExam & { portion_module_ids: number[] | null; portion_notes: string | null }) | null = nextExam;
+    const daysLeft = target ? daysBetween(today, target.exam_date) : null;
+    const portionIds = new Set<number>(target?.portion_module_ids ?? []);
+    const portionModules = modules.filter((m: any) => portionIds.has(m.id));
+    const notesByModule = new Map<number, string[]>();
+    for (const n of noteTitles) notesByModule.set(n.module_id, [...(notesByModule.get(n.module_id) ?? []), n.title].slice(0, 4));
+
+    const weak = rankWeakTopics(examRows, uniqueImprovements, portionModules.map((m: any) => m.name));
 
     // Determine exam trend (improving / declining / stable)
     let examTrend = '';
@@ -228,7 +317,11 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
     const latestExam = examRows[examRows.length - 1] ?? null;
 
     // ─ Build prompt context ───────────────────────────────────────────────
-    const moduleList = modules.map((m: any) => m.name).join(', ');
+    const moduleLine = (m: any) => {
+      const notes = notesByModule.get(m.id);
+      return `  - ${m.name}${notes?.length ? ` (notes: ${notes.join('; ')})` : ''}`;
+    };
+    const moduleList = modules.length ? modules.map(moduleLine).join('\n') : '  (no modules yet)';
 
     const gradeLines = gradeHistory.length > 0
       ? gradeHistory.map((g: any) =>
@@ -284,17 +377,35 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
           examTrend
             ? `EXAM SCORE TREND: ${examTrend}`
             : '',
-          topExamWeakTopics.length > 0
-            ? `MEASURED WEAK TOPICS (from exam topic breakdown, highest priority for milestones):\n${
-                topExamWeakTopics.map(t => `  !! ${t}`).join('\n')
+          weak.length > 0
+            ? `WEAK TOPICS (lowest scores first; [PORTION] = in the coming exam):\n${
+                weak.map(w => `  !! ${w.topic}${w.inPortion ? ' [PORTION]' : ''}`).join('\n')
               }`
             : '',
         ].filter(Boolean).join('\n')
       : '';
 
+    const counts = milestoneCount(daysLeft);
+    const examSectionNext = target
+      ? [
+          ``,
+          `COMING EXAM: ${target.title} on ${target.exam_date}${target.session ? ` (${target.session})` : ''}`,
+          `TODAY: ${today}. DAYS LEFT: ${daysLeft}. Plan study dates from ${today} to ${addDays(target.exam_date, -1)}.`,
+          `KEEP THE LAST ${revisionDays(daysLeft!)} DAY(S) BEFORE THE EXAM FOR REVISION AND PRACTICE QUESTIONS.`,
+          portionModules.length
+            ? `EXAM PORTION (only these modules are tested; plan only for these):\n${portionModules.map(moduleLine).join('\n')}`
+            : `EXAM PORTION: not given by the professor; cover the modules taught so far.`,
+          target.portion_notes ? `PORTION NOTE FROM PROFESSOR: ${target.portion_notes}` : '',
+          otherExams.length
+            ? `STUDENT'S OTHER EXAMS (keep those days free; lighter work the day before):\n${otherExams.map((o: any) => `  - ${o.exam_date}: ${o.code} ${o.title}`).join('\n')}`
+            : '',
+        ].filter(Boolean).join('\n')
+      : `\nNO UPCOMING EXAM SCHEDULED: make an undated plan in priority order.`;
+
     const prompt = [
       `COURSE: ${course.code} — ${course.name}`,
-      `MODULES: ${moduleList}`,
+      `MODULES:\n${moduleList}`,
+      examSectionNext,
       ``,
       `STUDENT GRADE HISTORY:`,
       gradeLines,
@@ -308,28 +419,34 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
 
     // ─ Call AI ───────────────────────────────────────────────────────────
     const systemMsg = [
-      'You are an academic learning path advisor AI.',
-      'Given a student\'s course context and performance, generate a personalised learning roadmap.',
-      'Priority order for milestone topics:',
-      '  1. MEASURED WEAK TOPICS from unit exam topic breakdown (highest signal — address these first)',
-      '  2. AREAS TO IMPROVE from AI grading feedback',
-      '  3. Pending assignments that need immediate attention',
-      '  4. Consolidation of strengths and forward advancement',
-      'If EXAM SCORE TREND is "declining", add a motivational recovery milestone early.',
-      'Respond ONLY with valid JSON in this exact shape (no markdown fences):',
+      'You are a study planner for an Indian engineering student.',
+      'Make a personalised, day-by-day plan for the coming exam from their real marks, feedback and the exam portion.',
+      'Priorities:',
+      '  1. WEAK TOPICS marked [PORTION]: learn, then practise each one (most time here)',
+      '  2. Other portion modules the student has not been tested on yet: cover them once',
+      '  3. Pending assignments due before the exam',
+      '  4. Final revision and timed practice in the last day(s): past questions, formulas, diagrams',
+      'Rules: spread work over the available days, at most about 2 hours of tasks per day, never schedule on another exam\'s day,',
+      'name the real module, topic and note for each step, and keep steps small enough to finish in one sitting.',
+      'If the score trend is declining, start with a short, achievable win.',
+      'Respond ONLY with valid JSON (no markdown fences):',
       '{',
-      '  "title": "<short roadmap title>",',
-      '  "summary": "<2-3 sentence overview referencing exam performance, trend, and key weaknesses>",',
+      '  "title": "<short plan title, e.g. \"Unit test 2: 10-day plan\">",',
+      '  "summary": "<2-3 sentences: what the exam covers, where the student is weak, how the plan handles it>",',
       '  "milestones": [',
       '    {',
-      '      "title": "<step title>",',
-      '      "description": "<1-2 sentence explanation — be specific, reference actual topics and exam names>",',
-      '      "resource_hint": "<where in the course to find help, or null>"',
+      '      "title": "<what to do>",',
+      '      "description": "<1-2 sentences, specific>",',
+      '      "date": "<YYYY-MM-DD, within the study dates>",',
+      '      "kind": "<learn | practice | revise | assignment>",',
+      '      "topic": "<topic>",',
+      '      "module": "<module name exactly as listed>",',
+      '      "minutes": <15-120>,',
+      '      "resource_hint": "<note title or module to use, or null>"',
       '    }',
       '  ]',
       '}',
-      'Generate 5-8 milestones. Reference actual module names, assignment titles, exam names, and improvement areas.',
-      'Be specific and actionable. Avoid generic advice.',
+      `Make ${counts.min}-${counts.max} milestones.`,
     ].join('\n');
 
     const raw = await nimChat(
@@ -337,7 +454,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
         { role: 'system', content: systemMsg },
         { role: 'user',   content: prompt },
       ],
-      { temperature: 0.4, maxTokens: 1400, timeoutMs: 45_000 }
+      { temperature: 0.4, maxTokens: 2600, timeoutMs: 60_000 }
     );
 
     let parsed: { title: string; summary: string; milestones: any[] };
@@ -349,50 +466,56 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
 
     const title      = parsed.title   || 'My Learning Roadmap';
     const summary    = parsed.summary || null;
-    const milestones: any[] = Array.isArray(parsed.milestones) ? parsed.milestones : [];
+    const milestones = schedulePlan(Array.isArray(parsed.milestones) ? parsed.milestones : [], {
+      today,
+      exam: target,
+      busyDays: otherExams.map((o: any) => o.exam_date),
+      modules,
+    });
 
     // ─ Upsert roadmap row ─────────────────────────────────────────────────
     const upsertResult = await pool.query(
-      `INSERT INTO student_roadmaps (student_id, course_id, title, summary, generated_at, updated_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
+      `INSERT INTO student_roadmaps (student_id, course_id, title, summary, generated_at, updated_at,
+                                     target_unit_exam_id, target_exam_date, stale_reason, stale_since)
+       VALUES ($1, $2, $3, $4, NOW(), NOW(), $5, $6, NULL, NULL)
        ON CONFLICT (student_id, course_id)
        DO UPDATE SET
-         title        = EXCLUDED.title,
-         summary      = EXCLUDED.summary,
-         generated_at = NOW(),
-         updated_at   = NOW()
+         title               = EXCLUDED.title,
+         summary             = EXCLUDED.summary,
+         target_unit_exam_id = EXCLUDED.target_unit_exam_id,
+         target_exam_date    = EXCLUDED.target_exam_date,
+         stale_reason        = NULL,
+         stale_since         = NULL,
+         generated_at        = NOW(),
+         updated_at          = NOW()
        RETURNING id`,
-      [studentId, courseId, title, summary]
+      [studentId, courseId, title, summary, target?.unit_exam_id ?? null, target?.exam_date ?? null]
     );
     const roadmapId: number = upsertResult.rows[0].id;
 
-    // ─ Replace all milestones ─────────────────────────────────────────────
+    // ─ Replace all milestones (one statement) ──────────────────────────────
     await pool.query(`DELETE FROM roadmap_milestones WHERE roadmap_id = $1`, [roadmapId]);
-
-    for (let i = 0; i < milestones.length; i++) {
-      const m = milestones[i];
+    if (milestones.length) {
       await pool.query(
         `INSERT INTO roadmap_milestones
-           (roadmap_id, step_order, title, description, resource_hint)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          roadmapId, i + 1,
-          (m.title        || `Step ${i + 1}`).slice(0, 200),
-          m.description   || null,
-          m.resource_hint || null,
-        ]
+           (roadmap_id, step_order, title, description, resource_hint, due_date, kind, topic, module_id, est_minutes)
+         SELECT $1, x.ord, x.title, x.description, x.resource_hint, x.due_date, x.kind, x.topic, x.module_id, x.est_minutes
+         FROM jsonb_to_recordset($2::jsonb) AS x(ord int, title text, description text, resource_hint text,
+              due_date date, kind text, topic text, module_id int, est_minutes smallint)`,
+        [roadmapId, JSON.stringify(milestones.map((m, i) => ({ ord: i + 1, ...m })))]
       );
     }
 
     const saved = await q(
-      `SELECT id, step_order, title, description, resource_hint, status, completed_at
-       FROM roadmap_milestones WHERE roadmap_id = $1 ORDER BY step_order ASC`,
+      `SELECT ${MILESTONE_COLUMNS} FROM roadmap_milestones WHERE roadmap_id = $1 ORDER BY step_order ASC`,
       [roadmapId]
     );
 
     return {
       id: roadmapId, student_id: studentId, course_id: parseInt(courseId),
       title, summary, generated_at: new Date().toISOString(), milestones: saved,
+      target_exam: target ? { unit_exam_id: target.unit_exam_id, title: target.title, exam_date: target.exam_date, session: target.session, start_time: target.start_time, venue: target.venue } : null,
+      stale_reason: null,
     };
   }
   generateRoadmapImpl = generate;

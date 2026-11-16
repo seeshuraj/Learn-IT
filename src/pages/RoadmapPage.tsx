@@ -1,16 +1,20 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import { Map, Sparkles, ChevronDown, CheckCircle2, Circle, Clock, RefreshCw, BookOpen, AlertCircle } from "lucide-react";
+/**
+ * RoadmapPage — a student's study plan per course. With an exam coming, the
+ * plan is dated day by day up to the exam (portion and weak topics first,
+ * revision at the end); otherwise it's an ordered list.
+ *
+ * Route: /roadmap (student)
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, BookOpen, CheckCircle2, ChevronDown, Circle, Clock, Map, RefreshCw, Sparkles } from "lucide-react";
 import { api } from "../services/api";
 import { User } from "../types";
+import { dayLabel, daysUntil } from "../components/exams/UpcomingExams";
 
-// ── Types ────────────────────────────────────────────────────────────────────
+interface Course { id: number; name: string; code: string }
 
-interface Course {
-  id: number;
-  name: string;
-  code: string;
-}
+type Status = 'pending' | 'in_progress' | 'completed';
 
 interface Milestone {
   id: number;
@@ -18,8 +22,12 @@ interface Milestone {
   title: string;
   description: string | null;
   resource_hint: string | null;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: Status;
   completed_at: string | null;
+  due_date: string | null;
+  kind: 'learn' | 'practice' | 'revise' | 'assignment' | 'exam' | 'other' | null;
+  topic: string | null;
+  est_minutes: number | null;
 }
 
 interface Roadmap {
@@ -28,331 +36,232 @@ interface Roadmap {
   title: string;
   summary: string | null;
   generated_at: string;
+  stale_reason: string | null;
+  target_exam: { unit_exam_id: number; title: string; exam_date: string } | null;
   milestones: Milestone[];
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+const STATUS: Record<Status, { label: string; icon: typeof Circle; tone: string }> = {
+  pending:     { label: 'Not started', icon: Circle,       tone: 'text-slate-400' },
+  in_progress: { label: 'In progress', icon: Clock,        tone: 'text-amber-500' },
+  completed:   { label: 'Done',        icon: CheckCircle2, tone: 'text-emerald-600' },
+};
+const nextStatus = (s: Status): Status => (s === 'pending' ? 'in_progress' : s === 'in_progress' ? 'completed' : 'pending');
 
-const STATUS_CONFIG = {
-  pending:     { label: 'Not started', icon: Circle,       color: 'text-slate-400',   bg: 'bg-slate-100',   ring: 'ring-slate-200' },
-  in_progress: { label: 'In progress', icon: Clock,        color: 'text-amber-500',   bg: 'bg-amber-50',    ring: 'ring-amber-200' },
-  completed:   { label: 'Completed',   icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50',  ring: 'ring-emerald-200' },
+const KIND: Record<string, { label: string; cls: string }> = {
+  learn:      { label: 'Learn',      cls: 'bg-indigo-50 text-indigo-700' },
+  practice:   { label: 'Practise',   cls: 'bg-teal-50 text-teal-700' },
+  revise:     { label: 'Revise',     cls: 'bg-amber-50 text-amber-800' },
+  assignment: { label: 'Assignment', cls: 'bg-slate-100 text-slate-700' },
+  exam:       { label: 'Exam',       cls: 'bg-red-50 text-red-700' },
+  other:      { label: 'Task',       cls: 'bg-slate-100 text-slate-700' },
 };
 
-const nextStatus = (s: Milestone['status']): Milestone['status'] => {
-  if (s === 'pending')     return 'in_progress';
-  if (s === 'in_progress') return 'completed';
-  return 'pending';
-};
-
-// ── MilestoneCard ────────────────────────────────────────────────────────────
-
-const MilestoneCard: React.FC<{
-  milestone: Milestone;
-  index: number;
-  onStatusChange: (id: number, status: Milestone['status']) => void;
-}> = ({ milestone: m, index, onStatusChange }) => {
-  const [expanded, setExpanded] = useState(false);
-  const [updating, setUpdating] = useState(false);
-  const cfg = STATUS_CONFIG[m.status];
-  const Icon = cfg.icon;
-
-  const handleCycle = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setUpdating(true);
-    const next = nextStatus(m.status);
-    await onStatusChange(m.id, next);
-    setUpdating(false);
-  };
+const MilestoneRow: React.FC<{ m: Milestone; onStatus: (id: number, s: Status) => Promise<void> }> = ({ m, onStatus }) => {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const st = STATUS[m.status];
+  const Icon = st.icon;
+  const kind = KIND[m.kind ?? 'other'] ?? KIND.other;
+  const isExam = m.kind === 'exam';
 
   return (
-    <motion.div
-      initial={{ opacity: 0, x: -16 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.05 }}
-      className={`relative flex gap-4`}
-    >
-      {/* Vertical connector line */}
-      <div className="flex flex-col items-center">
-        <button
-          onClick={handleCycle}
-          disabled={updating}
-          title={`Mark as ${nextStatus(m.status)}`}
-          className={`w-9 h-9 rounded-full flex items-center justify-center ring-2 ${
-            cfg.ring
-          } ${cfg.bg} shrink-0 transition-all hover:scale-110 disabled:opacity-50 disabled:cursor-wait`}
-        >
-          {updating
-            ? <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />
-            : <Icon className={`w-4 h-4 ${cfg.color}`} />}
+    <li className={`rounded-xl border bg-white ${isExam ? 'border-red-200' : m.status === 'completed' ? 'border-emerald-100' : 'border-slate-200'}`}>
+      <div className="flex items-start gap-3 px-3 py-2.5">
+        {!isExam ? (
+          <button
+            onClick={async () => { setBusy(true); await onStatus(m.id, nextStatus(m.status)); setBusy(false); }}
+            disabled={busy}
+            aria-label={`${m.title}: ${st.label}. Mark as ${STATUS[nextStatus(m.status)].label}`}
+            className="mt-0.5 shrink-0 rounded-full p-0.5 hover:bg-slate-100 disabled:opacity-50"
+          >
+            {busy ? <RefreshCw className="h-5 w-5 animate-spin text-slate-400" /> : <Icon className={`h-5 w-5 ${st.tone}`} />}
+          </button>
+        ) : <span className="mt-0.5 h-6 w-6 shrink-0" />}
+        <button onClick={() => setOpen(o => !o)} className="min-w-0 flex-1 text-left" aria-expanded={open}>
+          <p className={`text-sm font-semibold ${m.status === 'completed' ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{m.title}</p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+            <span className={`rounded-full px-2 py-0.5 font-medium ${kind.cls}`}>{kind.label}</span>
+            {m.topic && <span>{m.topic}</span>}
+            {m.est_minutes && <span>· {m.est_minutes} min</span>}
+          </p>
         </button>
-        {/* line below (hidden on last) */}
-        <div className="w-px flex-1 min-h-4 bg-slate-200 mt-1" />
+        {(m.description || m.resource_hint) && (
+          <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden />
+        )}
       </div>
-
-      {/* Card body */}
-      <div
-        className={`flex-1 mb-4 rounded-2xl border cursor-pointer transition-colors ${
-          m.status === 'completed'
-            ? 'border-emerald-100 bg-emerald-50/40'
-            : m.status === 'in_progress'
-            ? 'border-amber-100 bg-amber-50/30'
-            : 'border-slate-100 bg-white'
-        } hover:border-indigo-200 shadow-sm`}
-        onClick={() => setExpanded(v => !v)}
-      >
-        <div className="flex items-center justify-between px-4 py-3 gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="text-xs font-bold text-slate-400 w-5 shrink-0">#{m.step_order}</span>
-            <p className={`text-sm font-semibold truncate ${
-              m.status === 'completed' ? 'line-through text-slate-400' : 'text-slate-800'
-            }`}>
-              {m.title}
+      {open && (m.description || m.resource_hint) && (
+        <div className="space-y-2 px-3 pb-3 pl-12">
+          {m.description && <p className="text-sm leading-relaxed text-slate-600">{m.description}</p>}
+          {m.resource_hint && (
+            <p className="flex items-start gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
+              <BookOpen className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {m.resource_hint}
             </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.color}`}>
-              {cfg.label}
-            </span>
-            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${
-              expanded ? 'rotate-180' : ''
-            }`} />
-          </div>
-        </div>
-
-        <AnimatePresence>
-          {expanded && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="overflow-hidden"
-            >
-              <div className="px-4 pb-4 space-y-2">
-                {m.description && (
-                  <p className="text-sm text-slate-600 leading-relaxed">{m.description}</p>
-                )}
-                {m.resource_hint && (
-                  <div className="flex items-start gap-2 text-xs text-indigo-600 bg-indigo-50 rounded-xl px-3 py-2">
-                    <BookOpen className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                    <span>{m.resource_hint}</span>
-                  </div>
-                )}
-                {m.completed_at && (
-                  <p className="text-xs text-slate-400">
-                    Completed {new Date(m.completed_at).toLocaleDateString()}
-                  </p>
-                )}
-              </div>
-            </motion.div>
           )}
-        </AnimatePresence>
-      </div>
-    </motion.div>
+        </div>
+      )}
+    </li>
   );
 };
 
-// ── RoadmapPage ──────────────────────────────────────────────────────────────
-
-interface RoadmapPageProps {
-  user: User;
-}
-
-const RoadmapPage: React.FC<RoadmapPageProps> = ({ user }) => {
+const RoadmapPage: React.FC<{ user: User }> = ({ user }) => {
   const [courses, setCourses] = useState<Course[]>([]);
-  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [courseId, setCourseId] = useState<number | null>(null);
   const [roadmap, setRoadmap] = useState<Roadmap | null>(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load enrolled courses
   useEffect(() => {
     api.getStudentCourses(user.id).then((data: any) => {
       const list: Course[] = Array.isArray(data) ? data : [];
       setCourses(list);
-      if (list.length > 0) setSelectedCourseId(list[0].id);
+      const fromUrl = Number(new URLSearchParams(window.location.search).get('course'));
+      setCourseId(list.find(c => c.id === fromUrl)?.id ?? list[0]?.id ?? null);
     }).catch(() => {});
   }, [user.id]);
 
-  // Load roadmap whenever course changes
-  const loadRoadmap = useCallback(async (courseId: number) => {
-    setLoading(true);
-    setError(null);
-    setRoadmap(null);
-    try {
-      const data = await api.getRoadmap(courseId);
-      setRoadmap(data as Roadmap);
-    } catch (e: any) {
-      // 404 = not generated yet — that's fine, show empty state
-      if (!e.message?.includes('404') && !e.message?.includes('No roadmap')) {
-        setError(e.message);
-      }
-    } finally {
-      setLoading(false);
-    }
+  const load = useCallback(async (id: number) => {
+    setLoading(true); setError(null); setRoadmap(null);
+    try { setRoadmap(await api.getRoadmap(id) as Roadmap); }
+    catch (e: any) { if (e.status !== 404 && !/No roadmap/.test(e.message ?? '')) setError(e.message); }
+    finally { setLoading(false); }
   }, []);
+  useEffect(() => { if (courseId != null) void load(courseId); }, [courseId, load]);
 
-  useEffect(() => {
-    if (selectedCourseId != null) loadRoadmap(selectedCourseId);
-  }, [selectedCourseId, loadRoadmap]);
+  const generate = async () => {
+    if (!courseId) return;
+    setGenerating(true); setError(null);
+    try { await api.generateRoadmap(courseId); await load(courseId); }
+    catch (e: any) { setError(e.message); }
+    finally { setGenerating(false); }
+  };
 
-  const handleGenerate = async () => {
-    if (!selectedCourseId) return;
-    setGenerating(true);
-    setError(null);
+  const setStatus = async (id: number, status: Status) => {
     try {
-      const data = await api.generateRoadmap(selectedCourseId);
-      setRoadmap(data as Roadmap);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setGenerating(false);
+      await api.updateMilestoneStatus(id, status);
+      setRoadmap(r => r && ({ ...r, milestones: r.milestones.map(m => m.id === id ? { ...m, status, completed_at: status === 'completed' ? new Date().toISOString() : null } : m) }));
+    } catch { /* unchanged on failure */ }
+  };
+
+  const course = courses.find(c => c.id === courseId);
+  const steps = roadmap?.milestones.filter(m => m.kind !== 'exam') ?? [];
+  const done = steps.filter(m => m.status === 'completed').length;
+  const progress = steps.length ? Math.round((done / steps.length) * 100) : 0;
+
+  // Dated plans: overdue ("catch up"), then one group per day.
+  const groups = useMemo(() => {
+    if (!roadmap) return [];
+    const dated = roadmap.milestones.some(m => m.due_date);
+    if (!dated) return [{ key: 'all', label: null as string | null, tone: '', items: roadmap.milestones }];
+    const out: { key: string; label: string | null; tone: string; items: Milestone[] }[] = [];
+    const overdue = roadmap.milestones.filter(m => m.due_date && daysUntil(m.due_date) < 0 && m.status !== 'completed');
+    if (overdue.length) out.push({ key: 'overdue', label: 'Catch up', tone: 'text-red-700', items: overdue });
+    const byDay: Record<string, Milestone[]> = {};
+    for (const m of roadmap.milestones) {
+      if (!m.due_date || (daysUntil(m.due_date) < 0 && m.status !== 'completed')) continue;
+      (byDay[m.due_date] ??= []).push(m);
     }
-  };
+    for (const d of Object.keys(byDay).sort()) {
+      const n = daysUntil(d);
+      out.push({ key: d, label: n === 0 ? `Today · ${dayLabel(d)}` : n === 1 ? `Tomorrow · ${dayLabel(d)}` : dayLabel(d), tone: n <= 1 ? 'text-indigo-700' : 'text-slate-700', items: byDay[d] });
+    }
+    return out;
+  }, [roadmap]);
 
-  const handleStatusChange = async (milestoneId: number, status: Milestone['status']) => {
-    try {
-      await api.updateMilestoneStatus(milestoneId, status);
-      setRoadmap(prev => prev ? {
-        ...prev,
-        milestones: prev.milestones.map(m =>
-          m.id === milestoneId
-            ? { ...m, status, completed_at: status === 'completed' ? new Date().toISOString() : null }
-            : m
-        ),
-      } : prev);
-    } catch {}
-  };
-
-  const selectedCourse = courses.find(c => c.id === selectedCourseId);
-  const completed  = roadmap?.milestones.filter(m => m.status === 'completed').length ?? 0;
-  const total      = roadmap?.milestones.length ?? 0;
-  const progress   = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const exam = roadmap?.target_exam;
+  const daysToExam = exam ? daysUntil(exam.exam_date) : null;
 
   return (
-    <div className="max-w-3xl mx-auto space-y-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-0">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-2">
-            <Map className="w-7 h-7 text-indigo-500" />
-            My Learning Roadmap
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900 sm:text-3xl">
+            <Map className="h-7 w-7 text-indigo-500" /> My study plan
           </h1>
-          <p className="text-slate-500 text-sm mt-1">AI-personalised milestones based on your progress.</p>
+          <p className="mt-1 text-sm text-slate-500">Day by day to your next exam, from your marks, weak topics and the exam portion.</p>
         </div>
-
-        {/* Course picker */}
-        <select
-          value={selectedCourseId ?? ""}
-          onChange={e => setSelectedCourseId(Number(e.target.value))}
-          className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
-        >
-          {courses.map(c => (
-            <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
-          ))}
+        <select value={courseId ?? ''} onChange={e => setCourseId(Number(e.target.value))} aria-label="Course"
+          className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm">
+          {courses.map(c => <option key={c.id} value={c.id}>{c.code}: {c.name}</option>)}
         </select>
       </div>
 
-      {/* Loading skeleton */}
-      {loading && (
-        <div className="space-y-3">
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-14 bg-slate-100 rounded-2xl animate-pulse" />
-          ))}
-        </div>
-      )}
+      {loading && <div className="space-y-3">{[0, 1, 2, 3].map(i => <div key={i} className="h-14 animate-pulse rounded-xl bg-slate-100" />)}</div>}
 
-      {/* Error */}
       {!loading && error && (
-        <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-2xl px-4 py-3">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          {error}
+        <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <AlertCircle className="h-4 w-4 shrink-0" /> {error}
         </div>
       )}
 
-      {/* Empty state — not yet generated */}
-      {!loading && !error && !roadmap && selectedCourseId && (
-        <div className="bg-white border border-slate-100 rounded-3xl shadow-sm p-10 text-center space-y-4">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-indigo-100 mx-auto">
-            <Sparkles className="w-8 h-8 text-indigo-500" />
-          </div>
-          <h2 className="text-xl font-bold text-slate-800">No roadmap yet</h2>
-          <p className="text-slate-500 text-sm max-w-sm mx-auto">
-            Generate a personalised AI learning roadmap for{" "}
-            <span className="font-semibold">{selectedCourse?.name}</span>{" "}
-            based on your submissions, grades, and pending work.
+      {!loading && !error && !roadmap && courseId && (
+        <div className="space-y-4 rounded-3xl border border-slate-100 bg-white p-8 text-center shadow-sm">
+          <Sparkles className="mx-auto h-10 w-10 text-indigo-500" />
+          <h2 className="text-xl font-bold text-slate-800">No plan yet for {course?.code}</h2>
+          <p className="mx-auto max-w-sm text-sm text-slate-500">
+            LearnIT builds a day-by-day plan to your next {course?.code} exam: the exam portion first, your weak topics given extra time, and revision days at the end.
           </p>
-          <button
-            onClick={handleGenerate}
-            disabled={generating}
-            className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold rounded-xl text-sm transition-colors shadow-lg shadow-indigo-600/20"
-          >
-            {generating
-              ? <><RefreshCw className="w-4 h-4 animate-spin" /> Generating…</>
-              : <><Sparkles className="w-4 h-4" /> Generate Roadmap</>}
+          <button onClick={generate} disabled={generating}
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">
+            {generating ? <><RefreshCw className="h-4 w-4 animate-spin" /> Making your plan…</> : <><Sparkles className="h-4 w-4" /> Make my plan</>}
           </button>
         </div>
       )}
 
-      {/* Roadmap exists */}
       {!loading && roadmap && (
         <>
-          {/* Roadmap header card */}
-          <div className="bg-white border border-slate-100 rounded-3xl shadow-sm p-6 space-y-4">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <h2 className="text-lg font-bold text-slate-900 truncate">{roadmap.title}</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Generated {new Date(roadmap.generated_at).toLocaleString()}
-                </p>
-              </div>
-              <button
-                onClick={handleGenerate}
-                disabled={generating}
-                title="Regenerate roadmap"
-                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-colors disabled:opacity-50"
-              >
-                {generating
-                  ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  : <Sparkles className="w-3.5 h-3.5" />}
-                {generating ? 'Regenerating…' : 'Regenerate'}
+          {roadmap.stale_reason && (
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span className="flex-1">{roadmap.stale_reason}. Update your plan to match.</span>
+              <button onClick={generate} disabled={generating}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60">
+                {generating && <RefreshCw className="h-4 w-4 animate-spin" />} Update my plan
               </button>
             </div>
+          )}
 
-            {roadmap.summary && (
-              <p className="text-sm text-slate-600 leading-relaxed border-t border-slate-100 pt-3">
-                {roadmap.summary}
-              </p>
+          <div className="space-y-4 rounded-3xl border border-slate-100 bg-white p-5 shadow-sm sm:p-6">
+            {exam && daysToExam !== null && daysToExam >= 0 && (
+              <div className="flex items-baseline gap-3">
+                <span className="text-4xl font-bold tabular-nums text-slate-900">{daysToExam}</span>
+                <span className="text-sm text-slate-600">
+                  {daysToExam === 1 ? 'day' : 'days'} to <b className="text-slate-900">{exam.title}</b> · {dayLabel(exam.exam_date)}
+                </span>
+              </div>
             )}
-
-            {/* Progress bar */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-slate-900">{roadmap.title}</h2>
+                <p className="mt-0.5 text-xs text-slate-400">Made {new Date(roadmap.generated_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+              </div>
+              {!roadmap.stale_reason && (
+                <button onClick={generate} disabled={generating}
+                  className="flex shrink-0 items-center gap-1.5 rounded-xl bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">
+                  {generating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {generating ? 'Updating…' : 'Remake plan'}
+                </button>
+              )}
+            </div>
+            {roadmap.summary && <p className="border-t border-slate-100 pt-3 text-sm leading-relaxed text-slate-600">{roadmap.summary}</p>}
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs text-slate-500">
-                <span>{completed} / {total} milestones complete</span>
+                <span>{done} of {steps.length} steps done</span>
                 <span className="font-semibold text-indigo-600">{progress}%</span>
               </div>
-              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-indigo-500 rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progress}%` }}
-                  transition={{ duration: 0.6, ease: 'easeOut' }}
-                />
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-indigo-500 transition-[width] duration-500" style={{ width: `${progress}%` }} />
               </div>
             </div>
           </div>
 
-          {/* Milestone stepper */}
-          <div className="relative">
-            {roadmap.milestones.map((m, i) => (
-              <MilestoneCard
-                key={m.id}
-                milestone={m}
-                index={i}
-                onStatusChange={handleStatusChange}
-              />
+          <div className="space-y-5">
+            {groups.map(g => (
+              <section key={g.key} aria-label={g.label ?? 'Steps'}>
+                {g.label && <h3 className={`mb-2 text-sm font-bold ${g.tone}`}>{g.label}</h3>}
+                <ul className="space-y-2">{g.items.map(m => <MilestoneRow key={m.id} m={m} onStatus={setStatus} />)}</ul>
+              </section>
             ))}
           </div>
         </>

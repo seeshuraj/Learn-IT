@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { api, type Assessment, type AssessmentType } from '../../services/api';
 import { Field, inputCls, isSplit, TYPE_LABELS, TYPE_ORDER } from './shared';
@@ -23,11 +23,25 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
   const [externalMax, setExternalMax] = useState(existing?.external_max != null ? String(Number(existing.external_max)) : '60');
   const [credits, setCredits] = useState(existing?.credits != null ? String(Number(existing.credits)) : '');
   const [semester, setSemester] = useState(existing?.semester != null ? String(existing.semester) : '');
+  const [portion, setPortion] = useState<number[]>(existing?.portion_module_ids ?? []);
+  const [portionNotes, setPortionNotes] = useState(existing?.portion_notes ?? '');
+  const [modules, setModules] = useState<{ id: number; name: string }[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [fields, setFields] = useState<Record<string, string>>({});
 
   const endSem = type === 'end_semester';
+
+  // The course's modules, for choosing the exam portion.
+  useEffect(() => {
+    if (!courseId) { setModules(null); return; }
+    let live = true;
+    api.getCourseModules(Number(courseId))
+      .then((m: any) => { if (live) setModules(Array.isArray(m) ? m.map((x: any) => ({ id: x.id, name: x.name })) : []); })
+      .catch(() => live && setModules([]));
+    return () => { live = false; };
+  }, [courseId]);
+  const togglePortion = (id: number) => setPortion(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
 
   const chooseType = (t: AssessmentType) => {
     setType(t);
@@ -51,6 +65,8 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
       external_max: split ? Number(externalMax) : null,
       credits: endSem && credits !== '' ? Number(credits) : null,
       semester: endSem && semester !== '' ? Number(semester) : null,
+      portion_module_ids: portion.length ? portion : null,
+      portion_notes: portionNotes.trim() || null,
     };
     try {
       const saved = existing
@@ -140,6 +156,25 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
                 <input inputMode="numeric" className={inputCls} value={semester} onChange={e => setSemester(e.target.value)} placeholder="5" />
               </Field>
             </div>
+          )}
+
+          {modules && modules.length > 0 && (
+            <fieldset>
+              <legend className="mb-1 block text-sm font-medium text-slate-700">Portion (modules this exam covers)</legend>
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
+                {modules.map(m => (
+                  <label key={m.id} className="flex items-center gap-2 rounded px-1 py-0.5 text-sm text-slate-700 hover:bg-slate-50">
+                    <input type="checkbox" checked={portion.includes(m.id)} onChange={() => togglePortion(m.id)}
+                      className="h-4 w-4 rounded border-slate-300 text-teal-600" />
+                    {m.name}
+                  </label>
+                ))}
+              </div>
+              <input value={portionNotes} onChange={e => setPortionNotes(e.target.value)} maxLength={1000}
+                placeholder="Optional note, e.g. Unit 3 up to Dijkstra's algorithm"
+                className={`${inputCls} mt-2`} aria-label="Portion note" />
+              <span className="mt-1 block text-xs text-slate-500">Students' study plans focus on these modules before the exam.</span>
+            </fieldset>
           )}
 
           {endSem && (

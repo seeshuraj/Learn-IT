@@ -41,6 +41,9 @@ export interface Assessment {
   published_at: string | null;
   analysis_status: string;
   paper_storage_path: string | null;
+  /** Modules this exam covers (its portion), set by the professor. */
+  portion_module_ids?: number[] | null;
+  portion_notes?: string | null;
   result_count?: number;
   absent_count?: number;
   enrolled_count?: number;
@@ -106,6 +109,20 @@ export interface StudentMarks {
   overall_avg: number | null;
   weak_topics: string[];
   gpa: { semesters: { semester: number; sgpa: number | null; credits: number; courses: number }[]; cgpa: number | null };
+}
+
+export interface TodayStep {
+  id: number;
+  title: string;
+  kind: string | null;
+  topic: string | null;
+  est_minutes: number | null;
+  status: 'pending' | 'in_progress' | 'completed';
+  due_date: string;
+  course_id: number;
+  course_code: string;
+  stale_reason: string | null;
+  exam_date: string | null;
 }
 
 export interface UpcomingExam {
@@ -558,6 +575,8 @@ export const api = {
     external_max?: number | null;
     credits?: number | null;
     semester?: number | null;
+    portion_module_ids?: number[] | null;
+    portion_notes?: string | null;
     grading_schema?: { strong: number; moderate: number };
   }) => request<Assessment>('/api/unit-exams', { method: 'POST', body: JSON.stringify(data) }),
 
@@ -701,6 +720,8 @@ export const api = {
 
   // Roadmaps
   getRoadmap:          (courseId: number) => request(`/api/roadmaps/${courseId}`),
+  /** Today's and overdue study-plan steps across all courses. */
+  getTodayPlan: () => request<{ today: string; items: TodayStep[] }>('/api/roadmaps/today'),
   generateRoadmap:     (courseId: number) =>
     request(`/api/roadmaps/${courseId}/generate?async=1`, { method: 'POST' }).then(resultOfJob),
   updateMilestoneStatus: (milestoneId: number, status: 'pending' | 'in_progress' | 'completed') =>
