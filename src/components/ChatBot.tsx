@@ -6,6 +6,7 @@ import {
   Loader2,
   Sparkles,
   BookOpen,
+  ChevronDown,
 } from "lucide-react";
 import { streamModuleChatbot, ConversationTurn } from "../services/aiService";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -14,6 +15,16 @@ interface Props {
   moduleTitle?: string;
   /** The module's numeric DB id — required for server-side RAG retrieval. */
   moduleId?: number | null;
+  /**
+   * A note is open beside the chat. On phones and tablets the chat then opens
+   * as a half-height bottom sheet so the note stays readable above it; on
+   * laptops it docks to the right and the page makes room for it.
+   */
+  compact?: boolean;
+  /** Increment to open the chat from elsewhere (e.g. "Ask AI" on a note). */
+  openSignal?: number;
+  /** Reports whether the chat is open and expanded (to make room for it). */
+  onOpenChange?: (open: boolean) => void;
 }
 
 interface Message {
@@ -35,8 +46,14 @@ const SUGGESTIONS = [
 export const ChatBot: React.FC<Props> = ({
   moduleTitle = "General Course Assistant",
   moduleId = null,
+  compact = false,
+  openSignal = 0,
+  onOpenChange,
 }) => {
   const [open, setOpen] = useState(false);
+  // Phones only: collapsed to a bar while reading; the conversation and any
+  // answer still streaming are kept.
+  const [minimized, setMinimized] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: WELCOME },
@@ -53,11 +70,20 @@ export const ChatBot: React.FC<Props> = ({
   useEffect(() => { if (!open) inflight.current?.abort(); }, [open]);
 
   useEffect(() => {
-    if (open) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-      setTimeout(() => inputRef.current?.focus(), 100);
+    if (openSignal > 0) { setOpen(true); setMinimized(false); }
+  }, [openSignal]);
+
+  useEffect(() => { onOpenChange?.(open && !minimized); }, [open, minimized]);
+
+  // Focus the input on desktop only: on phones it would raise the keyboard
+  // over the note the student is reading.
+  const coarsePointer = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+  useEffect(() => {
+    if (open && !minimized) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      if (!coarsePointer) setTimeout(() => inputRef.current?.focus(), 100);
     }
-  }, [open, messages]);
+  }, [open, minimized, messages]);
 
   const send = async (preset?: string) => {
     const q = (preset ?? input).trim();
@@ -105,16 +131,41 @@ export const ChatBot: React.FC<Props> = ({
       {!open && (
         <button
           onClick={() => setOpen(true)}
-          className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 w-14 h-14 bg-violet-600 hover:bg-violet-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105 z-50"
+          className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 sm:bottom-6 sm:right-6 w-14 h-14 bg-violet-600 hover:bg-violet-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105 z-50"
           aria-label="Open AI Chat"
         >
           <MessageCircle className="w-6 h-6" />
         </button>
       )}
 
+      {/* Minimised bar (phones; tablets too while a note is open) */}
+      {open && minimized && (
+        <button
+          type="button"
+          onClick={() => setMinimized(false)}
+          className={`${compact ? "xl:hidden" : "sm:hidden"} fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-50 flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-left text-white shadow-xl`}
+          aria-label="Show AI chat"
+        >
+          <Sparkles className="w-4 h-4 shrink-0 text-white/80" />
+          <span className="flex-1 truncate text-sm font-semibold">
+            {loading ? "AI tutor is answering…" : "AI tutor: tap to continue"}
+          </span>
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ChevronDown className="w-4 h-4 rotate-180" />}
+        </button>
+      )}
+
       {/* Chat window */}
       {open && (
-        <div className="fixed inset-x-3 bottom-3 sm:inset-x-auto sm:bottom-6 sm:right-6 sm:w-96 h-[min(520px,calc(100dvh-1.5rem))] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col z-50 overflow-hidden">
+        <div
+          className={`fixed z-50 flex-col overflow-hidden border border-slate-200 bg-white shadow-2xl inset-x-0 bottom-0 rounded-t-2xl ${
+            compact
+              // Note open: bottom sheet up to laptop width, docked right panel from xl (1280 px).
+              ? `${minimized ? "hidden xl:flex" : "flex"} h-[52dvh] xl:inset-x-auto xl:bottom-6 xl:right-6 xl:w-96 xl:rounded-2xl xl:h-[min(560px,calc(100dvh-7rem))]`
+              : `${minimized ? "hidden sm:flex" : "flex"} h-[min(560px,calc(100dvh-4rem))] sm:inset-x-auto sm:bottom-6 sm:right-6 sm:w-96 sm:rounded-2xl sm:h-[min(520px,calc(100dvh-1.5rem))]`
+          }`}
+          role="dialog"
+          aria-label="AI course assistant"
+        >
           {/* Header */}
           <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -132,13 +183,22 @@ export const ChatBot: React.FC<Props> = ({
                 )}
               </div>
             </div>
-            <button
-              onClick={() => setOpen(false)}
-              aria-label="Close chat"
-              className="-mr-1 p-2.5 hover:bg-white/20 rounded-lg transition-colors"
-            >
-              <X className="w-4 h-4 text-white" />
-            </button>
+            <div className="flex items-center -mr-1">
+              <button
+                onClick={() => setMinimized(true)}
+                aria-label="Minimise chat"
+                className={`${compact ? "xl:hidden" : "sm:hidden"} p-2.5 hover:bg-white/20 rounded-lg transition-colors`}
+              >
+                <ChevronDown className="w-4 h-4 text-white" />
+              </button>
+              <button
+                onClick={() => { setOpen(false); setMinimized(false); }}
+                aria-label="Close chat"
+                className="p-2.5 hover:bg-white/20 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+            </div>
           </div>
 
           {/* Messages */}
@@ -197,7 +257,7 @@ export const ChatBot: React.FC<Props> = ({
           </div>
 
           {/* Input */}
-          <div className="px-3 py-3 border-t border-slate-100 flex gap-2 items-center">
+          <div className="px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-slate-100 flex gap-2 items-center">
             <input
               ref={inputRef}
               value={input}
@@ -205,7 +265,7 @@ export const ChatBot: React.FC<Props> = ({
               onKeyDown={onKey}
               placeholder="Ask about your course material…"
               disabled={loading}
-              className="flex-1 text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-200 disabled:opacity-50 placeholder:text-slate-400"
+              className="flex-1 min-w-0 text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-200 disabled:opacity-50 placeholder:text-slate-400"
             />
             <button
               onClick={() => send()}

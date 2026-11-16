@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { ChatBot } from '../components/ChatBot';
+import { PdfViewer } from '../components/PdfViewer';
 import { api, API_BASE } from '../services/api';
 
 interface Note {
@@ -27,6 +28,8 @@ interface Props { user: any; }
 
 const BASE = API_BASE;
 
+const isPdf = (n: Note) => /pdf/i.test(n.file_type ?? '') || /\.pdf$/i.test(n.original_name ?? '');
+
 const FILE_ICONS: Record<string, string> = {
   'application/pdf': '📄',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '📝',
@@ -40,6 +43,12 @@ export default function NotesPage({ user }: Props) {
   const [modules, setModules] = useState<Module[]>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
   const [activeNote, setActiveNote] = useState<Note | null>(null);
+  // pdf.js couldn't load the file: use the browser's own viewer for this note.
+  const [pdfFallback, setPdfFallback] = useState(false);
+  // Chat state, so the viewer can make room for the chat sheet on phones.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpenSignal, setChatOpenSignal] = useState(0);
+  const viewerRef = useRef<HTMLDivElement>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -105,8 +114,11 @@ export default function NotesPage({ user }: Props) {
       return;
     }
     setActiveNote(note);
+    setPdfFallback(false);
     setBlobUrl(null);
     setPreviewLoading(true);
+    // On phones the viewer sits above the notes list: bring it into view.
+    requestAnimationFrame(() => viewerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     try {
       try {
         const signed = await api.getSignedNoteUrl(note.id);
@@ -172,6 +184,12 @@ export default function NotesPage({ user }: Props) {
 
   const currentModule = sidebarModules.find(m => m.id === selectedModuleId);
 
+  // Phones: the chat opens as a bottom sheet over ~half the screen while a note
+  // is open, so the viewer shrinks to the space above it.
+  const viewerHeight = chatOpen ? 'h-[40dvh] xl:h-[72vh]' : 'h-[65dvh] lg:h-[72vh]';
+  // Laptops (1280 px+): the chat docks on the right, so the page narrows to sit beside it.
+  const besideChat = chatOpen && activeNote ? 'xl:pr-[25rem] xl:max-w-[89rem] transition-[padding]' : 'transition-[padding]';
+
   const chatModuleTitle = activeNote
     ? `${activeNote.module_name} · ${activeNote.course_name}`
     : currentModule
@@ -191,7 +209,7 @@ export default function NotesPage({ user }: Props) {
   );
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8">
+    <div className={`max-w-5xl mx-auto px-4 py-8 ${besideChat}`}>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-800">Course Notes</h1>
         <p className="text-slate-500 text-sm mt-1">
@@ -237,45 +255,63 @@ export default function NotesPage({ user }: Props) {
 
           {/* Authenticated PDF/text viewer */}
           {activeNote && (
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-              <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-                <div className="flex items-center gap-2 min-w-0">
+            <div ref={viewerRef} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm scroll-mt-20">
+              {/* Wraps to two rows on narrow phones so the buttons never widen the page. */}
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 px-3 sm:px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                <div className="flex items-center gap-2 min-w-0 basis-full sm:basis-auto sm:flex-1">
                   <span className="text-sm font-medium text-slate-700 truncate">{activeNote.original_name}</span>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setChatOpenSignal(n => n + 1)}
+                    className="text-xs px-3 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition font-semibold"
+                  >
+                    ✦ Ask AI
+                  </button>
                   {blobUrl && (
                     <a
                       href={blobUrl}
+                      aria-label="Open in a new tab"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
                     >
-                      ↗ Open
+                      ↗<span className="hidden min-[400px]:inline"> Open</span>
                     </a>
                   )}
                   <button
                     type="button"
                     onClick={() => downloadNote(activeNote)}
+                    aria-label="Download"
                     className="text-xs px-3 py-1 bg-white hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 hover:border-teal-300 rounded-lg transition font-medium"
                   >
-                    ↓ Download
+                    ↓<span className="hidden min-[400px]:inline"> Download</span>
                   </button>
                   <button
                     onClick={closePreview}
-                    className="text-slate-400 hover:text-slate-600 text-lg leading-none px-1"
+                    aria-label="Close preview"
+                    className="text-slate-400 hover:text-slate-600 text-lg leading-none p-1.5"
                   >✕</button>
                 </div>
               </div>
               {previewLoading ? (
-                <div className="flex items-center justify-center" style={{ height: '72vh' }}>
+                <div className={`flex items-center justify-center ${viewerHeight}`}>
                   <div className="animate-spin rounded-full h-8 w-8 border-2 border-teal-600 border-t-transparent" />
                 </div>
+              ) : blobUrl && isPdf(activeNote) && !pdfFallback ? (
+                <PdfViewer
+                  key={blobUrl}
+                  url={blobUrl}
+                  title={activeNote.original_name}
+                  className={viewerHeight}
+                  onUnavailable={() => setPdfFallback(true)}
+                />
               ) : blobUrl ? (
                 <iframe
                   key={blobUrl}
                   src={blobUrl}
-                  className="w-full border-0"
-                  style={{ height: '72vh' }}
+                  className={`w-full border-0 ${viewerHeight}`}
                   title={activeNote.original_name}
                   allow="fullscreen"
                 />
@@ -307,13 +343,13 @@ export default function NotesPage({ user }: Props) {
                 {filteredNotes.map(note => (
                   <div
                     key={note.id}
-                    className={`bg-white border rounded-xl px-4 py-3 flex items-center justify-between gap-4 transition ${
+                    className={`bg-white border rounded-xl px-3 sm:px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 transition ${
                       activeNote?.id === note.id
                         ? 'border-indigo-300 ring-1 ring-indigo-200'
                         : 'border-slate-200 hover:border-slate-300'
                     }`}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-3 min-w-0 flex-1 basis-full sm:basis-auto">
                       <span className="text-xl shrink-0">{FILE_ICONS[note.file_type] ?? '📄'}</span>
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-slate-800 truncate">{note.original_name}</p>
@@ -323,13 +359,14 @@ export default function NotesPage({ user }: Props) {
                             : note.processing_status === 'pending'
                               ? 'Processing… · '
                               : note.chunk_count > 0 ? `${note.chunk_count} sections · ` : 'No readable text · '}
-                          {new Date(note.uploaded_at).toLocaleDateString('en-IE', {
+                          {new Date(note.uploaded_at).toLocaleDateString('en-IN', {
                             day: 'numeric', month: 'short', year: 'numeric',
                           })}
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    {/* Wraps under the file name on phones instead of widening the page. */}
+                    <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
                       {note.chunk_count > 0 && (
                         <span className="text-xs bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded-full">
                           ✓ AI Ready
@@ -364,7 +401,8 @@ export default function NotesPage({ user }: Props) {
                             setNotes(prev => prev.filter(n => n.id !== note.id));
                             if (activeNote?.id === note.id) closePreview();
                           }}
-                          className="text-slate-300 hover:text-red-500 transition text-lg leading-none"
+                          aria-label={`Delete ${note.original_name}`}
+                          className="text-slate-300 hover:text-red-500 transition text-lg leading-none p-2 -m-1"
                         >×</button>
                       )}
                     </div>
@@ -380,6 +418,9 @@ export default function NotesPage({ user }: Props) {
       <ChatBot
         moduleTitle={chatModuleTitle}
         moduleId={chatModuleId}
+        compact={!!activeNote}
+        openSignal={chatOpenSignal}
+        onOpenChange={setChatOpen}
       />
     </div>
   );
