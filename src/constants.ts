@@ -1,6 +1,6 @@
 import { 
   LucideIcon, LayoutDashboard, BookOpen, FileText, 
-  BarChart3, Users, Settings, StickyNote, Map, ClipboardList, ShieldCheck, GraduationCap
+  BarChart3, Users, Settings, StickyNote, Map, ClipboardList, ShieldCheck, GraduationCap, CalendarDays
 } from "lucide-react";
 
 export interface NavItem {
@@ -21,6 +21,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Analytics",        icon: BarChart3,       path: "/analytics",   roles: ['student'] },
   { label: "User Management",  icon: Users,           path: "/admin/users",    roles: ['admin'] },
   { label: "Course Management",icon: BookOpen,        path: "/admin/courses",  roles: ['admin'] },
+  { label: "Exam Timetables",  icon: CalendarDays,    path: "/admin/timetables", roles: ['admin'] },
   { label: "Data & Audit",     icon: ShieldCheck,     path: "/admin/data",     roles: ['admin'] },
   { label: "System Settings",  icon: Settings,        path: "/admin/settings", roles: ['admin'] },
 ];
