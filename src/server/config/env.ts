@@ -5,9 +5,9 @@
  * Exits the process immediately if a required variable is missing
  * so misconfigured deployments fail fast rather than at request time.
  *
- * Required env vars must be set in Render → Environment (not in .env, which is git-ignored):
+ * Required env vars are set on the host (Cloud Run secrets/env, see docs/CLOUD_RUN.md; never in .env, which is git-ignored):
  *   DATABASE_URL             — Supabase Postgres connection string
- *   SUPABASE_URL             — https://pyjynvgsrlxypkiiopei.supabase.co
+ *   SUPABASE_URL             — https://<project-ref>.supabase.co
  *   SUPABASE_SERVICE_ROLE_KEY — Supabase Dashboard → Settings → API → service_role key
  *   NODE_ENV                 — production
  *   NVIDIA_API_KEY           — optional; AI features return mock responses if unset
@@ -36,7 +36,7 @@ export function validateEnv(): EnvConfig {
     console.error('[env] FATAL — server cannot start.');
     console.error('[env] The following required environment variables are missing:');
     missing.forEach(k => console.error(`  ✗  ${k}`));
-    console.error('[env] → Set them in Render Dashboard → Your Service → Environment');
+    console.error('[env] → Set them on the host (Cloud Run: secrets/env vars; see docs/CLOUD_RUN.md)');
     console.error('[env] → Then trigger a new deploy.');
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     process.exit(1);

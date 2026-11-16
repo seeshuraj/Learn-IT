@@ -1,0 +1,95 @@
+# Deploys the API to Google Cloud Run (Mumbai) when main changes.
+#
+# - Signs in to Google with Workload Identity Federation: no service-account
+#   key is stored in GitHub. Setup: docs/CLOUD_RUN.md.
+# - The new revision gets no traffic until GET /api/health passes on it, so a
+#   broken build never reaches users; the previous revision keeps serving.
+# - Does nothing until the repository variables GCP_PROJECT_ID,
+#   GCP_WIF_PROVIDER and GCP_DEPLOY_SA are set.
+name: Deploy API (Cloud Run)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server.ts"
+      - "src/server/**"
+      - "package.json"
+      - "package-lock.json"
+      - "build-server.mjs"
+      - "Dockerfile"
+      - ".github/workflows/deploy-cloud-run.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+env:
+  REGION: asia-south1
+  SERVICE: learnit-api
+  REPOSITORY: learnit
+
+jobs:
+  deploy:
+    if: ${{ vars.GCP_PROJECT_ID != '' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_DEPLOY_SA != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Tests
+        run: |
+          npm ci --include=dev --no-audit --no-fund
+          npm test
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        id: image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${REPOSITORY}/api:${GITHUB_SHA::12}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy new revision (no traffic yet)
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "$REGION" \
+            --image "${{ steps.image.outputs.image }}" \
+            --tag "sha-${GITHUB_SHA::7}" \
+            --no-traffic \
+            --quiet
+
+      - name: Health check on the new revision
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" \
+                --format=json | jq -r --arg t "sha-${GITHUB_SHA::7}" '.status.traffic[] | select(.tag == $t) | .url')
+          echo "Checking $URL/api/health"
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 10 "$URL/api/health" > /dev/null; then echo "healthy"; exit 0; fi
+            sleep 6
+          done
+          echo "::error::New revision failed its health check; traffic stays on the previous revision."
+          exit 1
+
+      - name: Send traffic to the new revision
+        run: |
+          gcloud run services update-traffic "$SERVICE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --to-latest --quiet

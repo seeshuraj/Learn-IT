@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import pkg from "pg";
 const { Pool } = pkg;
 import path from "path";
+import os from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { createRequire } from "module";
@@ -445,7 +446,8 @@ const chatClient = createNimChat({
 // Let running jobs finish (they're retried if cut off) and flush metered usage
 // before Render stops the instance on a deploy.
 process.once("SIGTERM", () => {
-  void Promise.allSettled([jobQueue.stop(15_000), aiUsageRecorder.flush()]).finally(() => process.exit(0));
+  // Cloud Run allows 10 s after SIGTERM; unfinished jobs are retried by another instance.
+  void Promise.allSettled([jobQueue.stop(8_000), aiUsageRecorder.flush()]).finally(() => process.exit(0));
 });
 const nimChat = chatClient.chat;
 
@@ -464,7 +466,8 @@ const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 // worker). Split them when uploads or AI drafts start slowing the API down.
 const PROCESS_ROLE = (["api", "worker", "all"] as const).find(r => r === process.env.PROCESS_ROLE) ?? "all";
 const jobQueue = new JobQueue(pool, {
-  workerId: `${process.env.RENDER_INSTANCE_ID ?? "local"}-${process.pid}`,
+  // Containers all run as pid 1, so the hostname tells instances apart.
+  workerId: `${process.env.K_REVISION ?? process.env.RENDER_INSTANCE_ID ?? "local"}-${os.hostname()}-${process.pid}`,
   concurrency: Math.min(8, Math.max(1, Number(process.env.JOB_CONCURRENCY) || 2)),
 });
 
