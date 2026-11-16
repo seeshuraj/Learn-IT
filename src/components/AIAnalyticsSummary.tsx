@@ -54,7 +54,6 @@ export const AIAnalyticsSummary: React.FC<Props> = ({ data, autoLoad = true }) =
           <span className="text-sm font-semibold text-violet-800">
             AI Performance Summary
           </span>
-          <span className="text-xs text-violet-400">— NVIDIA NIM</span>
         </div>
         <button
           onClick={load}
