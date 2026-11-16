@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, asPage } from '../services/api';
+import { api, asPage, type Department } from '../services/api';
+import { DepartmentsPanel } from '../components/admin/DepartmentsPanel';
 import { ClipboardCopy, CheckCheck } from 'lucide-react';
 
 interface Course {
@@ -8,6 +9,8 @@ interface Course {
   name: string;
   instructor_name: string;
   enrollment_count: number;
+  department_id: number | null;
+  semester: number | null;
 }
 
 interface Enrollment {
@@ -35,6 +38,7 @@ interface TempCredential {
 
 export default function AdminCourseManagement() {
   const [courses, setCourses] = useState<Course[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
@@ -56,12 +60,14 @@ export default function AdminCourseManagement() {
   async function loadData() {
     setLoading(true);
     try {
-      const [coursesData, usersData]: any[] = await Promise.all([
+      const [coursesData, usersData, depts]: any[] = await Promise.all([
         api.getAdminCourses(),
         // Only instructors are needed here (course owner picker).
         api.getAdminUsersPage({ role: 'instructor', limit: 200 }),
+        api.getDepartments().catch(() => []),
       ]);
       setCourses(Array.isArray(coursesData) ? coursesData : []);
+      setDepartments(Array.isArray(depts) ? depts : []);
       setUsers(asPage<User>(usersData).items);
     } finally {
       setLoading(false);
@@ -174,6 +180,14 @@ export default function AdminCourseManagement() {
 
   if (loading) return <div className="p-8 text-slate-500">Loading courses...</div>;
 
+  async function place(course: Course, patch: { department_id?: number | null; semester?: number | null }) {
+    setError('');
+    const before = courses;
+    setCourses(cs => cs.map(c => c.id === course.id ? { ...c, ...patch } : c));
+    try { await api.setCoursePlacement(course.id, patch); }
+    catch (e: any) { setCourses(before); setError(e.message); }
+  }
+
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -192,11 +206,13 @@ export default function AdminCourseManagement() {
       {error && <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">{error}</div>}
       {success && <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-sm">{success}</div>}
 
-      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+      <DepartmentsPanel departments={departments} onChange={setDepartments} />
+
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-x-auto">
         <table className="w-full">
           <thead className="bg-slate-50 border-b border-slate-100">
             <tr>
-              {['Code','Name','Instructor','Students','Actions'].map(h => (
+              {['Code','Name','Department','Semester','Instructor','Students','Actions'].map(h => (
                 <th key={h} className="text-left px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -206,6 +222,22 @@ export default function AdminCourseManagement() {
               <tr key={course.id} className="hover:bg-slate-50/50 transition-colors">
                 <td className="px-6 py-4 font-mono text-xs font-bold text-indigo-600">{course.code}</td>
                 <td className="px-6 py-4 text-sm font-semibold text-slate-900">{course.name}</td>
+                <td className="px-4 py-4">
+                  <select value={course.department_id ?? ''} aria-label={`Department for ${course.code}`}
+                    onChange={e => place(course, { department_id: e.target.value ? Number(e.target.value) : null })}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm">
+                    <option value="">Not set</option>
+                    {departments.map(d => <option key={d.id} value={d.id}>{d.code}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-4">
+                  <select value={course.semester ?? ''} aria-label={`Semester for ${course.code}`}
+                    onChange={e => place(course, { semester: e.target.value ? Number(e.target.value) : null })}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm">
+                    <option value="">Not set</option>
+                    {Array.from({ length: 8 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </td>
                 <td className="px-6 py-4 text-sm text-slate-500">{course.instructor_name || '—'}</td>
                 <td className="px-6 py-4 text-sm text-slate-500">{course.enrollment_count}</td>
                 <td className="px-6 py-4 flex gap-2">
@@ -215,7 +247,7 @@ export default function AdminCourseManagement() {
               </tr>
             ))}
             {courses.length === 0 && (
-              <tr><td colSpan={5} className="px-6 py-12 text-center text-slate-400 text-sm">No courses yet. Create one to get started.</td></tr>
+              <tr><td colSpan={7} className="px-6 py-12 text-center text-slate-400 text-sm">No courses yet. Create one to get started.</td></tr>
             )}
           </tbody>
         </table>

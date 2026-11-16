@@ -212,8 +212,9 @@ export const AdminUserManagement: React.FC = () => {
                 <input name="year" type="number" className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" placeholder="1–4" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Major (Optional)</label>
-                <input name="major" className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Computer Science" />
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Department (optional)</label>
+                <input name="major" className="w-full p-3 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" placeholder="CSE" />
+                <p className="mt-1 text-xs text-slate-500">A department code or name. A new one is added to Departments.</p>
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-3 text-sm font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
@@ -332,7 +333,7 @@ export const AdminUserManagement: React.FC = () => {
                   </span>
                 </td>
                 <td className="px-6 py-4 text-sm text-slate-500">
-                  {(user as any).major || "-"} {(user as any).year ? `Year ${(user as any).year}` : ""}
+                  {(user as any).department_code || (user as any).major || "-"} {((user as any).year_of_study ?? (user as any).year) ? `Year ${(user as any).year_of_study ?? (user as any).year}` : ""}
                 </td>
                 <td className="px-6 py-4">
                   <button
