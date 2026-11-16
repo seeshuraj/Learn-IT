@@ -165,14 +165,15 @@ const AppContent: React.FC = () => {
             } />
             <Route path="/courses" element={<CoursesPage user={user!} />} />
             <Route path="/courses/:id" element={<CourseDetailPage user={user!} />} />
-            <Route path="/assignments" element={<AssignmentsPage user={user!} />} />
             <Route path="/notes" element={<NotesPage user={user!} />} />
-            <Route path="/analytics" element={<AnalyticsPage user={user!} />} />
             {user?.role === "instructor" && (
               <Route path="/assessments" element={<AssessmentsPage user={user!} />} />
             )}
             {user?.role === "student" && (
               <>
+                {/* Student views; professors manage assignments and see class data on their dashboard. */}
+                <Route path="/assignments" element={<AssignmentsPage user={user!} />} />
+                <Route path="/analytics" element={<AnalyticsPage user={user!} />} />
                 <Route path="/roadmap" element={<RoadmapPage user={user!} />} />
                 <Route path="/marks" element={<MyMarksPage user={user!} />} />
               </>

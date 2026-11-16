@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { User, Submission, Course } from "../types";
-import { Users, BookOpen, Clock, CheckCircle2, AlertCircle, TrendingUp, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map, FileText, ChevronDown, ChevronUp, Zap } from "lucide-react";
+import { BookOpen, Clock, CheckCircle2, AlertCircle, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map, FileText, ChevronDown, ChevronUp, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
@@ -27,6 +27,12 @@ interface StudentStat {
   course_id?: number;
   course_name?: string;
 }
+
+const STATUS_TONE: Record<string, { pill: string; bar: string }> = {
+  'On Track':     { pill: 'bg-emerald-100 text-emerald-800', bar: 'bg-emerald-500' },
+  'Needs Review': { pill: 'bg-amber-100 text-amber-800',     bar: 'bg-amber-500' },
+  'At Risk':      { pill: 'bg-red-100 text-red-800',         bar: 'bg-red-500' },
+};
 
 interface RubricBreakdown {
   criterion: string;
@@ -524,7 +530,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [aiResult, setAiResult] = useState<AiGradeResult | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [activeTab, setActiveTab] = useState<"submissions" | "students" | "analytics" | "manage">("submissions");
+  const [activeTab, setActiveTab] = useState<"submissions" | "students" | "manage">("submissions");
   const [classSummary, setClassSummary] = useState("");
   const [classSummaryLoading, setClassSummaryLoading] = useState(false);
   const [showCreateAssignment, setShowCreateAssignment] = useState(false);
@@ -583,39 +589,27 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
       .finally(() => setQueueLoadingMore(false));
   }
 
+  // One row per student per course: averages are per course, and the
+  // roadmap opens for that course.
   function loadStudents() {
     setStudentsLoading(true);
     Promise.all(
       courses.map((c: Course) => api.getCourseAnalytics(c.id).then((r: any) => ({ ...r, _course: c })))
     ).then((results: any[]) => {
-      const map = new Map<string, { name: string; total: number; count: number; missed: number; late: number; student_id?: number; course_id?: number; course_name?: string }>();
+      const list: StudentStat[] = [];
       results.forEach((r: any) => {
         if (!Array.isArray(r?.students)) return;
         r.students.forEach((s: any) => {
-          const key = String(s.student_id ?? s.name);
-          const prev = map.get(key) ?? { name: s.name, total: 0, count: 0, missed: 0, late: 0 };
-          map.set(key, {
-            name:        s.name,
-            total:       prev.total  + (s.avg_grade ?? 0),
-            count:       prev.count  + 1,
-            missed:      prev.missed + (s.missed ?? 0),
-            late:        prev.late   + (s.late   ?? 0),
-            student_id:  s.student_id,
-            course_id:   r._course?.id,
-            course_name: r._course?.name,
+          const avg = Math.round(s.avg_grade ?? 0);
+          list.push({
+            name: s.name, average: avg, missed: s.missed ?? 0, late: s.late ?? 0,
+            status: avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
+            student_id: s.student_id, course_id: r._course?.id, course_name: r._course?.code ?? r._course?.name,
           });
         });
       });
-      const list: StudentStat[] = [];
-      map.forEach(v => {
-        const avg = v.count > 0 ? Math.round(v.total / v.count) : 0;
-        list.push({ name: v.name, average: avg, missed: v.missed, late: v.late,
-          status: avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
-          student_id: v.student_id, course_id: v.course_id, course_name: v.course_name });
-      });
       setStudents(list.sort((a, b) => b.average - a.average));
-      const allAvg = list.length > 0 ? Math.round(list.reduce((s, v) => s + v.average, 0) / list.length) : 0;
-      setClassAvg(allAvg);
+      setClassAvg(list.length > 0 ? Math.round(list.reduce((sum, v) => sum + v.average, 0) / list.length) : 0);
     }).catch(() => {}).finally(() => setStudentsLoading(false));
   }
 
@@ -627,28 +621,27 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   }, [user.id]);
 
   useEffect(() => {
-    if (activeTab === 'students' && courses.length > 0) loadStudents();
-    if (activeTab === 'analytics' && courses.length > 0 && students.length === 0) loadStudents();
-  }, [activeTab, courses]);
+    if (courses.length > 0) loadStudents();
+  }, [courses]);
 
   const fetchClassSummary = async () => {
     if (students.length === 0) return;
     setClassSummaryLoading(true); setClassSummary("");
     try {
+      // Student names never go to the AI provider: it sees "Student 1"... and
+      // the names are put back here, in the browser.
+      const labels = students.map((_, i) => `Student ${i + 1}`);
       const classData: ClassOverviewData = {
         courseName: courses.map(c => c.name).join(', ') || 'All Courses',
         classAverage: classAvg,
-        students: students.map(s => ({ name: s.name, average: s.average, missed: s.missed, status: s.status })),
+        students: students.map((s, i) => ({ name: labels[i], average: s.average, missed: s.missed, status: s.status })),
       };
       const summary = await getClassOverviewSummary(classData);
-      setClassSummary(summary);
+      setClassSummary(summary.replace(/Student (\d+)/g, (m, n) => students[Number(n) - 1]?.name ?? m));
     } catch { toast.error("Could not generate class summary."); }
     finally { setClassSummaryLoading(false); }
   };
 
-  useEffect(() => {
-    if (activeTab === "analytics" && students.length > 0 && !classSummary) fetchClassSummary();
-  }, [activeTab, students]);
 
   /**
    * AI Grade handler — uses RAG-enhanced /api/ai/grade-pdf when the submission
@@ -801,11 +794,11 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
             <Plus className="w-4 h-4" /> Create Assignment
           </button>
           <div role="tablist" className="flex max-w-full overflow-x-auto bg-white p-1 rounded-2xl border border-slate-100 shadow-sm">
-            {(["submissions", "students", "analytics", "manage"] as const).map((tab) => (
+            {([["submissions", "Grading"], ["students", "Students"], ["manage", "Manage"]] as const).map(([tab, label]) => (
               <button key={tab} role="tab" aria-selected={activeTab === tab} onClick={() => setActiveTab(tab)}
-                className={`shrink-0 px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all capitalize ${
+                className={`shrink-0 px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all ${
                   activeTab === tab ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-500 hover:bg-slate-50"
-                }`}>{tab}</button>
+                }`}>{label}</button>
             ))}
           </div>
         </div>
@@ -813,13 +806,13 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
-          { label: "Pending Grading",  value: queueTotal,                                      sub: "Action required",  icon: Clock,         color: "indigo"  },
-          { label: "Class Average",     value: classAvg > 0 ? `${classAvg}%` : '—',            sub: "Across all courses", icon: CheckCircle2,   color: "emerald" },
-          { label: "At-Risk Students",  value: students.filter(s => s.status === 'At Risk').length, sub: "Flagged by AI", icon: AlertCircle,    color: "red"     },
+          { label: "Waiting to be graded", value: queueTotal, sub: "Submissions without a grade", icon: Clock, tone: "bg-indigo-100 text-indigo-600" },
+          { label: "Assignment average", value: studentsLoading && !students.length ? '…' : classAvg > 0 ? `${classAvg}%` : '—', sub: "Across your courses", icon: CheckCircle2, tone: "bg-emerald-100 text-emerald-600" },
+          { label: "Below 55%", value: studentsLoading && !students.length ? '…' : new Set(students.filter(s => s.status === 'At Risk').map(s => s.student_id ?? s.name)).size, sub: "Students under 55% in at least one course", icon: AlertCircle, tone: "bg-red-100 text-red-600" },
         ].map((kpi, i) => (
           <div key={i} className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
             <div className="flex items-center gap-4 mb-4">
-              <div className={`bg-${kpi.color}-100 p-3 rounded-2xl text-${kpi.color}-600`}>
+              <div className={`${kpi.tone} p-3 rounded-2xl`}>
                 <kpi.icon className="w-6 h-6" />
               </div>
               <div>
@@ -978,8 +971,8 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                               <span className="text-sm font-bold text-green-900">AI Grading Result</span>
                               <div className="flex items-center gap-1 bg-white/60 px-2 py-0.5 rounded-full border border-green-100">
                                 <Sparkles className="w-3 h-3 text-green-600" />
-                                <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">
-                                  {aiResult.graded_via === 'pdf' ? 'NVIDIA NIM · RAG' : 'NVIDIA NIM'}
+                                <span className="text-xs font-semibold text-green-800">
+                                  {aiResult.graded_via === 'pdf' ? 'Draft from the submitted files' : 'Draft'}: check before saving
                                 </span>
                               </div>
                               <ConfidenceBadge confidence={aiResult.confidence} />
@@ -1104,153 +1097,112 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
       )}
 
       {activeTab === "students" && (
-        <div className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
-          <div className="p-8 border-b border-slate-50 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-4 flex-1">
-              <h3 className="text-xl font-bold text-slate-900">Student Monitoring</h3>
-              <button type="button" onClick={loadStudents} title="Refresh student data"
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-indigo-600 transition-colors">
-                <RefreshCw className={`w-3.5 h-3.5 ${studentsLoading ? 'animate-spin' : ''}`} />
-                <span>{studentsLoading ? 'Refreshing…' : 'Refresh'}</span>
-              </button>
-            </div>
-            <div className="relative max-w-xs w-full">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input type="text" placeholder="Search students…" value={studentSearch} onChange={e => setStudentSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
-            </div>
-          </div>
-          {studentsLoading ? (
-            <div className="flex items-center gap-3 text-slate-400 text-sm p-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading student data…</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="bg-slate-50/50">
-                    {["Student", "Average", "Late", "Missed", "AI Status", ""].map((h, i) => (
-                      <th key={i} className={`px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${i === 5 ? 'text-right' : ''}`}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {filteredStudents.map((student, i) => {
-                    const color = student.status === "On Track" ? "emerald" : student.status === "At Risk" ? "red" : "amber";
-                    return (
-                      <tr key={i} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-8 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-10 h-10 bg-${color}-50 text-${color}-600 rounded-xl flex items-center justify-center font-bold text-xs`}>
-                              {student.name.split(" ").map((n: string) => n[0]).join("")}
-                            </div>
-                            <span className="text-sm font-bold text-slate-900">{student.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-8 py-4 font-bold text-slate-700 tabular-nums">{student.average}%</td>
-                        <td className="px-8 py-4">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                            student.late > 0 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-400'
-                          }`}>{student.late}</span>
-                        </td>
-                        <td className="px-8 py-4 text-slate-500">{student.missed}</td>
-                        <td className="px-8 py-4">
-                          <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-${color}-100 text-${color}-700`}>
-                            {student.status}
-                          </span>
-                        </td>
-                        <td className="px-8 py-4 text-right">
-                          {student.course_id ? (
-                            <button
-                              onClick={() => setRoadmapPanel({
-                                studentName: student.name,
-                                courseId: student.course_id!,
-                                courseName: student.course_name ?? 'Course',
-                              })}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-colors"
-                            >
-                              <Map className="w-3.5 h-3.5" /> Roadmap
-                            </button>
-                          ) : (
-                            <span className="text-slate-400 text-xs">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {filteredStudents.length === 0 && (
-                    <tr><td colSpan={6} className="text-center text-sm text-slate-400 py-12">
-                      {students.length === 0 ? 'No student data available yet.' : 'No students match the search.'}
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === "analytics" && (
-        <div className="space-y-8">
-          <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-6 rounded-[28px] border border-green-100">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="bg-green-700 p-2 rounded-xl"><Brain className="w-4 h-4 text-white" /></div>
-              <h3 className="text-sm font-bold text-green-900">AI Class Overview</h3>
-              <div className="flex items-center gap-1 bg-white/60 px-2.5 py-1 rounded-full border border-green-100 ml-2">
-                <Sparkles className="w-3 h-3 text-green-600" />
-                <span className="text-[10px] font-bold text-green-700 uppercase tracking-wider">NVIDIA NIM</span>
+        <div className="space-y-6">
+          <div className="bg-white p-6 rounded-[28px] border border-slate-100 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <div className="bg-indigo-600 p-2 rounded-xl"><Brain className="w-4 h-4 text-white" /></div>
+                <h3 className="text-sm font-bold text-slate-900">Class summary</h3>
               </div>
+              {!classSummaryLoading && students.length > 0 && (
+                <button onClick={fetchClassSummary} className="text-sm font-semibold text-indigo-700 hover:underline">
+                  {classSummary ? 'Summarise again' : 'Summarise the class with AI'}
+                </button>
+              )}
             </div>
             {classSummaryLoading ? (
-              <div className="flex items-center gap-3 text-green-800 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Generating AI class summary…</div>
+              <div className="mt-3 flex items-center gap-3 text-slate-600 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Writing the summary…</div>
             ) : classSummary ? (
-              <p className="text-sm text-green-900 leading-relaxed"><BoldText text={classSummary} /></p>
+              <p className="mt-3 text-sm text-slate-800 leading-relaxed"><BoldText text={classSummary} /></p>
             ) : (
-              <button onClick={fetchClassSummary} className="text-sm text-green-700 font-bold hover:underline">Generate summary</button>
+              <p className="mt-2 text-sm text-slate-500">A short read of who is doing well and who needs help. Student names are not sent to the AI.</p>
             )}
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {[
-              { label: "Class Average", value: classAvg > 0 ? `${classAvg}%` : '—', icon: TrendingUp,  color: "emerald" },
-              { label: "On Track",      value: students.filter(s => s.status === "On Track").length,     icon: CheckCircle2, color: "indigo"  },
-              { label: "At Risk",       value: students.filter(s => s.status === "At Risk").length,      icon: AlertCircle,  color: "red"     },
-            ].map((kpi, i) => (
-              <div key={i} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className={`bg-${kpi.color}-100 p-2.5 rounded-xl`}><kpi.icon className={`w-5 h-5 text-${kpi.color}-600`} /></div>
-                  <p className="text-sm text-slate-500 font-medium">{kpi.label}</p>
-                </div>
-                <p className="text-3xl font-bold text-slate-900">{kpi.value}</p>
+
+          <div className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
+            <div className="p-6 sm:p-8 border-b border-slate-50 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-4 flex-1">
+                <h3 className="text-xl font-bold text-slate-900">Students</h3>
+                <button type="button" onClick={loadStudents} title="Refresh student data"
+                  className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-indigo-600 transition-colors">
+                  <RefreshCw className={`w-3.5 h-3.5 ${studentsLoading ? 'animate-spin' : ''}`} />
+                  <span>{studentsLoading ? 'Refreshing…' : 'Refresh'}</span>
+                </button>
               </div>
-            ))}
-          </div>
-          <div className="bg-white rounded-[28px] border border-slate-100 shadow-sm overflow-hidden">
-            <div className="px-8 py-5 border-b border-slate-50">
-              <h3 className="text-sm font-bold text-slate-700 uppercase tracking-widest flex items-center gap-2">
-                <BarChart3 className="w-4 h-4 text-indigo-500" /> Performance Breakdown
-              </h3>
+              <div className="relative max-w-xs w-full">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input type="text" placeholder="Search students…" value={studentSearch} onChange={e => setStudentSearch(e.target.value)}
+                  aria-label="Search students"
+                  className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
+              </div>
             </div>
-            {studentsLoading ? (
-              <div className="flex items-center gap-3 text-slate-400 text-sm p-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
+            {studentsLoading && students.length === 0 ? (
+              <div className="flex items-center gap-3 text-slate-500 text-sm p-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading student data…</div>
             ) : (
-              <div className="divide-y divide-slate-50">
-                {students.map((s, i) => {
-                  const color = s.status === "On Track" ? "emerald" : s.status === "At Risk" ? "red" : "amber";
-                  return (
-                    <div key={i} className="px-8 py-4 flex items-center gap-6">
-                      <div className="w-32 shrink-0">
-                        <p className="text-sm font-bold text-slate-900 truncate">{s.name}</p>
-                        <span className={`text-[10px] font-bold uppercase tracking-wider text-${color}-600`}>{s.status}</span>
-                      </div>
-                      <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
-                        <div className={`bg-${color}-500 h-2 rounded-full transition-all`} style={{ width: `${s.average}%` }} />
-                      </div>
-                      <span className="text-sm font-bold text-slate-700 tabular-nums w-12 text-right">{s.average}%</span>
-                    </div>
-                  );
-                })}
-                {students.length === 0 && <div className="text-center text-sm text-slate-400 py-12">No analytics data available yet.</div>}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-slate-50/50 text-xs font-semibold text-slate-500">
+                      <th className="px-6 py-3">Student</th>
+                      {courses.length > 1 && <th className="px-4 py-3">Course</th>}
+                      <th className="px-4 py-3">Assignment average</th>
+                      <th className="px-4 py-3">Late</th>
+                      <th className="px-4 py-3">Missed</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-6 py-3"><span className="sr-only">Roadmap</span></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {filteredStudents.map((student) => {
+                      const tone = STATUS_TONE[student.status] ?? STATUS_TONE['Needs Review'];
+                      return (
+                        <tr key={`${student.student_id}-${student.course_id}`} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-6 py-3 text-sm font-semibold text-slate-900">{student.name}</td>
+                          {courses.length > 1 && <td className="px-4 py-3 text-sm text-slate-600">{student.course_name}</td>}
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <div className="w-24 bg-slate-100 rounded-full h-2 overflow-hidden">
+                                <div className={`${tone.bar} h-2 rounded-full`} style={{ width: `${Math.min(100, student.average)}%` }} />
+                              </div>
+                              <span className="text-sm font-bold text-slate-700 tabular-nums">{student.average}%</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-sm tabular-nums text-slate-600">{student.late}</td>
+                          <td className="px-4 py-3 text-sm tabular-nums text-slate-600">{student.missed}</td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${tone.pill}`}>{student.status}</span>
+                          </td>
+                          <td className="px-6 py-3 text-right">
+                            {student.course_id ? (
+                              <button
+                                onClick={() => setRoadmapPanel({
+                                  studentName: student.name,
+                                  courseId: student.course_id!,
+                                  courseName: student.course_name ?? 'Course',
+                                })}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-colors"
+                              >
+                                <Map className="w-3.5 h-3.5" /> Roadmap
+                              </button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredStudents.length === 0 && (
+                      <tr><td colSpan={7} className="text-center text-sm text-slate-500 py-12">
+                        {students.length === 0 ? 'No students enrolled in your courses yet.' : 'No students match the search.'}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
+          <p className="text-xs text-slate-500">
+            Status uses the assignment average: on track at 75% and above, needs review from 55%, below 55% otherwise.
+            Unit test and semester marks are under Assessments.
+          </p>
         </div>
       )}
 
