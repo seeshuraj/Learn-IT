@@ -35,6 +35,7 @@ import { generateTempPassword } from '../lib/tempPassword.js';
 import {
   validateImportRows, ImportRow, IMPORT_BATCH_SIZE, IMPORT_MAX_ROWS,
 } from '../lib/userImport.js';
+import { resolveDepartmentId } from '../lib/departments.js';
 
 const require = createRequire(import.meta.url);
 const multer = require('multer');
@@ -93,9 +94,12 @@ export function createUserImportRouter(
         [row.name, row.email, row.role, row.year, row.major],
       );
       const userId = inserted.rows[0].id;
+      // The department column becomes a real department (created if new).
+      const departmentId = await resolveDepartmentId(client, institutionId, row.major, { create: true });
       await client.query(
-        'INSERT INTO institution_members (institution_id, user_id, role) VALUES ($1, $2, $3)',
-        [institutionId, userId, row.role],
+        `INSERT INTO institution_members (institution_id, user_id, role, department_id, year_of_study)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [institutionId, userId, row.role, departmentId, row.role === 'student' ? row.year : null],
       );
 
       // Invite mode: the account gets a random password nobody sees; the person

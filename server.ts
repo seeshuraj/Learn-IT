@@ -56,6 +56,8 @@ import { createNotificationsRouter } from "./src/server/routes/notifications.js"
 import { createAuthRouter } from "./src/server/routes/auth.js";
 import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights.js";
 import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
+import { createDepartmentsRouter } from "./src/server/routes/departments.js";
+import { resolveDepartmentId } from "./src/server/lib/departments.js";
 import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { createGradingRouter } from "./src/server/routes/grading.js";
 import { createUserImportRouter } from "./src/server/routes/userImport.js";
@@ -682,6 +684,7 @@ async function startServer() {
   app.use("/api/auth",               createAuthRouter(pool));
   app.use("/api/student",            createGradingInsightsRouter(pool));
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
+  app.use("/api/admin",              createDepartmentsRouter(pool));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
   app.use("/api/admin/export",       createDataExportRouter(pool));
   app.use("/api/submissions",        createGradingRouter(pool, nimChat));
@@ -1326,11 +1329,13 @@ async function startServer() {
       const role = String(req.query.role ?? "");
       if (role === "admin") where.push("im.role IN ('institution_admin','institution_owner')");
       else if (role === "student" || role === "instructor") { params.push(role); where.push(`im.role = $${params.length}`); }
-      const from = `FROM institution_members im JOIN users u ON u.id = im.user_id WHERE ${where.join(" AND ")}`;
+      const from = `FROM institution_members im JOIN users u ON u.id = im.user_id
+         LEFT JOIN departments d ON d.id = im.department_id WHERE ${where.join(" AND ")}`;
       const select = `SELECT u.id, u.name, u.email,
                 CASE WHEN im.role IN ('institution_admin','institution_owner') THEN 'admin' ELSE im.role END AS role,
                 CASE WHEN im.status = 'active' THEN u.active ELSE 0 END AS active,
-                u.year, u.major, u.gpa, im.role AS member_role, im.status AS member_status
+                u.year, u.major, u.gpa, im.role AS member_role, im.status AS member_status,
+                im.department_id, d.code AS department_code, d.name AS department_name, im.year_of_study
          ${from}
          ORDER BY u.name, u.id`;
       if (!paged) return res.json(await query(select, params));
@@ -1372,9 +1377,11 @@ async function startServer() {
           [name, email, role, year ?? null, major ?? null, gpa ?? null]
         );
         const newUser = user.rows[0];
+        const departmentId = await resolveDepartmentId(client, institutionId, major, { create: true });
         await client.query(
-          "INSERT INTO institution_members (institution_id, user_id, role) VALUES ($1,$2,$3)",
-          [institutionId, newUser.id, memberRoleOf(role)]
+          `INSERT INTO institution_members (institution_id, user_id, role, department_id, year_of_study)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [institutionId, newUser.id, memberRoleOf(role), departmentId, role === "student" ? year ?? null : null]
         );
         const authResult = await createAuthUserAndIdentityMapRow(client, newUser.id, email, role);
         await client.query("COMMIT");
@@ -1445,9 +1452,13 @@ async function startServer() {
              role       = COALESCE($1, role),
              status     = CASE WHEN $2::int IS NULL THEN status
                                WHEN $2::int = 1 THEN 'active' ELSE 'suspended' END,
+             department_id = CASE WHEN $5::boolean THEN $6::int ELSE department_id END,
+             year_of_study = COALESCE($7::smallint, year_of_study),
              updated_at = now()
            WHERE user_id = $3 AND institution_id = $4`,
-          [nextMemberRole, active ?? null, targetId, caller.institutionId]
+          [nextMemberRole, active ?? null, targetId, caller.institutionId,
+           major !== undefined, major ? await resolveDepartmentId(client, caller.institutionId, major, { create: true }) : null,
+           year ?? null]
         );
         if (role) {
           await client.query("UPDATE user_identity_map SET role = $1 WHERE legacy_user_id = $2", [role, targetId]);
@@ -1515,8 +1526,9 @@ async function startServer() {
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const courses = await query(
-        `SELECT c.*, u.name AS instructor_name
+        `SELECT c.*, u.name AS instructor_name, d.code AS department_code, d.name AS department_name
          FROM courses c LEFT JOIN users u ON c.instructor_id=u.id
+         LEFT JOIN departments d ON d.id = c.department_id
          WHERE c.institution_id = $1
          ORDER BY c.name`,
         [callerOf(req).institutionId]

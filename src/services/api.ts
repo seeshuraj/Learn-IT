@@ -13,6 +13,15 @@
 import { supabase, getAccessToken } from './supabaseClient';
 import type { StudentAnalyticsData, ClassOverviewData } from './aiService';
 
+export interface Department {
+  id: number;
+  code: string;
+  name: string;
+  students: number;
+  professors: number;
+  courses: number;
+}
+
 // ── Assessment types (see src/server/routes/unitExams.ts) ────────────────────
 export type AssessmentType = 'unit_test' | 'model' | 'end_semester' | 'quiz' | 'lab' | 'other';
 
@@ -435,6 +444,17 @@ export const api = {
   // aggregated grading insights (strengths + improvements from ai_feedback)
   getStudentGradingInsights: (studentId: number) =>
     request(`/api/student/${studentId}/grading-insights`),
+
+  // ── Departments (admin) ────────────────────────────────────────────────────
+  getDepartments: () => request<Department[]>('/api/admin/departments'),
+  createDepartment: (d: { code: string; name: string }) =>
+    request<Department>('/api/admin/departments', { method: 'POST', body: JSON.stringify(d) }),
+  updateDepartment: (id: number, d: { code?: string; name?: string }) =>
+    request<Department>(`/api/admin/departments/${id}`, { method: 'PATCH', body: JSON.stringify(d) }),
+  deleteDepartment: (id: number) => request(`/api/admin/departments/${id}`, { method: 'DELETE' }),
+  /** Put a course in a department and semester (null clears). */
+  setCoursePlacement: (courseId: number, p: { department_id?: number | null; semester?: number | null }) =>
+    request(`/api/admin/courses/${courseId}/placement`, { method: 'PATCH', body: JSON.stringify(p) }),
 
   // ── Assessments (unit tests, model, end-semester…) — Instructor ────────────
   /** Create an assessment (a draft until published). */
