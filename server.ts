@@ -6,7 +6,6 @@ import os from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { createRequire } from "module";
-import fs from "fs";
 import dns from "dns";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -232,7 +231,6 @@ const mammoth  = require("mammoth");
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
-const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
 
 const pool = new Pool({
@@ -269,8 +267,8 @@ function sanitizeText(t: string) {
     .replace(/\uFFFD/g, "");
 }
 
-const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Uploads are kept in memory and stored in Supabase Storage; nothing is written
+// to local disk (Cloud Run's filesystem is in-memory and not shared).
 
 const ALLOWED_NOTE_MIMES = new Set([
   "application/pdf",
@@ -339,27 +337,6 @@ async function extractTextFromBuffer(
   }
 }
 
-async function extractText(filePath: string, mimetype: string): Promise<string> {
-  const ext = path.extname(filePath).toLowerCase();
-  try {
-    if (ext === ".pdf" || mimetype === "application/pdf") {
-      const buf  = fs.readFileSync(filePath);
-      const data = await pdfParse(buf);
-      return sanitizeText(data.text ?? "");
-    }
-    if (ext === ".docx" || mimetype.includes("wordprocessingml")) {
-      const result = await mammoth.extractRawText({ path: filePath });
-      return sanitizeText(result.value ?? "");
-    }
-    if (ext === ".txt" || mimetype === "text/plain") {
-      return sanitizeText(fs.readFileSync(filePath, "utf-8"));
-    }
-    return "";
-  } catch (e) {
-    log.error("text extraction failed", errorFields(e));
-    return "";
-  }
-}
 
 function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
   const words  = text.split(/\s+/).filter(Boolean);
