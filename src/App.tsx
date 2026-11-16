@@ -57,6 +57,7 @@ const ResetPasswordPage     = lazyPage(() => import("./pages/ResetPasswordPage")
 const RoadmapPage           = lazyPage(() => import("./pages/RoadmapPage"));
 const AssessmentsPage       = lazyPage(() => import("./pages/AssessmentsPage"));
 const MyMarksPage           = lazyPage(() => import("./pages/MyMarksPage"));
+const AdminTimetablesPage   = lazyPage(() => import("./pages/AdminTimetablesPage"));
 
 /** Shown while a page's code downloads (usually well under a second). */
 const PageLoading: React.FC = () => (
@@ -184,6 +185,7 @@ const AppContent: React.FC = () => {
                 <Route path="/admin/courses" element={<AdminCourseManagement />} />
                 <Route path="/admin/settings" element={<AdminSettings />} />
                 <Route path="/admin/data" element={<AdminDataPage />} />
+                <Route path="/admin/timetables" element={<AdminTimetablesPage />} />
               </>
             )}
             <Route path="*" element={<Navigate to="/" replace />} />

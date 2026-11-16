@@ -108,6 +108,49 @@ export interface StudentMarks {
   gpa: { semesters: { semester: number; sgpa: number | null; credits: number; courses: number }[]; cgpa: number | null };
 }
 
+export interface TimetableSummary {
+  id: number;
+  title: string;
+  assessment_type: AssessmentType;
+  status: 'extracting' | 'draft' | 'published' | 'failed';
+  source_kind: string | null;
+  source_name: string | null;
+  published_at: string | null;
+  created_at: string;
+  exams: number;
+  matched: number;
+  first_date: string | null;
+  last_date: string | null;
+}
+
+export interface TimetableEntry {
+  id: number;
+  row_number: number | null;
+  exam_date: string | null;
+  session: 'FN' | 'AN' | null;
+  start_time: string | null;
+  end_time: string | null;
+  course_code: string | null;
+  course_name: string | null;
+  department_text: string | null;
+  department_id: number | null;
+  department_code: string | null;
+  year_of_study: number | null;
+  semester: number | null;
+  venue: string | null;
+  course_id: number | null;
+  matched_code: string | null;
+  matched_name: string | null;
+  professor_name: string | null;
+  unit_exam_id: number | null;
+  problems: string[];
+}
+
+export interface TimetableDetail {
+  timetable: TimetableSummary & { extraction_note: string | null; has_source: boolean };
+  entries: TimetableEntry[];
+}
+
 export interface MarksPreview {
   rows_total: number;
   matched: (MarksEntry & { row: number; name: string | null; email: string | null; error: string | null })[];
@@ -455,6 +498,30 @@ export const api = {
   /** Put a course in a department and semester (null clears). */
   setCoursePlacement: (courseId: number, p: { department_id?: number | null; semester?: number | null }) =>
     request(`/api/admin/courses/${courseId}/placement`, { method: 'PATCH', body: JSON.stringify(p) }),
+
+  // ── Exam timetables (admin) ────────────────────────────────────────────────
+  getTimetables: () => request<TimetableSummary[]>('/api/admin/timetables'),
+  getTimetable: (id: number) => request<TimetableDetail>(`/api/admin/timetables/${id}`),
+  uploadTimetable: async (file: File, title: string, assessmentType: AssessmentType): Promise<TimetableDetail> => {
+    const form = new FormData();
+    form.append('title', title);
+    form.append('assessment_type', assessmentType);
+    form.append('file', file);
+    const res = await fetch(`${BASE}/api/admin/timetables`, { method: 'POST', headers: await authHeaders(), body: form, credentials: 'include' });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data as any)?.error ?? `Upload failed (HTTP ${res.status})`);
+    return data as TimetableDetail;
+  },
+  getTimetableSource: (id: number) => request<{ url: string; kind: string; name: string }>(`/api/admin/timetables/${id}/source`),
+  updateTimetableEntry: (id: number, entryId: number, patch: Record<string, unknown>) =>
+    request<TimetableEntry>(`/api/admin/timetables/${id}/entries/${entryId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  addTimetableEntry: (id: number, entry: Record<string, unknown>) =>
+    request<TimetableDetail>(`/api/admin/timetables/${id}/entries`, { method: 'POST', body: JSON.stringify(entry) }),
+  deleteTimetableEntry: (id: number, entryId: number) =>
+    request(`/api/admin/timetables/${id}/entries/${entryId}`, { method: 'DELETE' }),
+  publishTimetable: (id: number) =>
+    request<TimetableDetail & { result: { created: number; moved: number; professors: number; students: number } }>(`/api/admin/timetables/${id}/publish`, { method: 'POST' }),
+  deleteTimetable: (id: number) => request(`/api/admin/timetables/${id}`, { method: 'DELETE' }),
 
   // ── Assessments (unit tests, model, end-semester…) — Instructor ────────────
   /** Create an assessment (a draft until published). */

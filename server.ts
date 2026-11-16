@@ -57,6 +57,7 @@ import { createAuthRouter } from "./src/server/routes/auth.js";
 import { createGradingInsightsRouter } from "./src/server/routes/gradingInsights.js";
 import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
 import { createDepartmentsRouter } from "./src/server/routes/departments.js";
+import { createTimetablesRouter, storeEntries, TIMETABLE_BUCKET } from "./src/server/routes/timetables.js";
 import { resolveDepartmentId } from "./src/server/lib/departments.js";
 import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { createGradingRouter } from "./src/server/routes/grading.js";
@@ -80,7 +81,9 @@ import {
   createNimEmbedder, embedModelFromEnv, reembedStaleChunks,
 } from './src/server/lib/embeddings.js';
 import { searchModuleChunks, insertNoteChunks, type SourcedChunk } from './src/server/lib/noteSearch.js';
-import { createNimChat, chatModelsFromEnv, claudeFallbackFromEnv, ChatAborted } from './src/server/lib/llm.js';
+import { createNimChat, chatModelsFromEnv, claudeFallbackFromEnv, ChatAborted, DEFAULT_CLAUDE_MODEL, type LlmUsage } from './src/server/lib/llm.js';
+import { extractTimetable, TimetableReadError, type TimetableSource } from './src/server/lib/timetableExtract.js';
+import { normaliseEntry } from './src/server/lib/timetable.js';
 import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
   assertManagesCourse, assertCanAccessCourse, loadNoteForCaller,
@@ -396,12 +399,8 @@ async function retrieveChunks(
 const aiUsageRecorder = new AiUsageRecorder(pool);
 const aiBudget = new AiBudgetGuard(pool, { defaultBudget: defaultBudgetFromEnv() });
 
-const chatClient = createNimChat({
-  apiKey: process.env.NVIDIA_API_KEY,
-  models: chatModelsFromEnv(),
-  // Paid last resort when every NVIDIA model is down (CLAUDE_API / CLAUDE_MODEL).
-  claude: claudeFallbackFromEnv(),
-  isProduction,
+// Budget check and metering shared by every AI call (chat and timetable reading).
+const aiHooks = {
   beforeCall: async () => {
     const ctx = currentAiContext();
     if (!ctx) return;
@@ -413,12 +412,21 @@ const chatClient = createNimChat({
       log.warn("ai budget check failed; allowing call", errorFields(e));
     }
   },
-  onUsage: usage => {
+  onUsage: (usage: LlmUsage) => {
     const ctx = currentAiContext();
     if (!ctx) return;
     aiUsageRecorder.record(ctx, usage);
     aiBudget.add(ctx.institutionId, usage.promptTokens + usage.completionTokens);
   },
+};
+
+const chatClient = createNimChat({
+  apiKey: process.env.NVIDIA_API_KEY,
+  models: chatModelsFromEnv(),
+  // Paid last resort when every NVIDIA model is down (CLAUDE_API / CLAUDE_MODEL).
+  claude: claudeFallbackFromEnv(),
+  isProduction,
+  ...aiHooks,
 });
 
 // Flush metered usage before Render stops the instance on a deploy.
@@ -444,6 +452,60 @@ const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 // "api" only serves requests; "worker" only runs jobs (a Render background
 // worker). Split them when uploads or AI drafts start slowing the API down.
 const PROCESS_ROLE = (["api", "worker", "all"] as const).find(r => r === process.env.PROCESS_ROLE) ?? "all";
+/**
+ * Background job: read an uploaded timetable (image, PDF or grid-style sheet)
+ * with Claude and store its rows for the admin to review.
+ */
+async function readTimetableWithAi(timetableId: number, institutionId: string, csv?: string): Promise<{ rows: number }> {
+  const t = await queryOne(`SELECT id, source_kind, source_path FROM exam_timetables WHERE id = $1 AND institution_id = $2`, [timetableId, institutionId]);
+  if (!t) throw new PermanentJobError("Timetable not found");
+  const apiKey = process.env.CLAUDE_API;
+  if (!apiKey) throw new PermanentJobError("Reading images and PDFs isn't set up. Upload an Excel file with one exam per row.");
+
+  let src: TimetableSource;
+  if (csv) src = { kind: "text", text: csv };
+  else {
+    if (!t.source_path) throw new PermanentJobError("The uploaded file is missing. Upload it again.");
+    const { data, error } = await supabaseAdmin.storage.from(TIMETABLE_BUCKET).download(t.source_path);
+    if (error || !data) throw new Error(`timetable download failed: ${error?.message}`);
+    const base64 = Buffer.from(await data.arrayBuffer()).toString("base64");
+    src = t.source_kind === "pdf"
+      ? { kind: "pdf", base64 }
+      : { kind: "image", base64, mediaType: /\.png$/i.test(t.source_path) ? "image/png" : /\.webp$/i.test(t.source_path) ? "image/webp" : "image/jpeg" };
+  }
+
+  let out;
+  try {
+    out = await extractTimetable(src, { apiKey, model: process.env.CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL, ...aiHooks });
+  } catch (e) {
+    if (e instanceof TimetableReadError || e instanceof AiBudgetExceeded) throw new PermanentJobError(e.message);
+    throw e;
+  }
+  const entries = out.rows.map(normaliseEntry).filter(e => e.exam_date || e.course_code || e.course_name);
+  const notes = [
+    out.note,
+    out.truncated ? "The timetable was too long to read in one go; check the last dates are all there." : null,
+    "Read by AI: check each row against the file before publishing.",
+  ].filter(Boolean).join(" ");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM exam_timetable_entries WHERE timetable_id = $1", [timetableId]); // a retry starts clean
+    const n = await storeEntries(client, institutionId, timetableId, entries);
+    await client.query(
+      `UPDATE exam_timetables SET status = 'draft', extraction_note = $2, updated_at = now() WHERE id = $1`,
+      [timetableId, n ? notes : "No exams were found in this file. Check it's the right file, or upload an Excel version."]
+    );
+    await client.query("COMMIT");
+    return { rows: n };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 const jobQueue = new JobQueue(pool, {
   // Containers all run as pid 1, so the hostname tells instances apart.
   workerId: `${process.env.K_REVISION ?? process.env.RENDER_INSTANCE_ID ?? "local"}-${os.hostname()}-${process.pid}`,
@@ -499,6 +561,21 @@ jobQueue
     await run(
       `UPDATE notes SET processing_status = 'failed', processing_error = $2 WHERE id = $1`,
       [Number(job.payload.noteId), "This file could not be read. Try a text-based PDF, DOCX or TXT."]
+    );
+  })
+  .register("timetable.extract", job => {
+    const { timetableId, csv } = job.payload as { timetableId: number; csv?: string };
+    return runWithAiContext(
+      { institutionId: job.institution_id!, userId: job.created_by, feature: "timetable" },
+      () => readTimetableWithAi(timetableId, job.institution_id!, csv),
+    );
+  })
+  .onFailure("timetable.extract", async (job, err) => {
+    const why = err instanceof PermanentJobError ? err.message
+      : "This file couldn't be read. Try a clearer image, a PDF under 10 pages, or an Excel file with one exam per row.";
+    await run(
+      `UPDATE exam_timetables SET status = 'failed', extraction_note = $2, updated_at = now() WHERE id = $1`,
+      [Number(job.payload.timetableId), why]
     );
   })
   .register("submission.ai_grade", job => {
@@ -685,6 +762,7 @@ async function startServer() {
   app.use("/api/student",            createGradingInsightsRouter(pool));
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/admin",              createDepartmentsRouter(pool));
+  app.use("/api/admin",              createTimetablesRouter(pool, supabaseAdmin, jobQueue));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));
   app.use("/api/admin/export",       createDataExportRouter(pool));
   app.use("/api/submissions",        createGradingRouter(pool, nimChat));
