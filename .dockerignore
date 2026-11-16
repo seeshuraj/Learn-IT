@@ -1,0 +1,17 @@
+# Keep the build context small and free of secrets.
+.git
+.github
+node_modules
+dist
+dist-server
+docs
+supabase
+public
+*.md
+.env
+.env.*
+!.env.example
+**/__tests__
+coverage
+.vercel
+.DS_Store

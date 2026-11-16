@@ -2,10 +2,10 @@ import express, { Request, Response, NextFunction } from "express";
 import pkg from "pg";
 const { Pool } = pkg;
 import path from "path";
+import os from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { createRequire } from "module";
-import fs from "fs";
 import dns from "dns";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -231,7 +231,6 @@ const mammoth  = require("mammoth");
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
-const PROJECT_ROOT = process.cwd();
 const isProduction = process.env.NODE_ENV === "production";
 
 const pool = new Pool({
@@ -268,8 +267,8 @@ function sanitizeText(t: string) {
     .replace(/\uFFFD/g, "");
 }
 
-const UPLOADS_DIR = path.join(PROJECT_ROOT, "uploads");
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Uploads are kept in memory and stored in Supabase Storage; nothing is written
+// to local disk (Cloud Run's filesystem is in-memory and not shared).
 
 const ALLOWED_NOTE_MIMES = new Set([
   "application/pdf",
@@ -338,27 +337,6 @@ async function extractTextFromBuffer(
   }
 }
 
-async function extractText(filePath: string, mimetype: string): Promise<string> {
-  const ext = path.extname(filePath).toLowerCase();
-  try {
-    if (ext === ".pdf" || mimetype === "application/pdf") {
-      const buf  = fs.readFileSync(filePath);
-      const data = await pdfParse(buf);
-      return sanitizeText(data.text ?? "");
-    }
-    if (ext === ".docx" || mimetype.includes("wordprocessingml")) {
-      const result = await mammoth.extractRawText({ path: filePath });
-      return sanitizeText(result.value ?? "");
-    }
-    if (ext === ".txt" || mimetype === "text/plain") {
-      return sanitizeText(fs.readFileSync(filePath, "utf-8"));
-    }
-    return "";
-  } catch (e) {
-    log.error("text extraction failed", errorFields(e));
-    return "";
-  }
-}
 
 function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
   const words  = text.split(/\s+/).filter(Boolean);
@@ -445,7 +423,8 @@ const chatClient = createNimChat({
 // Let running jobs finish (they're retried if cut off) and flush metered usage
 // before Render stops the instance on a deploy.
 process.once("SIGTERM", () => {
-  void Promise.allSettled([jobQueue.stop(15_000), aiUsageRecorder.flush()]).finally(() => process.exit(0));
+  // Cloud Run allows 10 s after SIGTERM; unfinished jobs are retried by another instance.
+  void Promise.allSettled([jobQueue.stop(8_000), aiUsageRecorder.flush()]).finally(() => process.exit(0));
 });
 const nimChat = chatClient.chat;
 
@@ -464,7 +443,8 @@ const SNAPSHOT_STALE_MS = 35 * 60 * 1000;
 // worker). Split them when uploads or AI drafts start slowing the API down.
 const PROCESS_ROLE = (["api", "worker", "all"] as const).find(r => r === process.env.PROCESS_ROLE) ?? "all";
 const jobQueue = new JobQueue(pool, {
-  workerId: `${process.env.RENDER_INSTANCE_ID ?? "local"}-${process.pid}`,
+  // Containers all run as pid 1, so the hostname tells instances apart.
+  workerId: `${process.env.K_REVISION ?? process.env.RENDER_INSTANCE_ID ?? "local"}-${os.hostname()}-${process.pid}`,
   concurrency: Math.min(8, Math.max(1, Number(process.env.JOB_CONCURRENCY) || 2)),
 });
 

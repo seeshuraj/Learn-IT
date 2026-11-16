@@ -93,3 +93,27 @@ jobs:
               console.log(`::warning title=audit ${v.severity}::${name} (${v.range}): ${via}`);
             }'
 
+
+  docker:
+    name: API container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Cloud Run image
+        run: docker build -t learnit-api:ci .
+      - name: Image starts and serves /api/health
+        run: |
+          # Placeholder config: only checks the server boots and answers.
+          # Every DB call fails fast because nothing listens on that port.
+          docker run -d --name api -p 8080:8080 \
+            -e DATABASE_URL=postgres://ci:ci@127.0.0.1:1/ci \
+            -e SUPABASE_URL=https://example.supabase.co \
+            -e SUPABASE_SERVICE_ROLE_KEY=ci-placeholder \
+            -e ALLOWED_ORIGIN=https://example.com \
+            learnit-api:ci
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8080/api/health; then echo; docker rm -f api >/dev/null; exit 0; fi
+            sleep 2
+          done
+          docker logs api
+          exit 1
