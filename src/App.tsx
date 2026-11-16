@@ -56,6 +56,7 @@ const ForgotPasswordPage    = lazyPage(() => import("./pages/ForgotPasswordPage"
 const ResetPasswordPage     = lazyPage(() => import("./pages/ResetPasswordPage"));
 const RoadmapPage           = lazyPage(() => import("./pages/RoadmapPage"));
 const AssessmentsPage       = lazyPage(() => import("./pages/AssessmentsPage"));
+const MyMarksPage           = lazyPage(() => import("./pages/MyMarksPage"));
 
 /** Shown while a page's code downloads (usually well under a second). */
 const PageLoading: React.FC = () => (
@@ -171,7 +172,10 @@ const AppContent: React.FC = () => {
               <Route path="/assessments" element={<AssessmentsPage user={user!} />} />
             )}
             {user?.role === "student" && (
-              <Route path="/roadmap" element={<RoadmapPage user={user!} />} />
+              <>
+                <Route path="/roadmap" element={<RoadmapPage user={user!} />} />
+                <Route path="/marks" element={<MyMarksPage user={user!} />} />
+              </>
             )}
             {user?.role === "admin" && (
               <>

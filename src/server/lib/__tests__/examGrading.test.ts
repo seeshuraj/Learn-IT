@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  computeResult, readSheetRow, gradeFor, allowedGrades, type ExamConfig, type ResultRow,
+  computeResult, readSheetRow, gradeFor, allowedGrades, gpaSummary, type ExamConfig, type ResultRow,
 } from '../examGrading.js';
 
 const unitTest: ExamConfig = { assessment_type: 'unit_test', max_marks: 50, grading_schema: { strong: 75, moderate: 50 } };
@@ -94,4 +94,23 @@ test('sheet rows: common headers, AB as absent, grade A kept', () => {
   assert.equal(readSheetRow({ email: 'x@y.in', absent: 'Yes', marks: '' }).input.absent, true);
   assert.equal(readSheetRow({ email: 'x@y.in', grade: 'AB' }).input.absent, true);
   assert.equal(readSheetRow({ id: 'abc' }).studentId, null);
+});
+
+test('SGPA and CGPA: credit-weighted, RA/AB excluded, unplaceable rows skipped', () => {
+  const out = gpaSummary([
+    { semester: 3, credits: 4, grade: 'O', grade_point: 10 },
+    { semester: 3, credits: 3, grade: 'B', grade_point: 6 },
+    { semester: 3, credits: 3, grade: 'RA', grade_point: 0 },
+    { semester: 4, credits: '4', grade: 'A', grade_point: '8' },
+    { semester: 4, credits: null, grade: 'O', grade_point: 10 },
+    { semester: null, credits: 3, grade: 'O', grade_point: 10 },
+  ]);
+  assert.deepEqual(out.semesters, [
+    { semester: 3, sgpa: 8.29, credits: 7, courses: 3 },
+    { semester: 4, sgpa: 8, credits: 4, courses: 1 },
+  ]);
+  assert.equal(out.cgpa, 8.18);
+  assert.deepEqual(gpaSummary([{ semester: 1, credits: 3, grade: 'RA', grade_point: 0 }]), {
+    semesters: [{ semester: 1, sgpa: null, credits: 0, courses: 1 }], cgpa: null,
+  });
 });

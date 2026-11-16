@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Toaster, toast } from "sonner";
-import { api } from "../services/api";
+import { api, type StudentMarks } from "../services/api";
 import {
   getAnalyticsSummary, hasGradedWork, toAISummaryData, StudentAnalyticsResponse,
 } from '../services/aiService';
@@ -39,13 +39,14 @@ function BandBadge({ band }: { band: string }) {
 }
 
 // ── Exam Performance Card ─────────────────────────────────────────────────────
+// Latest published results; the full list lives on /marks.
 function ExamPerformanceCard({ userId }: { userId: number }) {
-  const [insights, setInsights] = useState<any>(null);
-  const [loading,  setLoading]  = useState(true);
+  const [data, setData] = useState<StudentMarks | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.getStudentExamInsights(userId)
-      .then((d: any) => setInsights(d))
+      .then(setData)
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [userId]);
@@ -54,51 +55,50 @@ function ExamPerformanceCard({ userId }: { userId: number }) {
     <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 animate-pulse">
       <div className="h-4 w-40 bg-slate-100 rounded mb-4" />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {[...Array(2)].map((_, i) => (
-          <div key={i} className="h-24 bg-slate-100 rounded-2xl" />
-        ))}
+        {[...Array(2)].map((_, i) => <div key={i} className="h-24 bg-slate-100 rounded-2xl" />)}
       </div>
     </div>
   );
 
-  if (!insights || !insights.exams || insights.exams.length === 0) return null;
+  if (!data || data.results.length === 0) return null;
 
-  const latestExams: any[] = insights.exams.slice(0, 4);
-  const weakTopics: string[] = insights.weak_topics?.slice(0, 5) ?? [];
-  const strongTopics: string[] = insights.strong_topics?.slice(0, 5) ?? [];
+  const latest = data.results.slice(0, 4);
+  const weakTopics = (data.weak_topics ?? []).slice(0, 5);
 
   return (
-    <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 space-y-5">
-      <div className="flex items-center justify-between">
+    <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 sm:p-8 space-y-5">
+      <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <FileText className="w-5 h-5 text-teal-600" />
-          <h2 className="text-xl font-bold text-slate-900">Unit Exam Performance</h2>
+          <h2 className="text-xl font-bold text-slate-900">Latest results</h2>
         </div>
-        <Link to="/analytics" className="text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
-          Details <ArrowRight className="w-4 h-4" />
+        <Link to="/marks" className="text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
+          All marks <ArrowRight className="w-4 h-4" />
         </Link>
       </div>
 
-      {/* Latest exam cards */}
+      {data.gpa?.cgpa != null && (
+        <p className="text-sm text-slate-600">CGPA <b className="text-lg tabular-nums text-slate-900">{data.gpa!.cgpa!.toFixed(2)}</b></p>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {latestExams.map((ex: any) => {
-          const pct = ex.percentage ?? Math.round((ex.marks_obtained / (ex.max_marks || 100)) * 100);
+        {latest.map(ex => {
+          const pct = ex.is_absent || ex.percentage === null ? 0 : Number(ex.percentage);
           return (
-            <div key={ex.id} className="p-4 bg-slate-50 rounded-2xl space-y-2">
+            <div key={ex.exam_id} className="p-4 bg-slate-50 rounded-2xl space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide truncate">
-                    {ex.course_code ?? ex.course_name ?? 'Exam'}
-                  </p>
-                  <p className="text-sm font-semibold text-slate-800 truncate">{ex.title}</p>
+                  <p className="text-xs font-semibold text-slate-500 truncate">{ex.course_code ?? ex.course_name}</p>
+                  <p className="text-sm font-semibold text-slate-800 truncate">{ex.exam_title}</p>
                 </div>
-                <BandBadge band={ex.performance_band ?? 'moderate'} />
+                {ex.grade
+                  ? <span className="text-sm font-bold text-slate-900">{ex.grade}</span>
+                  : ex.performance_band && <BandBadge band={ex.performance_band} />}
               </div>
-              {/* Score bar */}
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
                   <div
-                    className={`h-2 rounded-full transition-all duration-700 ${
+                    className={`h-2 rounded-full ${
                       ex.performance_band === 'strong'   ? 'bg-emerald-500' :
                       ex.performance_band === 'moderate' ? 'bg-amber-500'   : 'bg-red-500'
                     }`}
@@ -106,12 +106,12 @@ function ExamPerformanceCard({ userId }: { userId: number }) {
                   />
                 </div>
                 <span className="text-xs font-bold text-slate-700 tabular-nums shrink-0">
-                  {ex.marks_obtained}/{ex.max_marks}
+                  {ex.is_absent ? 'Absent' : `${Number(ex.marks_obtained)}/${Number(ex.max_marks)}`}
                 </span>
               </div>
               {ex.exam_date && (
-                <p className="text-xs text-slate-400">
-                  {new Date(ex.exam_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}
+                <p className="text-xs text-slate-500">
+                  {new Date(ex.exam_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                 </p>
               )}
             </div>
@@ -119,29 +119,14 @@ function ExamPerformanceCard({ userId }: { userId: number }) {
         })}
       </div>
 
-      {/* Weak / Strong topic chips */}
-      {(weakTopics.length > 0 || strongTopics.length > 0) && (
-        <div className="grid sm:grid-cols-2 gap-4 pt-1">
-          {strongTopics.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">✓ Strong Topics</p>
-              <div className="flex flex-wrap gap-1.5">
-                {strongTopics.map((t, i) => (
-                  <span key={i} className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">{t}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          {weakTopics.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-xs font-semibold text-red-700 uppercase tracking-wide">⚠ Needs Work</p>
-              <div className="flex flex-wrap gap-1.5">
-                {weakTopics.map((t, i) => (
-                  <span key={i} className="text-xs px-2.5 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-100">{t}</span>
-                ))}
-              </div>
-            </div>
-          )}
+      {weakTopics.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold text-red-700">Topics to work on</p>
+          <div className="flex flex-wrap gap-1.5">
+            {weakTopics.map(t => (
+              <span key={t} className="text-xs px-2.5 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-100">{t}</span>
+            ))}
+          </div>
         </div>
       )}
     </div>

@@ -31,7 +31,7 @@ import { uploadLimiter, aiGradeLimiter } from '../middleware/rateLimit.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
 import {
-  computeResult, readSheetRow, usesGrades, allowedGrades, isAssessmentType, type ResultRow,
+  computeResult, readSheetRow, usesGrades, allowedGrades, isAssessmentType, gpaSummary, type ResultRow,
 } from '../lib/examGrading.js';
 
 const require = createRequire(import.meta.url);
@@ -881,26 +881,37 @@ export function createUnitExamsRouter(
     }
   );
 
-  // ── GET /api/unit-exams/student/:studentId/insights — student exam summary ───
-  // requireSelfOrAdmin ensures students can only read their own data.
-  // Instructors and admins can access any student.
+  // ── GET /api/unit-exams/student/:studentId/insights — a student's results ──
+  // Published assessments only. requireSelfOrAdmin: a student reads their own;
+  // an admin reads any student in their college.
+  // class_avg_pct is shown only when at least 5 students wrote, so it can't be
+  // used to work out a classmate's marks.
   router.get(
     '/student/:studentId/insights',
     requireAuth,
     requireSelfOrAdmin('studentId'),
     async (req: Request, res: Response) => {
       try {
-        const studentId = req.params.studentId;
-        const results   = await q(
-          `SELECT r.marks_obtained, r.percentage, r.performance_band, r.topic_breakdown,
-                  ue.title as exam_title, ue.exam_date, ue.max_marks, ue.course_id,
-                  c.name as course_name, c.code as course_code
+        const auth = (req as AuthenticatedRequest).auth;
+        const studentId = Number(req.params.studentId);
+        const results = await q(
+          `SELECT ue.id AS exam_id, ue.title AS exam_title, ue.assessment_type, ue.exam_date,
+                  ue.max_marks, ue.internal_max, ue.external_max, ue.credits, ue.semester, ue.grade_scale,
+                  ue.published_at, ue.course_id, c.name AS course_name, c.code AS course_code,
+                  r.marks_obtained, r.internal_marks, r.external_marks, r.is_absent,
+                  r.percentage, r.performance_band, r.grade, r.grade_point, r.remarks, r.topic_breakdown,
+                  CASE WHEN cls.n >= 5 THEN round(cls.avg_pct, 1) END AS class_avg_pct
            FROM unit_exam_results r
            JOIN unit_exams ue ON r.unit_exam_id = ue.id
            JOIN courses c ON ue.course_id = c.id
-           WHERE r.student_id = $1 AND ue.published_at IS NOT NULL
-           ORDER BY ue.exam_date DESC NULLS LAST, r.created_at DESC`,
-          [studentId]
+           LEFT JOIN LATERAL (
+             SELECT count(*) AS n, avg(o.percentage) AS avg_pct
+             FROM unit_exam_results o
+             WHERE o.unit_exam_id = ue.id AND NOT o.is_absent
+           ) cls ON true
+           WHERE r.student_id = $1 AND r.institution_id = $2 AND ue.published_at IS NOT NULL
+           ORDER BY ue.exam_date DESC NULLS LAST, ue.published_at DESC`,
+          [studentId, auth.institutionId]
         );
 
         const weakTopics: Record<string, number> = {};
@@ -908,22 +919,35 @@ export function createUnitExamsRouter(
           if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
           const td: Record<string, number> = typeof r.topic_breakdown === 'string'
             ? JSON.parse(r.topic_breakdown) : r.topic_breakdown;
-          for (const [t] of Object.entries(td)) {
-            weakTopics[t] = (weakTopics[t] ?? 0) + 1;
-          }
+          for (const [t] of Object.entries(td)) weakTopics[t] = (weakTopics[t] ?? 0) + 1;
         }
         const topWeakTopics = Object.entries(weakTopics)
           .sort((a, b) => b[1] - a[1])
           .slice(0, 5)
           .map(([t]) => t);
 
-        const latest      = results[0] ?? null;
-        const allPcts     = results.map((r: any) => parseFloat(r.percentage)).filter(Boolean);
-        const overall_avg = allPcts.length > 0
-          ? Math.round((allPcts.reduce((a: number, b: number) => a + b, 0) / allPcts.length) * 10) / 10
+        const written = results.filter((r: any) => !r.is_absent && r.percentage !== null);
+        const pcts = written.map((r: any) => parseFloat(r.percentage)).filter((n: number) => Number.isFinite(n));
+        const overall_avg = pcts.length > 0
+          ? Math.round((pcts.reduce((a: number, b: number) => a + b, 0) / pcts.length) * 10) / 10
           : null;
 
-        res.json({ results, latest, overall_avg, weak_topics: topWeakTopics });
+        const gpa = gpaSummary(
+          results
+            .filter((r: any) => r.assessment_type === 'end_semester')
+            .map((r: any) => ({
+              semester: r.semester, credits: r.credits, grade: r.grade,
+              grade_point: r.grade_point, grade_scale: r.grade_scale,
+            }))
+        );
+
+        res.json({
+          results: results.map(({ topic_breakdown, grade_scale, ...r }: any) => r),
+          latest: written[0] ?? null,
+          overall_avg,
+          weak_topics: topWeakTopics,
+          gpa,
+        });
       } catch (e: any) { sendServerError(res, e); }
     }
   );

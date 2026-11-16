@@ -63,6 +63,42 @@ export interface MarksEntry {
   remarks?: string | null;
 }
 
+/** One published result, as the student sees it. */
+export interface StudentResult {
+  exam_id: number;
+  exam_title: string;
+  assessment_type: AssessmentType;
+  exam_date: string | null;
+  max_marks: string;
+  internal_max: string | null;
+  external_max: string | null;
+  credits: string | null;
+  semester: number | null;
+  published_at: string;
+  course_id: number;
+  course_name: string;
+  course_code: string | null;
+  marks_obtained: string | null;
+  internal_marks: string | null;
+  external_marks: string | null;
+  is_absent: boolean;
+  percentage: string | null;
+  performance_band: 'strong' | 'moderate' | 'weak' | null;
+  grade: string | null;
+  grade_point: string | null;
+  remarks: string | null;
+  /** Only when at least 5 students wrote. */
+  class_avg_pct: string | null;
+}
+
+export interface StudentMarks {
+  results: StudentResult[];
+  latest: StudentResult | null;
+  overall_avg: number | null;
+  weak_topics: string[];
+  gpa: { semesters: { semester: number; sgpa: number | null; credits: number; courses: number }[]; cgpa: number | null };
+}
+
 export interface MarksPreview {
   rows_total: number;
   matched: (MarksEntry & { row: number; name: string | null; email: string | null; error: string | null })[];
@@ -467,7 +503,7 @@ export const api = {
   // ── Unit Exams — Student ────────────────────────────────────────────────
   /** Get a student's unit exam insights (all exams, weak topics, trend). */
   getStudentExamInsights: (studentId: number) =>
-    request(`/api/unit-exams/student/${studentId}/insights`),
+    request<StudentMarks>(`/api/unit-exams/student/${studentId}/insights`),
 
   // Instructor
   /**
