@@ -13,6 +13,64 @@
 import { supabase, getAccessToken } from './supabaseClient';
 import type { StudentAnalyticsData, ClassOverviewData } from './aiService';
 
+// ── Assessment types (see src/server/routes/unitExams.ts) ────────────────────
+export type AssessmentType = 'unit_test' | 'model' | 'end_semester' | 'quiz' | 'lab' | 'other';
+
+export interface Assessment {
+  id: number;
+  course_id: number;
+  course_name?: string;
+  course_code?: string | null;
+  title: string;
+  assessment_type: AssessmentType;
+  exam_date: string | null;
+  max_marks: number | string;
+  internal_max: number | string | null;
+  external_max: number | string | null;
+  credits: number | string | null;
+  semester: number | null;
+  published_at: string | null;
+  analysis_status: string;
+  paper_storage_path: string | null;
+  result_count?: number;
+  absent_count?: number;
+  enrolled_count?: number;
+}
+
+export interface RosterStudent {
+  student_id: number;
+  name: string | null;
+  email: string | null;
+  marks_obtained: string | null;
+  internal_marks: string | null;
+  external_marks: string | null;
+  is_absent: boolean | null;
+  percentage: string | null;
+  performance_band: string | null;
+  grade: string | null;
+  grade_point: string | null;
+  remarks: string | null;
+  updated_at: string | null;
+}
+
+export interface MarksEntry {
+  student_id: number;
+  marks?: string | number | null;
+  internal?: string | number | null;
+  external?: string | number | null;
+  absent?: boolean;
+  grade?: string | null;
+  remarks?: string | null;
+}
+
+export interface MarksPreview {
+  rows_total: number;
+  matched: (MarksEntry & { row: number; name: string | null; email: string | null; error: string | null })[];
+  problems: { row: number; reason: string }[];
+  problems_total: number;
+  missing: number;
+}
+
 /** Backend origin. Every browser call to the API builds its URL from this. */
 export const API_BASE: string =
   (import.meta as any).env?.VITE_API_BASE_URL ||
@@ -94,7 +152,10 @@ async function request<T = any>(
     }
 
     const data = await res.json();
-    if (!res.ok) throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
+    if (!res.ok) {
+      // status and body let callers show field or per-row errors.
+      throw Object.assign(new Error((data as any)?.error ?? `HTTP ${res.status}`), { status: res.status, body: data });
+    }
     return data as T;
   }
 }
@@ -339,45 +400,65 @@ export const api = {
   getStudentGradingInsights: (studentId: number) =>
     request(`/api/student/${studentId}/grading-insights`),
 
-  // ── Unit Exams — Instructor ─────────────────────────────────────────────
-  /** Create a new unit exam for a course. */
+  // ── Assessments (unit tests, model, end-semester…) — Instructor ────────────
+  /** Create an assessment (a draft until published). */
   createUnitExam: (data: {
     course_id: number;
     title: string;
-    exam_date?: string;
+    assessment_type?: AssessmentType;
+    exam_date?: string | null;
     max_marks?: number;
+    internal_max?: number | null;
+    external_max?: number | null;
+    credits?: number | null;
+    semester?: number | null;
     grading_schema?: { strong: number; moderate: number };
-  }) => request('/api/unit-exams', { method: 'POST', body: JSON.stringify(data) }),
+  }) => request<Assessment>('/api/unit-exams', { method: 'POST', body: JSON.stringify(data) }),
 
-  /** List ALL unit exams visible to the authenticated instructor. */
-  listUnitExams: () => request('/api/unit-exams'),
+  /** Assessments the caller manages, optionally for one course or type. */
+  listUnitExams: (filter: { course_id?: number; type?: AssessmentType } = {}) =>
+    request<Assessment[]>(`/api/unit-exams${toQuery(filter)}`),
 
   /** List all unit exams for a course (instructor view). */
   listCourseExams: (courseId: number) =>
     request(`/api/unit-exams/course/${courseId}`),
 
-  /** Get a single unit exam by id. */
   getUnitExam: (examId: number) =>
-    request(`/api/unit-exams/${examId}`),
+    request<Assessment>(`/api/unit-exams/${examId}`),
 
-  /** Preview (dry-run) CSV/XLSX marks upload. */
-  previewExamMarks: (examId: number, file: File) =>
-    uploadFile(`/api/unit-exams/${examId}/preview-marks`, 'file', file),
+  /** Edit an assessment; entered marks are re-graded against the new settings. */
+  updateUnitExam: (examId: number, data: Partial<Omit<Assessment, 'id'>>) =>
+    request<Assessment>(`/api/unit-exams/${examId}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
-  /** Commit a previously previewed marks import. */
-  commitExamMarks: (examId: number, importId: number) =>
-    request(`/api/unit-exams/${examId}/commit-marks`, {
-      method: 'POST',
-      body: JSON.stringify({ import_id: importId }),
+  /** Delete a draft assessment and its entered marks. */
+  deleteUnitExam: (examId: number) =>
+    request(`/api/unit-exams/${examId}`, { method: 'DELETE' }),
+
+  /** Enrolled students with their current marks, for the marks grid. */
+  getExamRoster: (examId: number) =>
+    request<{ exam: Assessment; students: RosterStudent[]; grades: string[] }>(`/api/unit-exams/${examId}/roster`),
+
+  /** Save marks (all or nothing). A blank, non-absent row clears that student. */
+  saveExamResults: (examId: number, results: MarksEntry[]) =>
+    request<{ saved: any[]; cleared: number[] }>(`/api/unit-exams/${examId}/results`, {
+      method: 'PUT',
+      body: JSON.stringify({ results }),
     }),
+
+  /** Read a CSV/XLSX marks sheet and match it to the roster. Saves nothing. */
+  previewExamMarks: (examId: number, file: File) =>
+    uploadFile(`/api/unit-exams/${examId}/preview-marks`, 'file', file) as Promise<MarksPreview>,
+
+  /** Release results to students (notifies them unless notify is false). */
+  publishUnitExam: (examId: number, notify = true) =>
+    request<Assessment>(`/api/unit-exams/${examId}/publish`, { method: 'POST', body: JSON.stringify({ notify }) }),
+
+  unpublishUnitExam: (examId: number) =>
+    request<Assessment>(`/api/unit-exams/${examId}/unpublish`, { method: 'POST' }),
 
   /** Get full analytics for an exam (stats + band distribution + student results). */
   getExamAnalytics: (examId: number) =>
     request(`/api/unit-exams/${examId}/analytics`),
-
-  /** Upload CSV or XLSX marks sheet for an exam. */
-  uploadExamMarks: (examId: number, file: File) =>
-    uploadFile(`/api/unit-exams/${examId}/upload-marks`, 'file', file),
 
   /** Upload exam paper PDF for AI topic analysis. */
   uploadExamPaper: (examId: number, file: File) =>
