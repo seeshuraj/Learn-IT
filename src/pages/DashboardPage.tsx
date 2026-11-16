@@ -63,7 +63,7 @@ function ExamPerformanceCard({ userId }: { userId: number }) {
   if (!data || data.results.length === 0) return null;
 
   const latest = data.results.slice(0, 4);
-  const weakTopics = data.weak_topics.slice(0, 5);
+  const weakTopics = (data.weak_topics ?? []).slice(0, 5);
 
   return (
     <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 sm:p-8 space-y-5">
@@ -77,8 +77,8 @@ function ExamPerformanceCard({ userId }: { userId: number }) {
         </Link>
       </div>
 
-      {data.gpa.cgpa !== null && (
-        <p className="text-sm text-slate-600">CGPA <b className="text-lg tabular-nums text-slate-900">{data.gpa.cgpa.toFixed(2)}</b></p>
+      {data.gpa?.cgpa != null && (
+        <p className="text-sm text-slate-600">CGPA <b className="text-lg tabular-nums text-slate-900">{data.gpa!.cgpa!.toFixed(2)}</b></p>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
