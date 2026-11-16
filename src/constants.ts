@@ -1,6 +1,6 @@
 import { 
   LucideIcon, LayoutDashboard, BookOpen, FileText, 
-  BarChart3, Users, Settings, StickyNote, Map, ClipboardList, ShieldCheck
+  BarChart3, Users, Settings, StickyNote, Map, ClipboardList, ShieldCheck, GraduationCap
 } from "lucide-react";
 
 export interface NavItem {
@@ -16,6 +16,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Assignments",      icon: FileText,        path: "/assignments",  roles: ['student', 'instructor'] },
   { label: "Notes & AI Chat",  icon: StickyNote,      path: "/notes",       roles: ['student', 'instructor'] },
   { label: "Assessments",      icon: ClipboardList,   path: "/assessments", roles: ['instructor'] },
+  { label: "My Marks",         icon: GraduationCap,   path: "/marks",       roles: ['student'] },
   { label: "My Roadmap",       icon: Map,             path: "/roadmap",     roles: ['student'] },
   { label: "Analytics",        icon: BarChart3,       path: "/analytics",   roles: ['student', 'instructor'] },
   { label: "User Management",  icon: Users,           path: "/admin/users",    roles: ['admin'] },

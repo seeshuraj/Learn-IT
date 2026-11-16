@@ -286,3 +286,46 @@ export function readSheetRow(row: Record<string, unknown>): SheetRow {
 export function isAssessmentType(v: unknown): v is AssessmentType {
   return typeof v === 'string' && (ASSESSMENT_TYPES as readonly string[]).includes(v);
 }
+
+export interface GpaRow {
+  semester: number | null;
+  credits: number | string | null;
+  grade: string | null;
+  grade_point: number | string | null;
+  /** The assessment's own scale, if it has one. */
+  grade_scale?: Partial<GradeScale> | null;
+}
+
+export interface GpaSummary {
+  semesters: { semester: number; sgpa: number | null; credits: number; courses: number }[];
+  cgpa: number | null;
+}
+
+/**
+ * SGPA per semester and CGPA: Σ(credits × grade point) / Σ credits over
+ * graded end-semester courses. Grades not yet cleared (RA, AB, W by default)
+ * are left out, as Anna University does. Rows without credits or a semester
+ * can't be placed and are skipped.
+ */
+export function gpaSummary(rows: GpaRow[]): GpaSummary {
+  const bySem = new Map<number, { points: number; credits: number; courses: number }>();
+  for (const r of rows) {
+    const credits = num(r.credits);
+    const gp = num(r.grade_point);
+    if (r.semester === null || r.semester === undefined || !(credits > 0) || !r.grade || !Number.isFinite(gp)) continue;
+    const excludes = resolveScale({ assessment_type: 'end_semester', max_marks: 100, grade_scale: r.grade_scale }).gpa_excludes;
+    const s = bySem.get(r.semester) ?? { points: 0, credits: 0, courses: 0 };
+    s.courses += 1;
+    if (!excludes.includes(r.grade)) { s.points += credits * gp; s.credits += credits; }
+    bySem.set(r.semester, s);
+  }
+  const semesters = [...bySem.entries()].sort((a, b) => a[0] - b[0]).map(([semester, s]) => ({
+    semester,
+    sgpa: s.credits > 0 ? round2(s.points / s.credits) : null,
+    credits: s.credits,
+    courses: s.courses,
+  }));
+  const tp = [...bySem.values()].reduce((a, s) => a + s.points, 0);
+  const tc = [...bySem.values()].reduce((a, s) => a + s.credits, 0);
+  return { semesters, cgpa: tc > 0 ? round2(tp / tc) : null };
+}
