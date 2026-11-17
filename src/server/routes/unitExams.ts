@@ -34,6 +34,7 @@ import {
   computeResult, readSheetRow, usesGrades, allowedGrades, isAssessmentType, gpaSummary, type ResultRow,
 } from '../lib/examGrading.js';
 import { markPlansStale } from './roadmaps.js';
+import { validatePattern, paperTotal, topicBreakdown, scoreQuestions, type QuestionPattern } from '../lib/questionPattern.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -164,7 +165,7 @@ export function createUnitExamsRouter(
   const EXAM_COLUMNS = `ue.id, ue.course_id, ue.title, ue.exam_date, ue.max_marks, ue.grading_schema,
     ue.assessment_type, ue.internal_max, ue.external_max, ue.credits, ue.semester, ue.grade_scale,
     ue.published_at, ue.published_by, ue.paper_storage_path, ue.analysis_status,
-    ue.portion_module_ids, ue.portion_notes,
+    ue.portion_module_ids, ue.portion_notes, ue.question_pattern, ue.counted_out_of,
     ue.created_by, ue.created_at, ue.updated_at`;
 
   const MAX_ROWS_PER_SAVE = 2000;
@@ -185,7 +186,8 @@ export function createUnitExamsRouter(
     return q(
       `SELECT u.id AS student_id, u.name, u.email,
               r.marks_obtained, r.internal_marks, r.external_marks, r.is_absent,
-              r.percentage, r.performance_band, r.grade, r.grade_point, r.remarks, r.updated_at
+              r.percentage, r.performance_band, r.grade, r.grade_point, r.remarks, r.updated_at,
+              r.question_marks, r.converted_marks
        FROM enrollments e
        JOIN users u ON u.id = e.student_id
        JOIN institution_members im
@@ -223,7 +225,21 @@ export function createUnitExamsRouter(
         ? (Array.isArray(body.portion_module_ids) ? [...new Set(body.portion_module_ids.map(Number))] : null)
         : current?.portion_module_ids ?? null,
       portion_notes:   has('portion_notes') ? (String(body.portion_notes ?? '').trim().slice(0, 1000) || null) : current?.portion_notes ?? null,
+      question_pattern: has('question_pattern') ? body.question_pattern ?? null : current?.question_pattern ?? null,
+      counted_out_of:  has('counted_out_of') ? toNum(body.counted_out_of) : toNum(current?.counted_out_of),
     };
+
+    // Question-wise entry: the paper total follows from the pattern (for a
+    // split assessment the paper is the external part).
+    if (v.question_pattern !== null) {
+      const r = validatePattern(v.question_pattern);
+      if ('error' in r) errors.question_pattern = r.error;
+      else {
+        v.question_pattern = r.pattern;
+        if (v.internal_max !== null || v.external_max !== null) v.external_max = paperTotal(r.pattern);
+        else v.max_marks = paperTotal(r.pattern);
+      }
+    }
 
     if (!v.title) errors.title = 'Title is required';
     else if (v.title.length > 200) errors.title = 'Title is too long';
@@ -243,6 +259,10 @@ export function createUnitExamsRouter(
     if (v.semester !== null && !(Number.isInteger(v.semester) && v.semester >= 1 && v.semester <= 12)) {
       errors.semester = 'Semester must be 1–12';
     }
+    if (v.counted_out_of !== null) {
+      if (!(v.counted_out_of > 0 && v.counted_out_of <= 1000)) errors.counted_out_of = '“Counts as” must be between 1 and 1000';
+      else if (v.internal_max !== null) errors.counted_out_of = 'Conversion applies to single-total assessments';
+    }
     if (v.portion_module_ids && (v.portion_module_ids.length > 100 || v.portion_module_ids.some((n: number) => !Number.isInteger(n) || n <= 0))) {
       errors.portion_module_ids = 'Choose modules from the course';
     }
@@ -256,21 +276,41 @@ export function createUnitExamsRouter(
     return r.rows[0].n === ids.length;
   }
 
+  /** Module ids tagged on a pattern's questions. */
+  const patternModuleIds = (p: QuestionPattern | null) =>
+    p ? [...new Set(p.parts.flatMap(x => x.questions.flatMap(q => [q.module_id, q.module_id_b ?? null])).filter((n): n is number => !!n))] : [];
+
+  /** The course's module names, for per-unit percentages. */
+  async function moduleNames(courseId: number): Promise<Map<number, string>> {
+    const r = await pool.query('SELECT id, name FROM modules WHERE course_id = $1', [courseId]);
+    return new Map(r.rows.map((m: any) => [m.id, m.name]));
+  }
+
+  /** Per-unit % for a computed row, when the exam has a tagged pattern. */
+  function withTopics(exam: any, row: ResultRow, names: Map<number, string>) {
+    const topics = exam.question_pattern && row.question_marks
+      ? topicBreakdown(exam.question_pattern, row.question_marks, names) : null;
+    return { ...row, topic_breakdown: topics };
+  }
+
   /** Upsert computed rows and delete cleared ones, in the caller's transaction. */
   async function writeResults(
-    client: pkg.PoolClient, examId: number, rows: ResultRow[], cleared: number[], enteredBy: number
+    client: pkg.PoolClient, examId: number, rows: (ResultRow & { topic_breakdown?: unknown })[], cleared: number[], enteredBy: number
   ) {
     if (rows.length) {
       await client.query(
         `INSERT INTO unit_exam_results
            (unit_exam_id, student_id, marks_obtained, internal_marks, external_marks, is_absent,
-            percentage, performance_band, grade, grade_point, remarks, entered_by)
+            percentage, performance_band, grade, grade_point, remarks, entered_by,
+            question_marks, converted_marks, topic_breakdown)
          SELECT $1, x.student_id, x.marks_obtained, x.internal_marks, x.external_marks, x.is_absent,
-                x.percentage, x.performance_band, x.grade, x.grade_point, x.remarks, $3
+                x.percentage, x.performance_band, x.grade, x.grade_point, x.remarks, $3,
+                x.question_marks, x.converted_marks, x.topic_breakdown
          FROM jsonb_to_recordset($2::jsonb) AS x(
            student_id int, marks_obtained numeric, internal_marks numeric, external_marks numeric,
            is_absent boolean, percentage numeric, performance_band text, grade text,
-           grade_point numeric, remarks text)
+           grade_point numeric, remarks text, question_marks jsonb, converted_marks numeric,
+           topic_breakdown jsonb)
          ON CONFLICT (unit_exam_id, student_id) DO UPDATE SET
            marks_obtained   = EXCLUDED.marks_obtained,
            internal_marks   = EXCLUDED.internal_marks,
@@ -282,6 +322,9 @@ export function createUnitExamsRouter(
            grade_point      = EXCLUDED.grade_point,
            remarks          = EXCLUDED.remarks,
            entered_by       = EXCLUDED.entered_by,
+           question_marks   = EXCLUDED.question_marks,
+           converted_marks  = EXCLUDED.converted_marks,
+           topic_breakdown  = EXCLUDED.topic_breakdown,
            updated_at       = NOW()`,
         [examId, JSON.stringify(rows), enteredBy]
       );
@@ -379,20 +422,25 @@ export function createUnitExamsRouter(
         if (!(await portionOk(Number(course_id), v.portion_module_ids))) {
           return res.status(422).json({ error: 'Choose modules from this course', fields: { portion_module_ids: 'Choose modules from this course' } });
         }
+        if (!(await portionOk(Number(course_id), patternModuleIds(v.question_pattern)))) {
+          return res.status(422).json({ error: 'Question units must be modules of this course', fields: { question_pattern: 'Question units must be modules of this course' } });
+        }
         const schema = req.body.grading_schema ?? { strong: 75, moderate: 50 };
         const r = await pool.query(
           `INSERT INTO unit_exams
              (course_id, title, exam_date, max_marks, grading_schema, created_by,
-              assessment_type, internal_max, external_max, credits, semester, portion_module_ids, portion_notes)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+              assessment_type, internal_max, external_max, credits, semester, portion_module_ids, portion_notes,
+              question_pattern, counted_out_of)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
           [course_id, v.title, v.exam_date, v.max_marks, JSON.stringify(schema), auth.legacyUserId,
-           v.assessment_type, v.internal_max, v.external_max, v.credits, v.semester, v.portion_module_ids, v.portion_notes]
+           v.assessment_type, v.internal_max, v.external_max, v.credits, v.semester, v.portion_module_ids, v.portion_notes,
+           v.question_pattern ? JSON.stringify(v.question_pattern) : null, v.counted_out_of]
         );
         if (v.exam_date) await markPlansStale(pool, [Number(course_id)], `${v.title} was scheduled`);
         const examId = r.rows[0].id;
         writeAudit({
           action: 'unit_exam.create', ...auditBase(auth, examId),
-          metadata: { course_id, title: v.title, assessment_type: v.assessment_type }, req,
+          metadata: { course_id, title: v.title, assessment_type: v.assessment_type, question_wise: !!v.question_pattern }, req,
         });
         res.status(201).json(await loadExam(auth, examId));
       } catch (e: any) { sendServerError(res, e); }
@@ -415,21 +463,30 @@ export function createUnitExamsRouter(
         if (!(await portionOk(exam.course_id, v.portion_module_ids))) {
           return res.status(422).json({ error: 'Choose modules from this course', fields: { portion_module_ids: 'Choose modules from this course' } });
         }
+        if (!(await portionOk(exam.course_id, patternModuleIds(v.question_pattern)))) {
+          return res.status(422).json({ error: 'Question units must be modules of this course', fields: { question_pattern: 'Question units must be modules of this course' } });
+        }
+        const patternChanged = JSON.stringify(v.question_pattern ?? null) !== JSON.stringify(exam.question_pattern ?? null);
+        if (patternChanged && exam.published_at) {
+          return res.status(409).json({ error: 'Unpublish the results before changing the question paper' });
+        }
         const next = { ...exam, ...v };
+        const names = await moduleNames(exam.course_id);
         const out = await inTransaction(async client => {
           // Re-grade what is already entered against the new maximums.
           const { rows: stored } = await client.query(
-            `SELECT student_id, is_absent, marks_obtained, internal_marks, external_marks, grade, remarks
+            `SELECT student_id, is_absent, marks_obtained, internal_marks, external_marks, grade, remarks, question_marks
              FROM unit_exam_results WHERE unit_exam_id = $1 FOR UPDATE`,
             [exam.id]
           );
-          const rows: ResultRow[] = [];
+          const rows: (ResultRow & { topic_breakdown?: unknown })[] = [];
           const problems: { student_id: number; error: string }[] = [];
           for (const s of stored) {
             const split = next.internal_max !== null && next.internal_max !== undefined;
             const entered = {
               student_id: s.student_id, absent: s.is_absent, marks: s.marks_obtained,
               internal: s.internal_marks, external: s.external_marks, remarks: s.remarks,
+              questions: s.question_marks,
             };
             // A stored grade that differs from the computed one was a manual
             // override (moderation); keep it. Computed grades are recomputed.
@@ -442,18 +499,24 @@ export function createUnitExamsRouter(
               external: split ? s.external_marks : null,
               grade: overridden ? s.grade : null,
             });
-            if (r.kind === 'row') rows.push(r.row);
-            else problems.push({ student_id: s.student_id, error: r.kind === 'error' ? r.error : 'Marks missing for the new format' });
+            if (r.kind === 'row') rows.push(withTopics(next, r.row, names));
+            else problems.push({
+              student_id: s.student_id,
+              error: r.kind === 'error' ? r.error
+                : next.question_pattern && !exam.question_pattern ? 'Has a total but no question marks; clear it or enter question marks'
+                : 'Marks missing for the new format',
+            });
           }
           if (problems.length) return { problems };
 
           await client.query(
             `UPDATE unit_exams SET title=$2, exam_date=$3, assessment_type=$4, max_marks=$5,
                internal_max=$6, external_max=$7, credits=$8, semester=$9,
-               portion_module_ids=$10, portion_notes=$11, updated_at=NOW()
+               portion_module_ids=$10, portion_notes=$11, question_pattern=$12, counted_out_of=$13, updated_at=NOW()
              WHERE id=$1`,
             [exam.id, v.title, v.exam_date, v.assessment_type, v.max_marks,
-             v.internal_max, v.external_max, v.credits, v.semester, v.portion_module_ids, v.portion_notes]
+             v.internal_max, v.external_max, v.credits, v.semester, v.portion_module_ids, v.portion_notes,
+             v.question_pattern ? JSON.stringify(v.question_pattern) : null, v.counted_out_of]
           );
           await writeResults(client, exam.id, rows, [], auth.legacyUserId);
           return { regraded: rows.length };
@@ -560,17 +623,22 @@ export function createUnitExamsRouter(
         );
         const allowed = new Set(enrolled.map((r: any) => r.student_id));
 
-        const rows: ResultRow[] = [];
+        const names = exam.question_pattern ? await moduleNames(exam.course_id) : new Map<number, string>();
+        const rows: (ResultRow & { topic_breakdown?: unknown })[] = [];
         const cleared: number[] = [];
         const errors: { student_id: number; error: string }[] = [];
         for (const raw of input) {
           const sid = Number(raw.student_id);
           if (!allowed.has(sid)) { errors.push({ student_id: sid, error: 'Not enrolled in this course' }); continue; }
+          if (raw.questions !== undefined && raw.questions !== null && (typeof raw.questions !== 'object' || Array.isArray(raw.questions))) {
+            errors.push({ student_id: sid, error: 'Question marks must be an object' }); continue;
+          }
           const out = computeResult(exam, {
             student_id: sid, absent: raw.absent === true, marks: raw.marks,
             internal: raw.internal, external: raw.external, grade: raw.grade, remarks: raw.remarks,
+            questions: raw.questions ?? null,
           });
-          if (out.kind === 'row') rows.push(out.row);
+          if (out.kind === 'row') rows.push(withTopics(exam, out.row, names));
           else if (out.kind === 'clear') cleared.push(sid);
           else errors.push({ student_id: sid, error: out.error });
         }
@@ -835,6 +903,7 @@ export function createUnitExamsRouter(
         const allResults = await q(
           `SELECT r.student_id, r.marks_obtained, r.internal_marks, r.external_marks, r.is_absent,
                   r.percentage, r.performance_band, r.grade, r.grade_point, r.topic_breakdown,
+                  r.question_marks, r.converted_marks,
                   u.name as student_name, u.email as student_email
            FROM unit_exam_results r
            JOIN users u ON r.student_id = u.id
@@ -890,6 +959,36 @@ export function createUnitExamsRouter(
           .map(([t, { total, count }]) => ({ topic: t, avg: Math.round((total / count) * 100) / 100 }))
           .sort((a, b) => a.avg - b.avg);
 
+        // Question-wise: class average per question (of those who attempted it,
+        // and as a share of all writers) and per part.
+        let questionStats: any[] | null = null;
+        let partStats: any[] | null = null;
+        if (exam.question_pattern) {
+          const p = exam.question_pattern as QuestionPattern;
+          const withQ = results.filter((r: any) => r.question_marks);
+          const val = (m: any) => (m === undefined || m === null ? null : typeof m === 'number' ? m : Number(m.m));
+          questionStats = p.parts.flatMap(part => part.questions.map(q => {
+            const got = withQ.map((r: any) => val(r.question_marks[q.no])).filter((x: number | null): x is number => x !== null);
+            const optB = withQ.filter((r: any) => typeof r.question_marks[q.no] === 'object' && r.question_marks[q.no]?.o === 'b').length;
+            return {
+              no: q.no, part: part.key, max: q.marks,
+              attempted_pct: withQ.length ? Math.round((got.length / withQ.length) * 100) : null,
+              avg_pct: got.length ? Math.round((got.reduce((a, b) => a + b, 0) / got.length / q.marks) * 1000) / 10 : null,
+              option_b: q.either_or ? optB : undefined,
+            };
+          }));
+          partStats = p.parts.map(part => {
+            const scores = withQ.map((r: any) => scoreQuestions({ version: 1, parts: [part] },
+              Object.fromEntries(part.questions.filter(q => r.question_marks[q.no] !== undefined).map(q => [q.no, r.question_marks[q.no]]))))
+              .filter((x: any) => !('error' in x)) as { total: number }[];
+            const max = paperTotal({ version: 1, parts: [part] });
+            return {
+              key: part.key, label: part.label, max,
+              avg_pct: scores.length ? Math.round((scores.reduce((a, b) => a + b.total, 0) / scores.length / max) * 1000) / 10 : null,
+            };
+          });
+        }
+
         // Pass: a passing grade where grades apply, otherwise not in the weak band.
         const failGrades = new Set(['RA', 'AB', 'W', 'U']);
         const passed = usesGrades(exam)
@@ -906,6 +1005,9 @@ export function createUnitExamsRouter(
             bands,
             weakest_topics:   topicAverages.slice(0, 3).map(t => t.topic),
             strongest_topics: topicAverages.slice(-3).reverse().map(t => t.topic),
+            topic_averages:   topicAverages,
+            questions:        questionStats,
+            parts:            partStats,
           },
         });
       } catch (e: any) { sendServerError(res, e); }
@@ -928,9 +1030,11 @@ export function createUnitExamsRouter(
         const results = await q(
           `SELECT ue.id AS exam_id, ue.title AS exam_title, ue.assessment_type, ue.exam_date,
                   ue.max_marks, ue.internal_max, ue.external_max, ue.credits, ue.semester, ue.grade_scale,
+                  ue.question_pattern, ue.counted_out_of,
                   ue.published_at, ue.course_id, c.name AS course_name, c.code AS course_code,
                   r.marks_obtained, r.internal_marks, r.external_marks, r.is_absent,
                   r.percentage, r.performance_band, r.grade, r.grade_point, r.remarks, r.topic_breakdown,
+                  r.question_marks, r.converted_marks,
                   CASE WHEN cls.n >= 5 THEN round(cls.avg_pct, 1) END AS class_avg_pct
            FROM unit_exam_results r
            JOIN unit_exams ue ON r.unit_exam_id = ue.id
@@ -973,7 +1077,8 @@ export function createUnitExamsRouter(
         );
 
         res.json({
-          results: results.map(({ topic_breakdown, grade_scale, ...r }: any) => r),
+          // topic_breakdown is the student's own per-unit %, shown with the breakdown.
+          results: results.map(({ grade_scale, ...r }: any) => r),
           latest: written[0] ?? null,
           overall_avg,
           weak_topics: topWeakTopics,
