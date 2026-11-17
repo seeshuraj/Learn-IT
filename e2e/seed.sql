@@ -26,4 +26,6 @@ update public.courses set department_id = (select id from public.departments whe
 insert into public.enrollments (course_id, student_id) values (2, 2), (2, 3) on conflict do nothing;
 
 -- A course Sarah is not enrolled in, for access checks.
-insert into public.courses (code, name, instructor_id) values ('ME2001', 'Engineering Drawing', null) on conflict (code) do nothing;
+insert into public.courses (code, name, instructor_id, institution_id)
+select 'ME2001', 'Engineering Drawing', null, institution_id from public.courses where id = 2
+on conflict (code) do nothing;
