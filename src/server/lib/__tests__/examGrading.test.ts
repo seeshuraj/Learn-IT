@@ -114,3 +114,55 @@ test('SGPA and CGPA: credit-weighted, RA/AB excluded, unplaceable rows skipped',
     semesters: [{ semester: 1, sgpa: null, credits: 0, courses: 1 }], cgpa: null,
   });
 });
+
+// ── Question-wise marks and conversion ─────────────────────────────────────
+import { ANNA_UNIV_SEMESTER, type QuestionPattern } from '../questionPattern.js';
+
+const paper50: QuestionPattern = {
+  version: 1,
+  parts: [
+    { key: 'A', label: 'Part A', answer_count: null, questions: [1, 2, 3, 4, 5].map(n => ({ no: String(n), marks: 2, either_or: false, module_id: null })) },
+    { key: 'B', label: 'Part B', answer_count: null, questions: [{ no: '6', marks: 13, either_or: true, module_id: null }, { no: '7', marks: 13, either_or: true, module_id: null }] },
+    { key: 'C', label: 'Part C', answer_count: null, questions: [{ no: '8', marks: 14, either_or: true, module_id: null }] },
+  ],
+};
+const qUnit: ExamConfig = { assessment_type: 'unit_test', max_marks: 50, question_pattern: paper50, grading_schema: { strong: 75, moderate: 50 } };
+
+test('question-wise: total comes from the questions', () => {
+  const r = row(qUnit, { student_id: 1, questions: { '1': 2, '2': '1.5', '6': '10b', '7': 12, '8': '' } });
+  assert.equal(r.marks_obtained, 25.5);
+  assert.equal(r.percentage, 51);
+  assert.deepEqual(r.question_marks, { '1': 2, '2': 1.5, '6': { m: 10, o: 'b' }, '7': { m: 12, o: 'a' } });
+});
+
+test('question-wise: all blank clears, a bad cell names the question', () => {
+  assert.equal(computeResult(qUnit, { student_id: 1, questions: { '1': '', '6': null } }).kind, 'clear');
+  const bad = computeResult(qUnit, { student_id: 1, questions: { '6': '14' } });
+  assert.equal(bad.kind, 'error');
+  assert.match((bad as any).error, /Q6 is out of 13/);
+  const typo = computeResult(qUnit, { student_id: 1, questions: { '3': '2b' } });
+  assert.match((typo as any).error, /Q3/);
+});
+
+test('question-wise end-semester: the paper is the external part', () => {
+  const exam: ExamConfig = { assessment_type: 'end_semester', max_marks: 140, internal_max: 40, external_max: 100, question_pattern: ANNA_UNIV_SEMESTER };
+  const qs: Record<string, unknown> = { '11': 13, '12': 13, '13': 13, '14': 13, '15': 13, '16': 15 };
+  for (let i = 1; i <= 10; i++) qs[String(i)] = 2;
+  const r = row(exam, { student_id: 1, internal: 36, questions: qs });
+  assert.equal(r.external_marks, 100);
+  assert.equal(r.internal_marks, 36);
+  assert.equal(r.marks_obtained, 136);
+  assert.equal(r.grade, 'O');
+});
+
+test('conversion: 38 of 50 counted out of 20 is 15.2; absent stays empty', () => {
+  const exam: ExamConfig = { ...unitTest, counted_out_of: 20 };
+  assert.equal(row(exam, { student_id: 1, marks: 38 }).converted_marks, 15.2);
+  assert.equal(row(exam, { student_id: 1, absent: true }).converted_marks, null);
+  assert.equal(row(unitTest, { student_id: 1, marks: 38 }).converted_marks, null);
+});
+
+test('sheet rows read question columns', () => {
+  const r = readSheetRow({ email: 'a@b.in', q1: 2, q6: '10b', q12a: '', marks: '' });
+  assert.deepEqual(r.input.questions, { '1': 2, '6': '10b' });
+});

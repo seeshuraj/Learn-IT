@@ -12,6 +12,8 @@
  * maximum. Colleges with other rules set unit_exams.grade_scale.
  */
 
+import { parseCell, scoreQuestions, type QuestionMark, type QuestionPattern } from './questionPattern.js';
+
 export const ASSESSMENT_TYPES = ['unit_test', 'model', 'end_semester', 'quiz', 'lab', 'other'] as const;
 export type AssessmentType = typeof ASSESSMENT_TYPES[number];
 
@@ -48,6 +50,10 @@ export interface ExamConfig {
   external_max?: number | string | null;
   grading_schema?: { strong: number; moderate: number } | null;
   grade_scale?: Partial<GradeScale> | null;
+  /** Question-wise entry: the paper's pattern. For split exams it is the external paper. */
+  question_pattern?: QuestionPattern | null;
+  /** "Counts as" marks: the total is also converted to this scale (e.g. 50 → 20). */
+  counted_out_of?: number | string | null;
 }
 
 export interface ResultInput {
@@ -59,6 +65,8 @@ export interface ResultInput {
   /** Optional grade override (end-semester), e.g. a moderation decision. */
   grade?: string | null;
   remarks?: string | null;
+  /** Question-wise marks keyed by question number ("12b" style for either/or). */
+  questions?: Record<string, unknown> | null;
 }
 
 export interface ResultRow {
@@ -72,6 +80,8 @@ export interface ResultRow {
   grade: string | null;
   grade_point: number | null;
   remarks: string | null;
+  question_marks: Record<string, QuestionMark> | null;
+  converted_marks: number | null;
 }
 
 export type ComputeOutcome =
@@ -146,6 +156,28 @@ function readMark(label: string, v: unknown, max: number): number | string {
   return n;
 }
 
+/** Parse a row's question cells against the pattern; marks null when all are blank. */
+function readQuestions(
+  pattern: QuestionPattern, cells: Record<string, unknown> | null | undefined,
+): { marks: Record<string, QuestionMark> | null; total: number } | { error: string } {
+  const eitherOr = new Map(pattern.parts.flatMap(p => p.questions.map(q => [q.no.toLowerCase(), q.either_or] as const)));
+  const marks: Record<string, QuestionMark> = {};
+  for (const [no, cell] of Object.entries(cells ?? {})) {
+    const known = eitherOr.get(no.toLowerCase());
+    if (known === undefined) {
+      if (blank(cell)) continue;
+      return { error: `Q${no} isn't on this paper` };
+    }
+    const r = parseCell(cell, known);
+    if ('error' in r) return { error: `Q${no}: ${r.error}` };
+    if (r.mark !== null) marks[no] = r.mark;
+  }
+  if (!Object.keys(marks).length) return { marks: null, total: 0 };
+  const scored = scoreQuestions(pattern, marks);
+  if ('error' in scored) return { error: scored.error };
+  return { marks, total: scored.total };
+}
+
 /**
  * Turn one entered row into what is stored. Blank row (no marks, not absent,
  * no grade) means "clear this student's result".
@@ -170,7 +202,7 @@ export function computeResult(exam: ExamConfig, input: ResultInput): ComputeOutc
         student_id: sid, is_absent: true, marks_obtained: null, internal_marks: null, external_marks: null,
         percentage: null, performance_band: null,
         grade: grades ? scale.absent.grade : null, grade_point: grades ? scale.absent.point : null,
-        remarks,
+        remarks, question_marks: null, converted_marks: null,
       },
     };
   }
@@ -178,8 +210,37 @@ export function computeResult(exam: ExamConfig, input: ResultInput): ComputeOutc
   let marks: number;
   let internal: number | null = null;
   let external: number | null = null;
+  let questionMarks: Record<string, QuestionMark> | null = null;
 
-  if (isSplit(exam)) {
+  // Question-wise entry: the paper total comes from the questions.
+  let paper: number | null = null;
+  if (exam.question_pattern) {
+    const q = readQuestions(exam.question_pattern, input.questions);
+    if ('error' in q) return { kind: 'error', student_id: sid, error: q.error };
+    if (q.marks) { questionMarks = q.marks; paper = q.total; }
+  }
+
+  if (exam.question_pattern && !isSplit(exam)) {
+    if (paper === null) {
+      return override || remarks
+        ? { kind: 'error', student_id: sid, error: 'Enter question marks, or mark absent' }
+        : { kind: 'clear', student_id: sid };
+    }
+    marks = paper;
+  } else if (exam.question_pattern && isSplit(exam)) {
+    if (paper === null && blank(input.internal)) {
+      return override || remarks
+        ? { kind: 'error', student_id: sid, error: 'Enter internal and question marks, or mark absent' }
+        : { kind: 'clear', student_id: sid };
+    }
+    if (paper === null || blank(input.internal)) {
+      return { kind: 'error', student_id: sid, error: 'Enter both internal marks and the paper\'s question marks' };
+    }
+    const i = readMark('Internal', input.internal, num(exam.internal_max));
+    if (typeof i === 'string') return { kind: 'error', student_id: sid, error: i };
+    internal = i; external = paper;
+    marks = round2(i + paper);
+  } else if (isSplit(exam)) {
     if (blank(input.internal) && blank(input.external)) {
       return override || remarks
         ? { kind: 'error', student_id: sid, error: 'Enter internal and external marks, or mark absent' }
@@ -224,6 +285,8 @@ export function computeResult(exam: ExamConfig, input: ResultInput): ComputeOutc
       student_id: sid, is_absent: false, marks_obtained: marks, internal_marks: internal, external_marks: external,
       percentage, performance_band: bandFor(percentage, exam.grading_schema),
       grade, grade_point: point, remarks,
+      question_marks: questionMarks,
+      converted_marks: blank(exam.counted_out_of) ? null : round2((marks / max) * num(exam.counted_out_of)),
     },
   };
 }
@@ -268,6 +331,13 @@ export function readSheetRow(row: Record<string, unknown>): SheetRow {
   const clean = (v: unknown) => (v === undefined || isAbsentWord(v) ? null : (v as number | string));
   const remarks = pick(row, ['remarks', 'comments', 'remark']);
 
+  // Question columns: Q1, Q2 … (headers arrive lower-cased as q1, q12a).
+  const questions: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) {
+    const m = /^q_?(\d{1,3}[a-z]?)$/.exec(k);
+    if (m && !blank(v)) questions[m[1]] = isAbsentWord(v) ? null : v;
+  }
+
   return {
     email: emailRaw === undefined ? null : String(emailRaw).trim().toLowerCase(),
     studentId: Number.isInteger(id) && id > 0 ? id : null,
@@ -279,6 +349,7 @@ export function readSheetRow(row: Record<string, unknown>): SheetRow {
       // "A" is a real grade here, so the grade column is never read as absent.
       grade: grade === undefined ? null : String(grade),
       remarks: remarks === undefined ? null : String(remarks),
+      questions: Object.keys(questions).length ? questions : null,
     },
   };
 }
