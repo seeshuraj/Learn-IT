@@ -205,8 +205,10 @@ async function questionWiseMarks(browser) {
   // Editing a published question-wise assessment (not its paper) must work.
   const { rows: [ex] } = await db.query(`select id, question_pattern from unit_exams where title = 'E2E Unit test 1'`);
   const st = await page.evaluate(async ({ api, id, pattern }) => {
-    const key = Object.keys(localStorage).find(k => k.endsWith('-auth-token'));
-    const token = JSON.parse(localStorage.getItem(key)).access_token;
+    // The app keeps its Supabase session in sessionStorage.
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const key = store && Object.keys(store).find(k => k.endsWith('-auth-token'));
+    const token = key ? JSON.parse(store.getItem(key)).access_token : '';
     const r = await fetch(`${api}/api/unit-exams/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ title: 'E2E Unit test 1', question_pattern: pattern }) });
     return r.status;
