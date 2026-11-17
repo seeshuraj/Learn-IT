@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
-import { api, type Assessment, type AssessmentType } from '../../services/api';
+import { api, type Assessment, type AssessmentType, type QuestionPattern } from '../../services/api';
+import { paperTotal } from '../../server/lib/questionPattern';
 import { Field, inputCls, isSplit, TYPE_LABELS, TYPE_ORDER } from './shared';
+import { PatternEditor, defaultPattern } from './PatternEditor';
 
 interface Course { id: number; name: string; code?: string | null }
 
@@ -25,6 +27,10 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
   const [semester, setSemester] = useState(existing?.semester != null ? String(existing.semester) : '');
   const [portion, setPortion] = useState<number[]>(existing?.portion_module_ids ?? []);
   const [portionNotes, setPortionNotes] = useState(existing?.portion_notes ?? '');
+  // New assessments default to question-wise entry; existing ones keep theirs.
+  const [questionWise, setQuestionWise] = useState(existing ? !!existing.question_pattern : true);
+  const [pattern, setPattern] = useState<QuestionPattern>(existing?.question_pattern ?? defaultPattern(existing?.assessment_type ?? 'unit_test'));
+  const [countsAs, setCountsAs] = useState(existing?.counted_out_of != null ? String(Number(existing.counted_out_of)) : '');
   const [modules, setModules] = useState<{ id: number; name: string }[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -48,8 +54,10 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
     if (!existing) {
       if (t === 'end_semester') { setSplit(true); setMaxMarks('100'); }
       else { setSplit(false); if (maxMarks === '100') setMaxMarks('50'); }
+      setPattern(defaultPattern(t));
     }
   };
+  const total = paperTotal(pattern);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,9 +68,13 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
       title: title.trim(),
       assessment_type: type,
       exam_date: date || null,
-      max_marks: split ? Number(internalMax) + Number(externalMax) : Number(maxMarks),
+      max_marks: questionWise
+        ? (split ? Number(internalMax) + total : total)
+        : split ? Number(internalMax) + Number(externalMax) : Number(maxMarks),
       internal_max: split ? Number(internalMax) : null,
-      external_max: split ? Number(externalMax) : null,
+      external_max: split ? (questionWise ? total : Number(externalMax)) : null,
+      question_pattern: questionWise ? pattern : null,
+      counted_out_of: !split && countsAs.trim() !== '' ? Number(countsAs) : null,
       credits: endSem && credits !== '' ? Number(credits) : null,
       semester: endSem && semester !== '' ? Number(semester) : null,
       portion_module_ids: portion.length ? portion : null,
@@ -83,7 +95,7 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="assessment-form-title">
-      <form onSubmit={submit} className="max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white p-6 shadow-xl sm:rounded-2xl">
+      <form onSubmit={submit} className="max-h-[92dvh] w-full max-w-xl overflow-y-auto rounded-t-2xl bg-white p-6 shadow-xl sm:rounded-2xl">
         <div className="mb-5 flex items-center justify-between">
           <h2 id="assessment-form-title" className="text-lg font-bold text-slate-900">
             {existing ? 'Edit assessment' : 'New assessment'}
@@ -132,19 +144,55 @@ export function AssessmentForm({ courses, existing, defaultCourseId, onClose, on
             </label>
           )}
 
+          <fieldset>
+            <legend className="mb-1 block text-sm font-medium text-slate-700">Marks entry</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {[{ v: true, label: 'Question-wise', sub: 'Part A, B, C' }, { v: false, label: 'One total', sub: 'per student' }].map(o => (
+                <button key={o.label} type="button" onClick={() => setQuestionWise(o.v)} aria-pressed={questionWise === o.v}
+                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                    questionWise === o.v ? 'border-teal-600 bg-teal-50 text-teal-800' : 'border-slate-200 text-slate-600 hover:border-slate-300'
+                  }`}>
+                  <span className="block font-medium">{o.label}</span>
+                  <span className="block text-xs opacity-80">{o.sub}</span>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          {questionWise && (
+            <div>
+              {split && <p className="mb-2 text-xs text-slate-600">The question paper is the external part. Internal marks are entered separately.</p>}
+              <PatternEditor value={pattern} onChange={setPattern} modules={modules} assessmentType={type} error={fields.question_pattern} />
+            </div>
+          )}
+
           {split ? (
             <div className="grid grid-cols-2 gap-3">
               <Field label="Internal out of" error={fields.internal_max}>
                 <input inputMode="decimal" className={inputCls} value={internalMax} onChange={e => setInternalMax(e.target.value)} />
               </Field>
-              <Field label="External out of" hint={`Total ${(Number(internalMax) || 0) + (Number(externalMax) || 0)}`}>
-                <input inputMode="decimal" className={inputCls} value={externalMax} onChange={e => setExternalMax(e.target.value)} />
-              </Field>
+              {questionWise ? (
+                <Field label="External out of" hint={`Total ${(Number(internalMax) || 0) + total}`}>
+                  <input className={`${inputCls} bg-slate-100`} value={total} readOnly aria-readonly="true" />
+                </Field>
+              ) : (
+                <Field label="External out of" hint={`Total ${(Number(internalMax) || 0) + (Number(externalMax) || 0)}`}>
+                  <input inputMode="decimal" className={inputCls} value={externalMax} onChange={e => setExternalMax(e.target.value)} />
+                </Field>
+              )}
             </div>
           ) : (
-            <Field label="Out of" error={fields.max_marks}>
-              <input inputMode="decimal" className={inputCls} value={maxMarks} onChange={e => setMaxMarks(e.target.value)} />
-            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              {!questionWise && (
+                <Field label="Out of" error={fields.max_marks}>
+                  <input inputMode="decimal" className={inputCls} value={maxMarks} onChange={e => setMaxMarks(e.target.value)} />
+                </Field>
+              )}
+              <Field label="Counts as (optional)" error={fields.counted_out_of}
+                hint={countsAs ? `${questionWise ? total : Number(maxMarks) || 0} marks are scaled to ${countsAs}` : 'E.g. a 50-mark test counted out of 20'}>
+                <input inputMode="decimal" className={inputCls} value={countsAs} onChange={e => setCountsAs(e.target.value)} placeholder="20" />
+              </Field>
+            </div>
           )}
 
           {endSem && (

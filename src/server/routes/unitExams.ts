@@ -1049,12 +1049,17 @@ export function createUnitExamsRouter(
           [studentId, auth.institutionId]
         );
 
+        // Weak units: below 50% in a question-wise paper, or any tagged topic
+        // of a paper in the weak band. Lower scores and repeats rank first.
         const weakTopics: Record<string, number> = {};
         for (const r of results) {
-          if (r.performance_band !== 'weak' || !r.topic_breakdown) continue;
+          if (r.is_absent || !r.topic_breakdown) continue;
           const td: Record<string, number> = typeof r.topic_breakdown === 'string'
             ? JSON.parse(r.topic_breakdown) : r.topic_breakdown;
-          for (const [t] of Object.entries(td)) weakTopics[t] = (weakTopics[t] ?? 0) + 1;
+          for (const [t, pct] of Object.entries(td)) {
+            const weak = Number.isFinite(Number(pct)) ? Number(pct) < 50 : r.performance_band === 'weak';
+            if (weak) weakTopics[t] = (weakTopics[t] ?? 0) + 1 + (50 - Math.min(50, Number(pct) || 0)) / 100;
+          }
         }
         const topWeakTopics = Object.entries(weakTopics)
           .sort((a, b) => b[1] - a[1])

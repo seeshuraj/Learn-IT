@@ -13,6 +13,9 @@ interface Analytics {
     bands: { strong: number; moderate: number; weak: number };
     absent?: number; grades?: Record<string, number>;
     weakest_topics: string[]; strongest_topics: string[];
+    topic_averages?: { topic: string; avg: number }[];
+    questions?: { no: string; part: string; max: number; attempted_pct: number | null; avg_pct: number | null; option_b?: number }[] | null;
+    parts?: { key: string; label: string; max: number; avg_pct: number | null }[] | null;
   } | null;
   results: any[];
   topics: any[];
@@ -224,6 +227,48 @@ export function AnalyticsView({ exam }: { exam: Exam }) {
       )}
 
       {/* Topic insights */}
+      {stats?.questions && stats.questions.length > 0 && (
+        <section className="rounded-xl border border-slate-200 bg-white p-4" aria-labelledby="qwise-title">
+          <h3 id="qwise-title" className="font-semibold text-slate-900">Question by question</h3>
+          <p className="mt-0.5 text-xs text-slate-500">Class average as a share of each question's marks, among students who answered it.</p>
+          {stats.parts && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {stats.parts.map(p => (
+                <span key={p.key} className="rounded-lg bg-slate-50 px-3 py-1.5 text-sm text-slate-700">
+                  {p.label}: <b className="tabular-nums">{p.avg_pct === null ? '—' : `${p.avg_pct}%`}</b>
+                  <span className="text-xs text-slate-500"> of {p.max}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          <ul className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+            {stats.questions.map(q => {
+              const pct = q.avg_pct ?? 0;
+              return (
+                <li key={q.no} className="text-sm">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="font-medium text-slate-800">Q{q.no} <span className="text-xs font-normal text-slate-500">/{q.max}</span></span>
+                    <span className="text-xs tabular-nums text-slate-600">
+                      {q.avg_pct === null ? 'not answered' : `${q.avg_pct}%`}
+                      {q.attempted_pct !== null && q.attempted_pct < 100 ? ` · ${q.attempted_pct}% answered` : ''}
+                      {q.option_b ? ` · ${q.option_b} chose (b)` : ''}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                    <div className={`h-full rounded-full ${pct >= 75 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${Math.max(2, Math.min(100, pct))}%` }} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {stats.topic_averages && stats.topic_averages.length > 0 && (
+            <p className="mt-3 text-xs text-slate-600">
+              By unit: {stats.topic_averages.map(t => `${t.topic} ${Math.round(t.avg)}%`).join(' · ')}
+            </p>
+          )}
+        </section>
+      )}
+
       {stats && (stats.weakest_topics.length > 0 || stats.strongest_topics.length > 0) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {stats.weakest_topics.length > 0 && (
