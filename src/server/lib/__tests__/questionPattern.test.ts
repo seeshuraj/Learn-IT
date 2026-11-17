@@ -86,3 +86,13 @@ test('topicBreakdown gives % per unit, using option b’s unit when b was writte
   assert.deepEqual(t, { 'Unit 1: Relational model': 61.11, 'Unit 2: SQL': 50 });
   assert.equal(topicBreakdown(ANNA_UNIV_SEMESTER, { '1': 2 }, names), null);
 });
+
+test('samePattern ignores key order (jsonb reorders keys) but not content', async () => {
+  const { samePattern } = await import('../questionPattern.js');
+  const stored = JSON.parse(JSON.stringify({ version: 1, parts: unitTest.parts.map(p => ({ key: p.key, label: p.label, questions: p.questions.map(q => ({ no: q.no, marks: q.marks, either_or: q.either_or, module_id: q.module_id, ...(q.module_id_b ? { module_id_b: q.module_id_b } : {}) })), answer_count: p.answer_count })) }));
+  assert.equal(samePattern(stored, unitTest), true);
+  assert.equal(samePattern(null, null), true);
+  assert.equal(samePattern(null, unitTest), false);
+  const changed = JSON.parse(JSON.stringify(unitTest)); changed.parts[0].questions[0].marks = 3;
+  assert.equal(samePattern(stored, changed), false);
+});

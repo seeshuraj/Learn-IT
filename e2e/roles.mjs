@@ -202,6 +202,16 @@ async function questionWiseMarks(browser) {
   await page.getByRole('button', { name: 'Publish results' }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Publish' }).click();
   await expectText(page, 'professor publish', 'Unpublish');
+  // Editing a published question-wise assessment (not its paper) must work.
+  const { rows: [ex] } = await db.query(`select id, question_pattern from unit_exams where title = 'E2E Unit test 1'`);
+  const st = await page.evaluate(async ({ api, id, pattern }) => {
+    const key = Object.keys(localStorage).find(k => k.endsWith('-auth-token'));
+    const token = JSON.parse(localStorage.getItem(key)).access_token;
+    const r = await fetch(`${api}/api/unit-exams/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'E2E Unit test 1', question_pattern: pattern }) });
+    return r.status;
+  }, { api: API, id: ex.id, pattern: ex.question_pattern });
+  if (st === 200) pass('professor edit published', 'unchanged paper saves (200)'); else fail('professor edit published', `PATCH → ${st}`);
   await page.getByRole('tab', { name: /Analysis/i }).click();
   await expectText(page, 'professor analysis', 'Question by question');
   await prof.context.close();

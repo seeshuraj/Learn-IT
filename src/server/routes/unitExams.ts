@@ -34,7 +34,7 @@ import {
   computeResult, readSheetRow, usesGrades, allowedGrades, isAssessmentType, gpaSummary, type ResultRow,
 } from '../lib/examGrading.js';
 import { markPlansStale } from './roadmaps.js';
-import { validatePattern, paperTotal, topicBreakdown, scoreQuestions, type QuestionPattern } from '../lib/questionPattern.js';
+import { validatePattern, paperTotal, topicBreakdown, scoreQuestions, samePattern, type QuestionPattern } from '../lib/questionPattern.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -466,7 +466,7 @@ export function createUnitExamsRouter(
         if (!(await portionOk(exam.course_id, patternModuleIds(v.question_pattern)))) {
           return res.status(422).json({ error: 'Question units must be modules of this course', fields: { question_pattern: 'Question units must be modules of this course' } });
         }
-        const patternChanged = JSON.stringify(v.question_pattern ?? null) !== JSON.stringify(exam.question_pattern ?? null);
+        const patternChanged = !samePattern(v.question_pattern, exam.question_pattern);
         if (patternChanged && exam.published_at) {
           return res.status(409).json({ error: 'Unpublish the results before changing the question paper' });
         }

@@ -188,3 +188,11 @@ export function topicBreakdown(
   if (!acc.size) return null;
   return Object.fromEntries([...acc].map(([k, { got, max }]) => [k, round2((got / max) * 100)]));
 }
+
+/** True when two patterns describe the same paper (Postgres jsonb reorders keys, so compare normalised forms). */
+export function samePattern(a: unknown, b: unknown): boolean {
+  if (a === null || a === undefined || b === null || b === undefined) return (a ?? null) === (b ?? null);
+  const na = validatePattern(a), nb = validatePattern(b);
+  if ('error' in na || 'error' in nb) return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify(na.pattern) === JSON.stringify(nb.pattern);
+}
