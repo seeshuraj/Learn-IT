@@ -1,29 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
-import { supabase } from "../services/supabaseClient";
+import { useNavigate } from "react-router-dom";
+import { api, type AppNotification as Notification } from "../services/api";
 
-interface Notification {
-  id: number;
-  type: string;
-  message: string;
-  read: boolean;
-  created_at: string;
-  metadata?: Record<string, unknown>;
-}
-
-async function apiFetch(path: string, opts: RequestInit = {}) {
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token;
-  return fetch(path, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(opts.headers ?? {}),
-    },
-  });
+/** Where a notification leads, from what it is about. */
+function linkFor(n: Notification): string | null {
+  const m = n.metadata ?? {};
+  if (n.type === "marks_published") return "/marks";
+  if (n.type === "exam_schedule") return "/exams";
+  if (typeof m.course_id === "number") return `/courses/${m.course_id}`;
+  return null;
 }
 
 const NotificationBell: React.FC = () => {
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -36,19 +25,15 @@ const NotificationBell: React.FC = () => {
 
   const fetchNotifications = async () => {
     try {
-      const res = await apiFetch("/api/notifications");
-      if (!res.ok) return;
-      const data = await res.json();
-      setNotifications(data);
+      const data = await api.getNotifications();
+      setNotifications(Array.isArray(data) ? data : []);
       setUnreadCount(Array.isArray(data) ? data.filter((n: Notification) => !n.read).length : 0);
     } catch {}
   };
 
   const pollUnread = async () => {
     try {
-      const res = await apiFetch("/api/notifications/unread-count");
-      if (!res.ok) return;
-      const { count } = await res.json();
+      const { count } = await api.getUnreadNotificationCount();
       const n = Number(count) || 0;
       setUnreadCount(n);
       if (lastCount.current !== null && n > lastCount.current) fetchNotifications();
@@ -86,7 +71,7 @@ const NotificationBell: React.FC = () => {
   const markRead = async (id: number) => {
     try {
       const wasUnread = notifications.some(n => n.id === id && !n.read);
-      await apiFetch(`/api/notifications/${id}/read`, { method: "PATCH" });
+      await api.markNotificationRead(id);
       if (!wasUnread) return;
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
       setUnreadCount(c => Math.max(0, c - 1));
@@ -96,7 +81,7 @@ const NotificationBell: React.FC = () => {
 
   const markAllRead = async () => {
     try {
-      await apiFetch("/api/notifications/read-all", { method: "POST" });
+      await api.markAllNotificationsRead();
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
       lastCount.current = 0;
@@ -107,6 +92,9 @@ const NotificationBell: React.FC = () => {
     if (type === "grade_posted") return "📝";
     if (type === "new_assignment") return "📋";
     if (type === "enrollment_confirmed") return "🎓";
+    if (type === "marks_published") return "📊";
+    if (type === "exam_schedule") return "🗓️";
+    if (type === "course_notice") return "📌";
     return "🔔";
   };
 
@@ -149,7 +137,11 @@ const NotificationBell: React.FC = () => {
               notifications.slice(0, 20).map(n => (
                 <button
                   key={n.id}
-                  onClick={() => markRead(n.id)}
+                  onClick={() => {
+                    void markRead(n.id);
+                    const to = linkFor(n);
+                    if (to) { setOpen(false); navigate(to); }
+                  }}
                   className={`w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors ${
                     n.read ? "opacity-60" : "bg-blue-50/40"
                   }`}
