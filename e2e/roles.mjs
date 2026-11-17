@@ -236,8 +236,9 @@ async function questionWiseMarks(browser) {
 /** Call the API as the signed-in user of this page (for permission checks). */
 async function apiAs(page, method, path, body) {
   return page.evaluate(async ({ api, method, path, body }) => {
-    const key = Object.keys(localStorage).find(k => k.endsWith('-auth-token'));
-    const token = key ? JSON.parse(localStorage.getItem(key)).access_token : '';
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const key = store && Object.keys(store).find(k => k.endsWith('-auth-token'));
+    const token = key ? JSON.parse(store.getItem(key)).access_token : '';
     const r = await fetch(`${api}${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: body ? JSON.stringify(body) : undefined });
     return r.status;
   }, { api: API, method, path, body });
