@@ -60,6 +60,7 @@ import { createDepartmentsRouter } from "./src/server/routes/departments.js";
 import { createTimetablesRouter, storeEntries, TIMETABLE_BUCKET } from "./src/server/routes/timetables.js";
 import { createExamCalendarRouter } from "./src/server/routes/examCalendar.js";
 import { resolveDepartmentId } from "./src/server/lib/departments.js";
+import { provisionAccount, AccountExists } from "./src/server/lib/provisionAccount.js";
 import { createAuditLogsRouter } from "./src/server/routes/auditLogs.js";
 import { createGradingRouter } from "./src/server/routes/grading.js";
 import { createUserImportRouter } from "./src/server/routes/userImport.js";
@@ -190,45 +191,6 @@ async function checkStorageConnectivity(): Promise<void> {
 
 // ── Auth user helpers ─────────────────────────────────────────────────────────
 
-
-async function createAuthUserAndIdentityMapRow(
-  client: pkg.PoolClient,
-  legacyUserId: number,
-  email: string,
-  role: string
-): Promise<{ authUserId: string; tempPassword: string } | null> {
-  const tempPassword = generateTempPassword();
-
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
-    email,
-    password: tempPassword,
-    email_confirm: true,
-  });
-
-  if (authErr) {
-    if (authErr.message.includes("already registered") || authErr.message.includes("already been registered")) {
-      log.warn("auth user already exists; skipping auth creation", { legacyUserId });
-      return null;
-    }
-    log.error("auth createUser failed", { legacyUserId, ...errorFields(authErr) });
-    throw new Error(`Supabase Auth createUser failed: ${authErr.message}`);
-  }
-
-  const authUserId = authData.user.id;
-
-  await client.query(
-    `INSERT INTO user_identity_map (legacy_user_id, auth_user_id, role, force_password_change)
-     VALUES ($1, $2, $3, TRUE)
-     ON CONFLICT (legacy_user_id) DO UPDATE
-       SET auth_user_id = EXCLUDED.auth_user_id,
-           role = EXCLUDED.role,
-           force_password_change = TRUE`,
-    [legacyUserId, authUserId, role]
-  );
-
-  log.info("auth user created", { authUserId, legacyUserId });
-  return { authUserId, tempPassword };
-}
 
 const require = createRequire(import.meta.url);
 const multer   = require("multer");
@@ -1449,35 +1411,23 @@ async function startServer() {
     try {
       const { name, email, role, year, major, gpa } = req.body;
       const { institutionId } = callerOf(req);
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const user = await client.query(
-          "INSERT INTO users (name,email,role,active,year,major,gpa) VALUES ($1,$2,$3,1,$4,$5,$6) RETURNING id,name,email,role,active,year,major,gpa",
-          [name, email, role, year ?? null, major ?? null, gpa ?? null]
-        );
-        const newUser = user.rows[0];
-        const departmentId = await resolveDepartmentId(client, institutionId, major, { create: true });
-        await client.query(
-          `INSERT INTO institution_members (institution_id, user_id, role, department_id, year_of_study)
-           VALUES ($1,$2,$3,$4,$5)`,
-          [institutionId, newUser.id, memberRoleOf(role), departmentId, role === "student" ? year ?? null : null]
-        );
-        const authResult = await createAuthUserAndIdentityMapRow(client, newUser.id, email, role);
-        await client.query("COMMIT");
-        res.status(201).json({
-          ...newUser,
-          tempPassword: authResult?.tempPassword,
-        });
-      } catch (err: any) {
-        await client.query("ROLLBACK");
-        // Emails are unique platform-wide; do not reveal which institution holds it.
-        if (err?.code === PG_UNIQUE) return res.status(409).json({ error: "A user with this email already exists" });
-        throw err;
-      } finally {
-        client.release();
-      }
-    } catch (e: any) { sendServerError(res, e); }
+      const tempPassword = generateTempPassword();
+      // See provisionAccount: LearnIT rows are committed before Auth is called.
+      const { userId } = await provisionAccount(pool, supabaseAdmin.auth.admin, {
+        name, email, role, memberRole: memberRoleOf(role), institutionId,
+        year: year ?? null, major: major ?? null, gpa: gpa ?? null,
+        password: tempPassword, forcePasswordChange: true,
+      });
+      log.info("user created by admin", { userId });
+      const created = await queryOne(
+        "SELECT id, name, email, role, active, year, major, gpa FROM users WHERE id = $1", [userId]
+      );
+      res.status(201).json({ ...created, tempPassword });
+    } catch (e: any) {
+      // Emails are unique platform-wide; do not reveal which institution holds it.
+      if (e instanceof AccountExists) return res.status(409).json({ error: "A user with this email already exists" });
+      sendServerError(res, e);
+    }
   });
 
   app.put("/api/admin/users/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), validateBody(adminUserUpdateSchema), async (req, res) => {

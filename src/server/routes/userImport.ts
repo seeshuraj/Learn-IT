@@ -35,7 +35,7 @@ import { generateTempPassword } from '../lib/tempPassword.js';
 import {
   validateImportRows, ImportRow, IMPORT_BATCH_SIZE, IMPORT_MAX_ROWS,
 } from '../lib/userImport.js';
-import { resolveDepartmentId } from '../lib/departments.js';
+import { provisionAccount, AccountExists } from '../lib/provisionAccount.js';
 
 const require = createRequire(import.meta.url);
 const multer = require('multer');
@@ -51,8 +51,6 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
 const isRateLimited = (err: { status?: number; message?: string } | null | undefined) =>
   !!err && (err.status === 429 || /rate limit|security purposes/i.test(err.message ?? ''));
-const isAlreadyRegistered = (err: { message?: string } | null | undefined) =>
-  !!err && /already (been )?registered|already exists/i.test(err.message ?? '');
 
 export function createUserImportRouter(
   pool: pkg.Pool,
@@ -82,67 +80,32 @@ export function createUserImportRouter(
     }
   }
 
-  /** Creates one account: users + institution_members + auth user + identity map, all or nothing. */
+  /**
+   * Creates one account: users + institution_members + auth user + identity
+   * map. All or nothing (see provisionAccount for why the order matters).
+   */
   async function createOne(row: ImportRow, institutionId: string, mode: Mode): Promise<RowResult> {
-    const client = await pool.connect();
-    let authUserId: string | null = null;
+    // Invite mode: the account gets a random password nobody sees; the person
+    // sets their own through the emailed link.
+    const tempPassword = mode === 'temp_password' ? generateTempPassword() : undefined;
     try {
-      await client.query('BEGIN');
-      const inserted = await client.query<{ id: number }>(
-        `INSERT INTO users (name, email, role, active, year, major)
-         VALUES ($1, $2, $3, 1, $4, $5) RETURNING id`,
-        [row.name, row.email, row.role, row.year, row.major],
-      );
-      const userId = inserted.rows[0].id;
-      // The department column becomes a real department (created if new).
-      const departmentId = await resolveDepartmentId(client, institutionId, row.major, { create: true });
-      await client.query(
-        `INSERT INTO institution_members (institution_id, user_id, role, department_id, year_of_study)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [institutionId, userId, row.role, departmentId, row.role === 'student' ? row.year : null],
-      );
-
-      // Invite mode: the account gets a random password nobody sees; the person
-      // sets their own through the emailed link after the commit below.
-      const tempPassword = mode === 'temp_password' ? generateTempPassword() : undefined;
-      const created = await supabaseAdmin.auth.admin.createUser({
-        email: row.email,
+      await provisionAccount(pool, supabaseAdmin.auth.admin, {
+        name: row.name, email: row.email, role: row.role, memberRole: row.role, institutionId,
+        year: row.year, major: row.major,
         password: tempPassword ?? crypto.randomBytes(24).toString('base64url'),
-        email_confirm: true,
+        forcePasswordChange: mode === 'temp_password',
       });
-      if (created.error) {
-        if (isAlreadyRegistered(created.error)) throw Object.assign(new Error('exists'), { exists: true });
-        throw created.error;
-      }
-      authUserId = created.data.user.id;
-
-      await client.query(
-        `INSERT INTO user_identity_map (legacy_user_id, auth_user_id, role, force_password_change)
-         VALUES ($1, $2, $3, $4)`,
-        [userId, authUserId, row.role, mode === 'temp_password'],
-      );
-      await client.query('COMMIT');
-      authUserId = null; // committed: no cleanup from here on
-
       if (mode === 'temp_password') {
         return { row: row.row, email: row.email, status: 'created', tempPassword };
       }
       const sent = await sendSetPasswordEmail(row.email);
       return { row: row.row, email: row.email, status: 'created', ...(sent ? {} : { emailPending: true }) };
     } catch (err: any) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      // Never leave an auth account without its LearnIT records.
-      if (authUserId) {
-        await supabaseAdmin.auth.admin.deleteUser(authUserId).catch(e =>
-          log.error('bulk import: orphan auth user cleanup failed', { authUserId, ...errorFields(e) }));
-      }
-      if (err?.exists || err?.code === '23505') {
+      if (err instanceof AccountExists) {
         return { row: row.row, email: row.email, status: 'exists', reason: 'An account with this email already exists' };
       }
       log.error('bulk import: row failed', { row: row.row, ...errorFields(err) });
       return { row: row.row, email: row.email, status: 'failed', reason: 'Could not create this account; try again' };
-    } finally {
-      client.release();
     }
   }
 
