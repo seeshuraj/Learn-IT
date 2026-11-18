@@ -127,6 +127,10 @@ async function courses(browser) {
   await prof.page.waitForURL(/\/courses\/2$/);
   await expectText(prof.page, 'professor course page', 'Modules');
   await expectText(prof.page, 'professor course page', '2 students enrolled');
+  // Dashboard → Students lists enrolled students (it used to be always empty).
+  await prof.page.goto(`${APP}/`);
+  await prof.page.getByRole('tab', { name: 'Students' }).click();
+  await expectText(prof.page, 'professor Students tab', 'Sarah Johnson');
   await prof.context.close();
 
   const stu = await signIn(browser, 'student');

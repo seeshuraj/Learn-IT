@@ -21,7 +21,8 @@ interface Module {
 interface StudentStat {
   student_id?: number;
   name: string;
-  average: number;
+  /** Assignment average in percent; null until something is graded. */
+  average: number | null;
   missed: number;
   late: number;
   status: string;
@@ -33,6 +34,7 @@ const STATUS_TONE: Record<string, { pill: string; bar: string }> = {
   'On Track':     { pill: 'bg-emerald-100 text-emerald-800', bar: 'bg-emerald-500' },
   'Needs Review': { pill: 'bg-amber-100 text-amber-800',     bar: 'bg-amber-500' },
   'At Risk':      { pill: 'bg-red-100 text-red-800',         bar: 'bg-red-500' },
+  'No grades yet':{ pill: 'bg-slate-100 text-slate-600',     bar: 'bg-slate-300' },
 };
 
 interface RubricBreakdown {
@@ -601,16 +603,17 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
       results.forEach((r: any) => {
         if (!Array.isArray(r?.students)) return;
         r.students.forEach((s: any) => {
-          const avg = Math.round(s.avg_grade ?? 0);
+          const avg = s.avg_grade == null ? null : Math.round(Number(s.avg_grade));
           list.push({
             name: s.name, average: avg, missed: s.missed ?? 0, late: s.late ?? 0,
-            status: avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
+            status: avg == null ? 'No grades yet' : avg >= 75 ? 'On Track' : avg >= 55 ? 'Needs Review' : 'At Risk',
             student_id: s.student_id, course_id: r._course?.id, course_name: r._course?.code ?? r._course?.name,
           });
         });
       });
-      setStudents(list.sort((a, b) => b.average - a.average));
-      setClassAvg(list.length > 0 ? Math.round(list.reduce((sum, v) => sum + v.average, 0) / list.length) : 0);
+      setStudents(list.sort((a, b) => (b.average ?? -1) - (a.average ?? -1) || a.name.localeCompare(b.name)));
+      const graded = list.filter(v => v.average != null);
+      setClassAvg(graded.length > 0 ? Math.round(graded.reduce((sum, v) => sum + (v.average ?? 0), 0) / graded.length) : 0);
     }).catch(() => {}).finally(() => setStudentsLoading(false));
   }
 
@@ -626,19 +629,20 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   }, [courses]);
 
   const fetchClassSummary = async () => {
-    if (students.length === 0) return;
+    // Only students with graded work: there is nothing to summarise otherwise.
+    const graded = students.filter((s): s is StudentStat & { average: number } => s.average != null);
+    if (graded.length === 0) { toast.info("Nothing has been graded yet."); return; }
     setClassSummaryLoading(true); setClassSummary("");
     try {
       // Student names never go to the AI provider: it sees "Student 1"... and
       // the names are put back here, in the browser.
-      const labels = students.map((_, i) => `Student ${i + 1}`);
       const classData: ClassOverviewData = {
         courseName: courses.map(c => c.name).join(', ') || 'All Courses',
         classAverage: classAvg,
-        students: students.map((s, i) => ({ name: labels[i], average: s.average, missed: s.missed, status: s.status })),
+        students: graded.map((s, i) => ({ name: `Student ${i + 1}`, average: s.average, missed: s.missed, status: s.status })),
       };
       const summary = await getClassOverviewSummary(classData);
-      setClassSummary(summary.replace(/Student (\d+)/g, (m, n) => students[Number(n) - 1]?.name ?? m));
+      setClassSummary(summary.replace(/Student (\d+)/g, (m, n) => graded[Number(n) - 1]?.name ?? m));
     } catch { toast.error("Could not generate class summary."); }
     finally { setClassSummaryLoading(false); }
   };
@@ -1165,9 +1169,9 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-3">
                               <div className="w-24 bg-slate-100 rounded-full h-2 overflow-hidden">
-                                <div className={`${tone.bar} h-2 rounded-full`} style={{ width: `${Math.min(100, student.average)}%` }} />
+                                <div className={`${tone.bar} h-2 rounded-full`} style={{ width: `${Math.min(100, student.average ?? 0)}%` }} />
                               </div>
-                              <span className="text-sm font-bold text-slate-700 tabular-nums">{student.average}%</span>
+                              <span className="text-sm font-bold text-slate-700 tabular-nums">{student.average == null ? '—' : `${student.average}%`}</span>
                             </div>
                           </td>
                           <td className="px-4 py-3 text-sm tabular-nums text-slate-600">{student.late}</td>
