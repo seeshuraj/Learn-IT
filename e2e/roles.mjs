@@ -127,6 +127,10 @@ async function courses(browser) {
   await prof.page.waitForURL(/\/courses\/2$/);
   await expectText(prof.page, 'professor course page', 'Modules');
   await expectText(prof.page, 'professor course page', '2 students enrolled');
+  // Dashboard → Students lists enrolled students (it used to be always empty).
+  await prof.page.goto(`${APP}/`);
+  await prof.page.getByRole('tab', { name: 'Students' }).click();
+  await expectText(prof.page, 'professor Students tab', 'Sarah Johnson');
   await prof.context.close();
 
   const stu = await signIn(browser, 'student');
@@ -155,6 +159,23 @@ async function bell(browser) {
   try { await stu.page.waitForURL(/\/marks$/, { timeout: 5000 }); pass('student bell', 'opens My Marks'); }
   catch { fail('student bell', 'clicking the notification did not open My Marks'); }
   await stu.context.close();
+
+  // Posting an assignment notifies the course's students and links to Assignments.
+  const prof = await signIn(browser, 'professor');
+  const { rows: [mod] } = await db.query(`select id from modules where course_id = 2 order by id limit 1`);
+  const created = await jsonAs(prof.page, 'POST', `/api/modules/${mod.id}/assignments`,
+    { title: 'E2E posted assignment', description: 'x', due_date: '2099-01-15', max_points: 10, status: 'active' });
+  await prof.context.close();
+  const { rows: [note] } = await db.query(
+    `select message from notifications where user_id = 2 and type = 'new_assignment' and metadata->>'assignment_id' = $1`, [String(created.body?.id)]);
+  if (created.status === 201 && note?.message?.includes('E2E posted assignment')) pass('assignment notification', note.message);
+  else fail('assignment notification', `create → ${created.status}, notification ${JSON.stringify(note)}`);
+  const stu2 = await signIn(browser, 'student');
+  await stu2.page.getByRole('button', { name: 'Notifications' }).click();
+  await stu2.page.getByText('E2E posted assignment').first().click();
+  try { await stu2.page.waitForURL(/\/assignments$/, { timeout: 5000 }); pass('student bell', 'assignment notification opens Assignments'); }
+  catch { fail('student bell', 'assignment notification did not open Assignments'); }
+  await stu2.context.close();
 }
 
 /**
@@ -325,6 +346,25 @@ async function adminStats(browser) {
   const { rows: [placed] } = await db.query(`select department_id, semester from courses where id = 1`);
   if (p1.status === 200 && p2.status === 200 && placed.department_id === dep.id && placed.semester === 3) pass_('admin courses', 'department and semester set separately');
   else fail('admin courses', `placement → ${p1.status}/${p2.status} ${JSON.stringify(placed)}`);
+
+  // Enrolment dialog lists students by name and email (both used to be blank).
+  await page.goto(`${APP}/admin/courses`);
+  await page.waitForLoadState('networkidle');
+  await page.getByRole('row', { name: /CS3200/ }).getByRole('button', { name: 'Manage' }).click();
+  await page.waitForTimeout(1500);
+  const dialogText = (await page.textContent('body')) ?? '';
+  if (/Sarah/.test(dialogText) && /sarah@/.test(dialogText)) pass_('admin enrolments', 'enrolled students show name and email');
+  else fail('admin enrolments', 'enrolled students show no name or email');
+  // Bulk enrol reports emails with no account instead of claiming success.
+  const { rows: [cs3200] } = await db.query(`select id from courses where code = 'CS3200'`);
+  const bulk = await jsonAs(page, 'POST', '/api/admin/bulk-enroll', { course_id: cs3200.id, emails: ['nobody-here@example.com'] });
+  if (bulk.status === 200 && bulk.body?.[0]?.status === 'not_found') pass_('admin enrolments', 'bulk enrol reports an unknown email as not found');
+  else fail('admin enrolments', `bulk enrol → ${bulk.status} ${JSON.stringify(bulk.body)}`);
+  await page.getByLabel('Student emails').fill('nobody-here@example.com');
+  await page.getByRole('button', { name: 'Enrol these students' }).click();
+  await page.waitForTimeout(1500);
+  if (await page.getByText('1 not found').count()) pass_('admin enrolments', 'the dialog says which emails were not found');
+  else fail('admin enrolments', 'the dialog does not report the unknown email');
 
   // Settings: the AI switch is real and saves.
   await page.goto(`${APP}/admin/settings`);

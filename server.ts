@@ -49,6 +49,7 @@ import {
 } from "./src/server/validation/schemas.js";
 import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
+import { todayIst } from "./src/server/lib/studyPlan.js";
 import { startCronJobs } from "./src/server/jobs/cron.js";
 import { createRoadmapRouter, generateRoadmap, RoadmapNotEnrolled } from "./src/server/routes/roadmaps.js";
 import { JobQueue, PermanentJobError } from "./src/server/lib/jobs.js";
@@ -208,9 +209,11 @@ const isProduction = process.env.NODE_ENV === "production";
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  // Size to the database plan: keep (instances × DB_POOL_MAX) under the
-  // connection limit, or point DATABASE_URL at the Supabase pooler.
-  max: Math.max(1, Number(process.env.DB_POOL_MAX) || 10),
+  // Supabase's session pooler allows 15 clients in total on this plan, shared by
+  // every API instance (and anything else connected). Keep
+  // (instances × DB_POOL_MAX) under it; 5 per instance leaves room for a
+  // rolling deploy (old + new revision) plus one spare.
+  max: Math.max(1, Number(process.env.DB_POOL_MAX) || 5),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
@@ -980,6 +983,30 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
+  /**
+   * Tell a course's active students that an assignment was posted. One insert,
+   * no per-student round trips. Drafts (status other than 'active') are skipped.
+   */
+  async function notifyAssignmentPosted(a: { id: number; module_id: number; title: string; due_date: string | null; status?: string | null }) {
+    if (a.status && a.status !== "active") return;
+    const due = /^\d{4}-\d{2}-\d{2}/.test(a.due_date ?? "")
+      ? new Date(`${a.due_date!.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" })
+      : null;
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, message, metadata)
+       SELECT e.student_id, 'new_assignment',
+              coalesce(c.code || ' · ', '') || 'New assignment: ' || $2 || coalesce(' (due ' || $3 || ')', ''),
+              jsonb_build_object('course_id', c.id, 'assignment_id', $4::int)
+       FROM modules m
+       JOIN courses c ON c.id = m.course_id
+       JOIN enrollments e ON e.course_id = c.id
+       JOIN institution_members im ON im.user_id = e.student_id AND im.institution_id = c.institution_id
+        AND im.role = 'student' AND im.status = 'active'
+       WHERE m.id = $1`,
+      [a.module_id, a.title, due, a.id]
+    ).catch(err => log.error("assignment notification failed (non-fatal)", { assignment_id: a.id, ...errorFields(err) }));
+  }
+
   app.post("/api/modules/:id/assignments", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(assignmentCreateSchema), async (req, res) => {
     try {
       await assertManagesCourse(pool, callerOf(req), await courseOfModule(pool, Number(req.params.id)));
@@ -989,6 +1016,7 @@ async function startServer() {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [req.params.id, title, description, due_date, max_points, rubric, status]
       );
+      await notifyAssignmentPosted(assignment);
       res.status(201).json(assignment);
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1201,24 +1229,44 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
+  // Course summary plus one row per enrolled (active) student. Grades are
+  // percentages of max_points; late = submitted after the due date; missed =
+  // an active assignment whose due date has passed with no submission.
   app.get("/api/instructor/courses/:id/analytics", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), async (req, res) => {
     try {
-      await assertManagesCourse(pool, callerOf(req), Number(req.params.id));
-      const enrollmentCount = await queryOne(
-        "SELECT COUNT(*) AS count FROM enrollments WHERE course_id=$1",
-        [req.params.id]
+      const courseId = Number(req.params.id);
+      const { institutionId } = callerOf(req);
+      await assertManagesCourse(pool, callerOf(req), courseId);
+      const dueOk = `a.due_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'`;
+      const pct = `s.grade * 100.0 / NULLIF(a.max_points, 0)`;
+      const students = await query(
+        `SELECT u.id AS student_id, u.name,
+                ROUND(AVG(${pct}) FILTER (WHERE s.grade IS NOT NULL), 1) AS avg_grade,
+                COUNT(DISTINCT s.id) FILTER (WHERE ${dueOk} AND to_char(s.submitted_at, 'YYYY-MM-DD') > left(a.due_date, 10)) AS late,
+                COUNT(DISTINCT a.id) FILTER (WHERE a.status = 'active' AND s.id IS NULL AND ${dueOk} AND left(a.due_date, 10) < $3) AS missed
+         FROM enrollments e
+         JOIN users u ON u.id = e.student_id
+         JOIN institution_members im ON im.user_id = e.student_id AND im.institution_id = e.institution_id
+          AND im.role = 'student' AND im.status = 'active'
+         LEFT JOIN modules m     ON m.course_id = e.course_id
+         LEFT JOIN assignments a ON a.module_id = m.id
+         LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = e.student_id
+         WHERE e.course_id = $1 AND e.institution_id = $2
+         GROUP BY u.id, u.name
+         ORDER BY u.name`,
+        [courseId, institutionId, todayIst()]
       );
-      const avgGrade = await queryOne(
-        `SELECT AVG(s.grade) AS avg
-         FROM submissions s
-         JOIN assignments a ON s.assignment_id=a.id
-         JOIN modules m     ON a.module_id=m.id
-         WHERE m.course_id=$1 AND s.grade IS NOT NULL`,
-        [req.params.id]
-      );
+      const graded = students.filter((r: any) => r.avg_grade != null);
       res.json({
-        enrollment_count: Number(enrollmentCount?.count ?? 0),
-        avg_grade: avgGrade?.avg ? Number(avgGrade.avg).toFixed(1) : null,
+        enrollment_count: students.length,
+        avg_grade: graded.length
+          ? (graded.reduce((sum: number, r: any) => sum + Number(r.avg_grade), 0) / graded.length).toFixed(1)
+          : null,
+        students: students.map((r: any) => ({
+          student_id: r.student_id, name: r.name,
+          avg_grade: r.avg_grade == null ? null : Number(r.avg_grade),
+          late: Number(r.late), missed: Number(r.missed),
+        })),
       });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1232,6 +1280,7 @@ async function startServer() {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [module_id, title, description, due_date, max_points, rubric, status]
       );
+      await notifyAssignmentPosted(assignment);
       res.status(201).json(assignment);
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1683,9 +1732,11 @@ async function startServer() {
     try {
       await assertManagesCourse(pool, callerOf(req), Number(req.params.courseId));
       const enrollments = await query(
-        `SELECT e.*, u.name AS student_name, u.email AS student_email
+        `SELECT e.id, e.student_id, e.course_id, e.enrolled_at, e.source,
+                u.name, u.email, u.name AS student_name, u.email AS student_email
          FROM enrollments e JOIN users u ON e.student_id=u.id
-         WHERE e.course_id=$1 AND e.institution_id=$2`,
+         WHERE e.course_id=$1 AND e.institution_id=$2
+         ORDER BY u.name`,
         [req.params.courseId, callerOf(req).institutionId]
       );
       res.json(enrollments);

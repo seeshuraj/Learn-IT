@@ -176,14 +176,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
         <p className="text-slate-500 mt-1">Here's what's happening in your courses today.</p>
       </div>
 
-      <div className="inline-flex items-center gap-3 bg-white rounded-2xl px-6 py-4 shadow-sm border border-slate-100">
-        <div className="text-3xl font-bold text-indigo-600">{user.gpa ?? '—'}</div>
-        <div>
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Current GPA</p>
-          <p className="text-sm font-semibold text-slate-600">Excellent Standing</p>
-        </div>
-      </div>
-
       {/* Active Courses */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8">
         <div className="flex items-center justify-between mb-6">
