@@ -155,6 +155,23 @@ async function bell(browser) {
   try { await stu.page.waitForURL(/\/marks$/, { timeout: 5000 }); pass('student bell', 'opens My Marks'); }
   catch { fail('student bell', 'clicking the notification did not open My Marks'); }
   await stu.context.close();
+
+  // Posting an assignment notifies the course's students and links to Assignments.
+  const prof = await signIn(browser, 'professor');
+  const { rows: [mod] } = await db.query(`select id from modules where course_id = 2 order by id limit 1`);
+  const created = await jsonAs(prof.page, 'POST', `/api/modules/${mod.id}/assignments`,
+    { title: 'E2E posted assignment', description: 'x', due_date: '2099-01-15', max_points: 10, status: 'active' });
+  await prof.context.close();
+  const { rows: [note] } = await db.query(
+    `select message from notifications where user_id = 2 and type = 'new_assignment' and metadata->>'assignment_id' = $1`, [String(created.body?.id)]);
+  if (created.status === 201 && note?.message?.includes('E2E posted assignment')) pass('assignment notification', note.message);
+  else fail('assignment notification', `create → ${created.status}, notification ${JSON.stringify(note)}`);
+  const stu2 = await signIn(browser, 'student');
+  await stu2.page.getByRole('button', { name: 'Notifications' }).click();
+  await stu2.page.getByText('E2E posted assignment').first().click();
+  try { await stu2.page.waitForURL(/\/assignments$/, { timeout: 5000 }); pass('student bell', 'assignment notification opens Assignments'); }
+  catch { fail('student bell', 'assignment notification did not open Assignments'); }
+  await stu2.context.close();
 }
 
 /**

@@ -7,6 +7,7 @@ function linkFor(n: Notification): string | null {
   const m = n.metadata ?? {};
   if (n.type === "marks_published") return "/marks";
   if (n.type === "exam_schedule") return "/exams";
+  if (n.type === "new_assignment" || n.type === "grade_posted") return "/assignments";
   if (typeof m.course_id === "number") return `/courses/${m.course_id}`;
   return null;
 }
@@ -153,7 +154,7 @@ const NotificationBell: React.FC = () => {
                         {n.message}
                       </p>
                       <p className="text-xs text-slate-400 mt-0.5">
-                        {new Date(n.created_at).toLocaleString()}
+                        {new Date(n.created_at).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}
                       </p>
                     </div>
                     {!n.read && (

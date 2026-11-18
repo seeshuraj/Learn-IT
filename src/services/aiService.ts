@@ -178,9 +178,11 @@ export function toAISummaryData(data: StudentAnalyticsResponse): StudentAnalytic
     studentName:    data.student_name,
     overallAverage: data.overall_avg ?? 0,
     submissionRate: submissionRateOf(data),
-    courses: data.courses.map(c => ({
+    // Courses with nothing graded are left out: sending them as 0% made the
+    // summary call them the "weakest subject".
+    courses: data.courses.filter(c => c.avg_grade != null).map(c => ({
       name:        c.course_name,
-      average:     c.avg_grade ?? 0,
+      average:     c.avg_grade as number,
       assignments: c.assignments_submitted,
       late:        c.late,
     })),
