@@ -1586,6 +1586,9 @@ async function startServer() {
          ON CONFLICT (institution_id, key) DO UPDATE SET value = EXCLUDED.value`,
         [callerOf(req).institutionId, key, value]
       );
+      const a = (req as AuthenticatedRequest).auth;
+      writeAudit({ action: "settings.update", resourceType: "setting", resourceId: String(key),
+        actorUserId: a.legacyUserId, actorEmail: a.email, actorRole: a.role, metadata: { key, value: String(value).slice(0, 40) }, req });
       res.json({ success: true });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1593,7 +1596,8 @@ async function startServer() {
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const courses = await query(
-        `SELECT c.*, u.name AS instructor_name, d.code AS department_code, d.name AS department_name
+        `SELECT c.*, u.name AS instructor_name, d.code AS department_code, d.name AS department_name,
+                (SELECT count(*)::int FROM enrollments e WHERE e.course_id = c.id) AS enrollment_count
          FROM courses c LEFT JOIN users u ON c.instructor_id=u.id
          LEFT JOIN departments d ON d.id = c.department_id
          WHERE c.institution_id = $1

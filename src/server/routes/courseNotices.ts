@@ -144,7 +144,8 @@ export function createCourseNoticesRouter(pool: pkg.Pool): Router {
     try {
       const caller = callerOf(req);
       const today = todayIst();
-      const scope = caller.role === 'admin' ? 'true'
+      // Each branch uses $1: Postgres rejects a query with an unused parameter.
+      const scope = caller.role === 'admin' ? '$1::int IS NOT NULL'
         : caller.role === 'instructor' ? 'c.instructor_id = $1'
         : 'EXISTS (SELECT 1 FROM enrollments e WHERE e.course_id = a.course_id AND e.student_id = $1)';
       const { rows } = await pool.query(
