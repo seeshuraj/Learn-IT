@@ -326,6 +326,25 @@ async function adminStats(browser) {
   if (p1.status === 200 && p2.status === 200 && placed.department_id === dep.id && placed.semester === 3) pass_('admin courses', 'department and semester set separately');
   else fail('admin courses', `placement → ${p1.status}/${p2.status} ${JSON.stringify(placed)}`);
 
+  // Enrolment dialog lists students by name and email (both used to be blank).
+  await page.goto(`${APP}/admin/courses`);
+  await page.waitForLoadState('networkidle');
+  await page.getByRole('row', { name: /CS3200/ }).getByRole('button', { name: 'Manage' }).click();
+  await page.waitForTimeout(1500);
+  const dialogText = (await page.textContent('body')) ?? '';
+  if (/Sarah/.test(dialogText) && /sarah@/.test(dialogText)) pass_('admin enrolments', 'enrolled students show name and email');
+  else fail('admin enrolments', 'enrolled students show no name or email');
+  // Bulk enrol reports emails with no account instead of claiming success.
+  const { rows: [cs3200] } = await db.query(`select id from courses where code = 'CS3200'`);
+  const bulk = await jsonAs(page, 'POST', '/api/admin/bulk-enroll', { course_id: cs3200.id, emails: ['nobody-here@example.com'] });
+  if (bulk.status === 200 && bulk.body?.[0]?.status === 'not_found') pass_('admin enrolments', 'bulk enrol reports an unknown email as not found');
+  else fail('admin enrolments', `bulk enrol → ${bulk.status} ${JSON.stringify(bulk.body)}`);
+  await page.getByLabel('Student emails').fill('nobody-here@example.com');
+  await page.getByRole('button', { name: 'Enrol these students' }).click();
+  await page.waitForTimeout(1500);
+  if (await page.getByText('1 not found').count()) pass_('admin enrolments', 'the dialog says which emails were not found');
+  else fail('admin enrolments', 'the dialog does not report the unknown email');
+
   // Settings: the AI switch is real and saves.
   await page.goto(`${APP}/admin/settings`);
   const sw = page.getByRole('switch', { name: /AI for students and professors/ });

@@ -34,7 +34,43 @@ const ACTION_LABELS: Record<string, string> = {
   "unit_exam.upload_paper": "Uploaded an exam paper",
   "unit_exam.import_marks": "Imported exam marks",
   "data.export": "Exported data",
+  "unit_exam.update": "Edited a unit exam",
+  "unit_exam.save_marks": "Saved exam marks",
+  "unit_exam.publish": "Published exam results",
+  "unit_exam.unpublish": "Unpublished exam results",
+  "unit_exam.delete": "Deleted a unit exam",
+  "exam_pattern.create": "Saved a question pattern",
+  "exam_pattern.delete": "Deleted a question pattern",
+  "exam_timetable.upload": "Uploaded an exam timetable",
+  "exam_timetable.publish": "Published an exam timetable",
+  "exam_timetable.republish": "Republished an exam timetable",
+  "exam_timetable.delete": "Deleted an exam timetable",
+  "timetable.extract": "Read a timetable with AI",
+  "course.placement": "Set a course's department or semester",
+  "course_announcement.create": "Posted a course notice",
+  "course_announcement.update": "Edited a course notice",
+  "course_announcement.delete": "Deleted a course notice",
+  "department.create": "Added a department",
+  "department.update": "Edited a department",
+  "department.delete": "Deleted a department",
+  "settings.update": "Changed a college setting",
+  "roadmap.generate": "Generated a study plan",
+  "calendar.link_created": "Created a calendar link",
 };
+
+/** Readable fallback for an action without a label: "foo_bar.baz" -> "Foo bar: baz". */
+const humanize = (action: string) => {
+  const [what, verb] = action.split(".");
+  const text = what.replace(/_/g, " ");
+  return text.charAt(0).toUpperCase() + text.slice(1) + (verb ? `: ${verb.replace(/_/g, " ")}` : "");
+};
+
+/** "course_announcement" -> "course notice"; other types read with spaces. */
+const RESOURCE_NAMES: Record<string, string> = {
+  course_announcement: "notice", unit_exam: "unit exam", exam_timetable: "timetable",
+  exam_pattern: "pattern", submission: "submission", setting: "setting",
+};
+const resourceName = (t: string) => RESOURCE_NAMES[t] ?? t.replace(/_/g, " ");
 
 interface AuditRow {
   id: number;
@@ -88,7 +124,7 @@ export const AdminDataPage: React.FC = () => {
   };
 
   const describe = (r: AuditRow) => {
-    const label = ACTION_LABELS[r.action] ?? r.action;
+    const label = ACTION_LABELS[r.action] ?? humanize(r.action);
     return r.action === "data.export" && r.resource_id ? `${label}: ${r.resource_id}` : label;
   };
 
@@ -179,7 +215,7 @@ export const AdminDataPage: React.FC = () => {
                   </td>
                   <td className="px-6 py-3 text-sm text-slate-700">{describe(r)}</td>
                   <td className="px-6 py-3 text-sm text-slate-400">
-                    {r.resource_type && r.action !== "data.export" ? `${r.resource_type} #${r.resource_id ?? ""}` : ""}
+                    {r.resource_type && r.action !== "data.export" ? (r.resource_type === "setting" ? `${r.resource_id ?? ""}` : `${resourceName(r.resource_type)} #${r.resource_id ?? ""}`) : ""}
                   </td>
                 </tr>
               ))}
