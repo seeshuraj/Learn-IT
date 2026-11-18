@@ -298,7 +298,20 @@ async function notesModules(browser) {
   }
 }
 
-export const FLOWS = { notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
+/** Admin dashboard shows real numbers, not blanks. */
+async function adminStats(browser) {
+  const { context, page } = await signIn(browser, 'admin');
+  await page.waitForLoadState('networkidle');
+  const val = async label => (await page.locator('p', { hasText: new RegExp(`^${label}$`) }).first().locator('xpath=following-sibling::h3').textContent().catch(() => '')).trim();
+  const users = await val('Active Users'), courses = await val('Total Courses'), pass = await val('Pass rate');
+  if (/^\d+$/.test(users) && Number(users) > 0) pass_('admin dashboard', `Active Users = ${users}`); else fail('admin dashboard', `Active Users shows “${users}”`);
+  if (/^\d+$/.test(courses) && Number(courses) > 0) pass_('admin dashboard', `Total Courses = ${courses}`); else fail('admin dashboard', `Total Courses shows “${courses}”`);
+  if (/^(—|\d+(\.\d)?%)$/.test(pass)) pass_('admin dashboard', `Pass rate = ${pass}`); else fail('admin dashboard', `Pass rate shows “${pass}”`);
+  await context.close();
+}
+const pass_ = (w, m) => pass(w, m);
+
+export const FLOWS = { adminStats, notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();
