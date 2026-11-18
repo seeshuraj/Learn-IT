@@ -532,11 +532,14 @@ async function classEnrolment(browser) {
   if (del.status === 409) pass('class enrolment', 'removing a class enrolment by hand is refused with a reason'); else fail('class enrolment', `delete auto → ${del.status}`);
   ok(await jsonAs(page, 'POST', '/api/admin/enrollments', { course_id: ecCourse.id, student_id: stu.id }), 'manual enrol');
 
-  // Next year: the semester 3 course is withdrawn, the hand-made one stays.
+  // Next year (3rd year, odd term → semester 5): the semester 3 course is
+  // withdrawn, CSE's semester 5 course (CS3200 in the seed) is added, and
+  // the hand-made enrolment stays.
   ok(await jsonAs(page, 'PUT', `/api/admin/users/${stu.id}`, { year: 3 }), 'year 3');
   rows = await enrolments();
-  if (rows.length === 1 && rows[0].code === 'E2E-EC301' && rows[0].source === 'manual') pass('class enrolment', 'moving to 3rd year withdraws the class course and keeps the hand-made one');
-  else fail('class enrolment', `after year change: ${JSON.stringify(rows)}`);
+  const now3 = rows.map(r => `${r.code}:${r.source}`).join(',');
+  if (now3 === 'CS3200:auto,E2E-EC301:manual') pass('class enrolment', 'moving to 3rd year swaps the class courses and keeps the hand-made one');
+  else fail('class enrolment', `after year change: ${now3}`);
 
   // Back to year 2, then re-placing the course moves it with its class.
   ok(await jsonAs(page, 'PUT', `/api/admin/users/${stu.id}`, { year: 2 }), 'year 2');
