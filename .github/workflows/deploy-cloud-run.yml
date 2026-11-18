@@ -67,6 +67,10 @@ jobs:
           docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
+      # Keep one instance warm for the *service* (--min), not for each revision
+      # (--min-instances): a revision-level minimum keeps every old revision
+      # running after traffic moves on, each with its own database connections
+      # and background jobs (and its own bill).
       - name: Deploy new revision (no traffic yet)
         run: |
           gcloud run deploy "$SERVICE" \
@@ -75,6 +79,8 @@ jobs:
             --image "${{ steps.image.outputs.image }}" \
             --tag "sha-${GITHUB_SHA::7}" \
             --no-traffic \
+            --min-instances=0 \
+            --min=1 \
             --quiet
 
       - name: Health check on the new revision
@@ -93,3 +99,16 @@ jobs:
         run: |
           gcloud run services update-traffic "$SERVICE" \
             --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --to-latest --quiet
+
+      # Each deploy tags its revision (sha-xxxxxxx) for the pre-traffic health
+      # check. Drop the older tags so they don't pile up; the revisions stay
+      # (scaled to zero) for rollback.
+      - name: Remove older revision tags
+        run: |
+          KEEP="sha-${GITHUB_SHA::7}"
+          OLD=$(gcloud run services describe "$SERVICE" --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --format=json \
+                | jq -r --arg keep "$KEEP" '[.status.traffic[] | select(.tag != null and .tag != $keep) | .tag] | join(",")')
+          if [ -n "$OLD" ]; then
+            gcloud run services update-traffic "$SERVICE" \
+              --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --remove-tags "$OLD" --quiet
+          fi
