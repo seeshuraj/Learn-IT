@@ -12,7 +12,7 @@ interface AuthShellProps {
 export const AuthShell: React.FC<AuthShellProps> = ({ title, subtitle, children }) => (
   <div className="flex min-h-screen flex-col bg-paper px-4 py-6 text-ink sm:px-10">
     <header>
-      <Link to="/landing" className="lp-focus inline-block rounded-md" aria-label="LearnIT home">
+      <Link to="/" className="lp-focus inline-block rounded-md" aria-label="LearnIT home">
         <Logo />
       </Link>
     </header>

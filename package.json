@@ -8,7 +8,7 @@
     "server": "cross-env NODE_ENV=development tsx server.ts",
     "client": "vite",
     "prebuild": "node scripts/check-client-env.mjs",
-    "build": "vite build && node build-server.mjs",
+    "build": "vite build && node scripts/prerender.mjs && node build-server.mjs",
     "build:server": "node build-server.mjs",
     "preview": "vite preview",
     "start": "cross-env NODE_ENV=production node dist-server/server.js",

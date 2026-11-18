@@ -75,7 +75,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       {/* Form column */}
       <div className="flex min-h-screen flex-col px-4 py-6 sm:px-10 lg:px-16">
         <header>
-          <Link to="/landing" className="lp-focus inline-block rounded-md" aria-label="LearnIT home">
+          <Link to="/" className="lp-focus inline-block rounded-md" aria-label="LearnIT home">
             <Logo />
           </Link>
         </header>

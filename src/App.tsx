@@ -69,6 +69,20 @@ const PageLoading: React.FC = () => (
 );
 
 
+/** Only the landing page should appear in search results. */
+const PUBLIC_PATHS = new Set(["/", "/landing"]);
+function useRobotsMeta(pathname: string) {
+  React.useEffect(() => {
+    let tag = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
+    if (!tag) {
+      tag = document.createElement("meta");
+      tag.name = "robots";
+      document.head.appendChild(tag);
+    }
+    tag.content = PUBLIC_PATHS.has(pathname) ? "index, follow" : "noindex, nofollow";
+  }, [pathname]);
+}
+
 const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(() => {
     try {
@@ -84,6 +98,7 @@ const AppContent: React.FC = () => {
 
   const navigate = useNavigate();
   const location = useLocation();
+  useRobotsMeta(location.pathname);
 
   const checkForceChange = React.useCallback(async () => {
     try {
@@ -127,7 +142,7 @@ const AppContent: React.FC = () => {
     setAuthChecked(false);
     try { sessionStorage.removeItem("learnit_user"); } catch {}
     supabase.auth.signOut();
-    navigate("/landing");
+    navigate("/");
   };
 
   const handlePasswordChanged = () => {
@@ -139,7 +154,8 @@ const AppContent: React.FC = () => {
   if (location.pathname === "/login") return <LoginPage onLogin={handleLogin} />;
   if (location.pathname === "/forgot-password") return <React.Suspense fallback={<PageLoading />}><ForgotPasswordPage /></React.Suspense>;
   if (location.pathname === "/reset-password") return <React.Suspense fallback={<PageLoading />}><ResetPasswordPage /></React.Suspense>;
-  if (!user) return <Navigate to="/landing" replace />;
+  // Signed-out visitors see the landing page at "/" (the URL search engines index).
+  if (!user) return location.pathname === "/" ? <LandingPage /> : <Navigate to="/" replace />;
   if (!authChecked) return null;
 
   if (forceChange) {

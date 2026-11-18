@@ -87,7 +87,7 @@ async function visit(page, w, role, path) {
   const body = (await page.textContent('body')) ?? '';
   const problems = w.take();
   if (/Expected JSON from|Unexpected token '<'/.test(body)) problems.push('page shows a raw API error');
-  if (new URL(page.url()).pathname === '/landing') problems.push('signed out unexpectedly');
+  if (await page.locator('h1', { hasText: 'Every mark, explained.' }).count()) problems.push('signed out unexpectedly');
   const name = `${role}${path.replace(/\//g, '_') || '_home'}`;
   await page.screenshot({ path: `${OUT}/${name}.png`, fullPage: true });
   const h1 = ((await page.locator('main h1').first().textContent({ timeout: 1500 }).catch(() => '')) ?? '').trim();
@@ -453,7 +453,46 @@ async function timetableFlow(browser) {
   await a2.context.close();
 }
 
-export const FLOWS = { adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard };
+/** What search engines and signed-out visitors get. */
+async function publicSite(browser) {
+  const raw = await (await fetch(`${APP}/`)).text();
+  const want = {
+    'prerendered heading': raw.includes('Every mark, explained.'),
+    'title names LearnIT Analytics': /<title>[^<]*LearnIT Analytics/.test(raw),
+    'canonical link': raw.includes('<link rel="canonical" href="https://www.learnitanalytics.com/"'),
+    'structured data': raw.includes('application/ld+json'),
+  };
+  const missing = Object.entries(want).filter(([, ok]) => !ok).map(([k]) => k);
+  if (missing.length) fail('public / (HTML source)', `missing: ${missing.join(', ')}`);
+  else pass('public / (HTML source)', 'has the landing text, title, canonical link and structured data without JavaScript');
+
+  for (const f of ['robots.txt', 'sitemap.xml']) {
+    const r = await fetch(`${APP}/${f}`);
+    const body = await r.text();
+    if (r.ok && !body.includes('<!doctype html>') && body.includes('learnitanalytics.com')) pass(`public /${f}`, 'served');
+    else fail(`public /${f}`, `status ${r.status}`);
+  }
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const page = await context.newPage();
+  await page.goto(`${APP}/`);
+  await page.waitForLoadState('networkidle');
+  const h1 = await page.locator('h1', { hasText: 'Every mark, explained.' }).count();
+  const robots = await page.locator('meta[name="robots"]').getAttribute('content');
+  if (h1 === 1 && new URL(page.url()).pathname === '/' && robots?.startsWith('index'))
+    pass('public / (signed out)', 'shows the landing page once, indexable');
+  else fail('public / (signed out)', `h1 count ${h1}, path ${new URL(page.url()).pathname}, robots ${robots}`);
+
+  await page.goto(`${APP}/courses`);
+  await page.waitForLoadState('networkidle');
+  const robots2 = await page.locator('meta[name="robots"]').getAttribute('content');
+  if (new URL(page.url()).pathname === '/' && (await page.locator('#prerender').count()) === 0)
+    pass('public /courses (signed out)', 'sends the visitor to the landing page');
+  else fail('public /courses (signed out)', `ended at ${page.url()}, robots ${robots2}`);
+  await context.close();
+}
+
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();

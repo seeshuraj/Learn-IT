@@ -137,7 +137,7 @@ jobs:
         run: |
           nohup node e2e/supabase-mock.mjs > mock.log 2>&1 &
           nohup npx tsx server.ts > api.log 2>&1 &
-          npx vite build > vite-build.log 2>&1 || { cat vite-build.log; exit 1; }
+          { npx vite build && node scripts/prerender.mjs; } > vite-build.log 2>&1 || { cat vite-build.log; exit 1; }
           nohup npx vite preview --host 127.0.0.1 --port 4173 --strictPort > web.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:3001/api/health > /dev/null && curl -fsS http://127.0.0.1:4173 > /dev/null; then echo ready; exit 0; fi
