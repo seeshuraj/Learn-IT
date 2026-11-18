@@ -7,6 +7,7 @@ import { Toaster, toast } from "sonner";
 import { User } from "../types";
 import { ChatBot } from "../components/ChatBot";
 import { api, type CourseSummary, type UpcomingExam } from "../services/api";
+import { NoticeBoard } from "../components/course/NoticeBoard";
 
 interface CourseDetailPageProps {
   user: User;
@@ -183,7 +184,9 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
       </div>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-        <section className="space-y-4 lg:col-span-2" aria-labelledby="modules-title">
+        <div className="space-y-10 lg:col-span-2">
+        <NoticeBoard courseId={courseId} canManage={canManage} studentCount={course.student_count} />
+        <section className="space-y-4" aria-labelledby="modules-title">
           <div className="flex items-center justify-between">
             <h2 id="modules-title" className="text-xl font-bold text-slate-900">Modules</h2>
             {canManage && !adding && (
@@ -233,6 +236,7 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
             })
           )}
         </section>
+        </div>
 
         <aside className="space-y-6">
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm" aria-labelledby="exams-title">

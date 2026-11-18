@@ -233,7 +233,54 @@ async function questionWiseMarks(browser) {
   await stu.context.close();
 }
 
-export const FLOWS = { allPages, courses, bell, questionWiseMarks };
+/** Call the API as the signed-in user of this page (for permission checks). */
+async function apiAs(page, method, path, body) {
+  return page.evaluate(async ({ api, method, path, body }) => {
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const key = store && Object.keys(store).find(k => k.endsWith('-auth-token'));
+    const token = key ? JSON.parse(store.getItem(key)).access_token : '';
+    const r = await fetch(`${api}${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: body ? JSON.stringify(body) : undefined });
+    return r.status;
+  }, { api: API, method, path, body });
+}
+
+/** Professor posts on the course notice board; students are notified and see it. */
+async function noticeBoard(browser) {
+  const prof = await signIn(browser, 'professor');
+  await prof.page.goto(`${APP}/courses/2`);
+  await expectText(prof.page, 'professor course page', 'Notice board');
+  await prof.page.getByRole('radio', { name: 'Bring' }).click();
+  await prof.page.getByLabel('Notice', { exact: true }).fill('E2E drawing kit and mini-drafter');
+  await prof.page.getByRole('button', { name: 'Tomorrow' }).click();
+  await prof.page.getByRole('button', { name: 'Post notice' }).click();
+  await expectText(prof.page, 'professor post notice', 'Posted. 2 students were notified.');
+  await expectText(prof.page, 'professor notice list', 'For tomorrow');
+  await prof.context.close();
+
+  const stu = await signIn(browser, 'student');
+  await expectText(stu.page, 'student dashboard', 'Coming up in your courses');
+  await expectText(stu.page, 'student dashboard', 'E2E drawing kit and mini-drafter');
+  await stu.page.getByRole('button', { name: 'Notifications' }).click();
+  await expectText(stu.page, 'student bell', 'CS3200 · Bring tomorrow: E2E drawing kit and mini-drafter');
+  await stu.page.getByText('CS3200 · Bring tomorrow: E2E drawing kit and mini-drafter').click();
+  try { await stu.page.waitForURL(/\/courses\/2$/, { timeout: 5000 }); pass('student bell', 'opens the course'); }
+  catch { fail('student bell', 'clicking the notice did not open the course'); }
+  await expectText(stu.page, 'student course page', 'E2E drawing kit and mini-drafter');
+  if (await stu.page.getByRole('button', { name: 'Post notice' }).count()) fail('student course page', 'student can see the post form');
+  else pass('student course page', 'no post form for students');
+  const status = await apiAs(stu.page, 'POST', '/api/courses/2/announcements', { title: 'student post' });
+  if (status === 403) pass('permissions', 'student POST notice → 403'); else fail('permissions', `student POST notice → ${status}`);
+  const { rows } = await db.query(`select c.id from courses c where not exists
+    (select 1 from enrollments e where e.course_id = c.id and e.student_id = 2) limit 1`);
+  if (rows[0]) {
+    const s2 = await apiAs(stu.page, 'GET', `/api/courses/${rows[0].id}/announcements`);
+    if (s2 === 403) pass('permissions', 'notices of a course not enrolled in → 403'); else fail('permissions', `not-enrolled notices → ${s2}`);
+  }
+  await stu.page.screenshot({ path: `${OUT}/student_course_notices.png`, fullPage: true });
+  await stu.context.close();
+}
+
+export const FLOWS = { allPages, courses, bell, questionWiseMarks, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();

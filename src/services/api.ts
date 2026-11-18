@@ -230,6 +230,25 @@ export interface MarksPreview {
   missing: number;
 }
 
+export type NoticeKind = 'notice' | 'bring' | 'exam_prep' | 'reminder';
+export interface CourseNotice {
+  id: number;
+  course_id: number;
+  kind: NoticeKind;
+  title: string;
+  body: string | null;
+  due_date: string | null;
+  pinned: boolean;
+  author_id: number | null;
+  author_name: string | null;
+  created_at: string;
+  updated_at: string;
+  course_code?: string | null;
+  course_name?: string | null;
+  notified?: number;
+}
+export type NoticeInput = Partial<Pick<CourseNotice, 'kind' | 'title' | 'body' | 'due_date' | 'pinned'>>;
+
 export interface AppNotification {
   id: number;
   type: string;
@@ -494,6 +513,16 @@ export const api = {
   getUnreadNotificationCount: () => request<{ count: number }>('/api/notifications/unread-count'),
   markNotificationRead: (id: number) => request(`/api/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: () => request('/api/notifications/read-all', { method: 'POST' }),
+
+  // Course notice board
+  getCourseNotices: (courseId: number) => request<CourseNotice[]>(`/api/courses/${courseId}/announcements`),
+  postCourseNotice: (courseId: number, n: NoticeInput) =>
+    request<CourseNotice>(`/api/courses/${courseId}/announcements`, { method: 'POST', body: JSON.stringify(n) }),
+  updateCourseNotice: (id: number, n: NoticeInput) =>
+    request<CourseNotice>(`/api/announcements/${id}`, { method: 'PATCH', body: JSON.stringify(n) }),
+  deleteCourseNotice: (id: number) => request(`/api/announcements/${id}`, { method: 'DELETE' }),
+  /** Notices due today to two days ahead, across the caller's courses. */
+  getUpcomingNotices: () => request<CourseNotice[]>('/api/announcements/upcoming'),
 
   // Courses: admins get the college's courses, professors the ones they
   // teach, students the ones they're enrolled in.
