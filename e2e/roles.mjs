@@ -332,7 +332,120 @@ async function adminStats(browser) {
 }
 const pass_ = (w, m) => pass(w, m);
 
-export const FLOWS = { adminStats, notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
+/** Upload a file as the page's signed-in user; returns { status, body }. */
+async function uploadAs(page, path, filename, text, fields = {}) {
+  return page.evaluate(async ({ api, path, filename, text, fields }) => {
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const key = Object.keys(store).find(k => k.endsWith('-auth-token'));
+    const token = JSON.parse(store.getItem(key)).access_token;
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    fd.append('file', new Blob([text], { type: 'text/csv' }), filename);
+    const r = await fetch(`${api}${path}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+    return { status: r.status, body: await r.json().catch(() => null) };
+  }, { api: API, path, filename, text, fields });
+}
+
+/** JSON call as the page's signed-in user; returns { status, body }. */
+async function jsonAs(page, method, path, body) {
+  return page.evaluate(async ({ api, method, path, body }) => {
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const key = Object.keys(store).find(k => k.endsWith('-auth-token'));
+    const token = JSON.parse(store.getItem(key)).access_token;
+    const r = await fetch(`${api}${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: body ? JSON.stringify(body) : undefined });
+    return { status: r.status, body: await r.json().catch(() => null) };
+  }, { api: API, method, path, body });
+}
+
+/**
+ * Paths the UI flows don't reach: changing a paper after marks exist,
+ * importing question-wise marks from a sheet.
+ */
+async function patternEditsAndImport(browser) {
+  const { rows: [ex] } = await db.query(`select id, question_pattern from unit_exams where title = 'E2E Unit test 1'`);
+  if (!ex) { fail('pattern edits', 'needs the questionWiseMarks flow to run first'); return; }
+  const prof = await signIn(browser, 'professor');
+  const { page } = prof;
+  const pat = JSON.parse(JSON.stringify(ex.question_pattern));
+
+  // Published: the paper can't change.
+  const q8 = pat.parts[2].questions[0];
+  q8.marks = 15;
+  let r = await jsonAs(page, 'PATCH', `/api/unit-exams/${ex.id}`, { question_pattern: pat });
+  if (r.status === 409) pass('pattern edits', 'published paper change refused (409)'); else fail('pattern edits', `published change → ${r.status}`);
+
+  await jsonAs(page, 'POST', `/api/unit-exams/${ex.id}/unpublish`);
+  // A change that a stored mark no longer fits (Sarah has 2 in Q1) is refused, naming who.
+  const shrink = JSON.parse(JSON.stringify(ex.question_pattern));
+  shrink.parts[0].questions[0].marks = 1;
+  r = await jsonAs(page, 'PATCH', `/api/unit-exams/${ex.id}`, { question_pattern: shrink });
+  const named = JSON.stringify(r.body ?? {});
+  if (r.status === 422 && /Q1/.test(named)) pass('pattern edits', 'change that breaks a mark refused, naming Q1');
+  else fail('pattern edits', `shrinking Q1 → ${r.status} ${named.slice(0, 160)}`);
+
+  // A compatible change re-scores everyone: Q8 out of 15, total 51, Sarah still 40.5.
+  r = await jsonAs(page, 'PATCH', `/api/unit-exams/${ex.id}`, { question_pattern: pat });
+  const { rows: [after] } = await db.query(
+    `select e.max_marks::float as max, r.marks_obtained::float as got, r.percentage::float as pct
+     from unit_exams e join unit_exam_results r on r.unit_exam_id = e.id and r.student_id = 2 where e.id = $1`, [ex.id]);
+  if (r.status === 200 && after?.max === 51 && after?.got === 40.5 && Math.abs(after.pct - 79.41) < 0.01) pass('pattern edits', 'compatible change re-scored (51 max, 40.5 = 79.41%)');
+  else fail('pattern edits', `compatible change → ${r.status} ${JSON.stringify(after)}`);
+
+  // Import question-wise marks from a sheet (preview only; nothing is saved).
+  const csv = 'email,Q1,Q2,Q3,Q4,Q5,Q6,Q7,Q8\nsarah@e2e.test,2,2,1.5,2,0,10b,12,11\nmichael@e2e.test,1,3,,,,,,\n';
+  r = await uploadAs(page, `/api/unit-exams/${ex.id}/preview-marks`, 'marks.csv', csv);
+  const sarah = r.body?.matched?.find(m => m.email === 'sarah@e2e.test');
+  const michael = r.body?.matched?.find(m => m.email === 'michael@e2e.test');
+  if (r.status === 200 && sarah && !sarah.error && String(sarah.questions?.['6']).toLowerCase() === '10b') pass('import', 'sheet with Q columns read (Q6 = 10b, no error)');
+  else fail('import', `preview → ${r.status} ${JSON.stringify(sarah ?? r.body).slice(0, 200)}`);
+  if (michael?.error && /Q2/.test(michael.error)) pass('import', 'over-max cell in the sheet flagged (Q2)');
+  else fail('import', `Michael's row: ${JSON.stringify(michael).slice(0, 200)}`);
+  await prof.context.close();
+}
+
+/**
+ * Admin uploads and publishes an exam timetable; the course's professor and
+ * student see the exam, and the student's calendar link serves it.
+ */
+async function timetableFlow(browser) {
+  const day = new Date(Date.now() + 10 * 86_400_000 + 330 * 60_000).toISOString().slice(0, 10);
+  const [y, m, d] = day.split('-');
+  const csv = `date,session,course_code,venue\n${d}/${m}/${y},FN,CS3200,Hall 2\n`;
+  const admin = await signIn(browser, 'admin');
+  let r = await uploadAs(admin.page, '/api/admin/timetables', 'tt.csv', csv, { title: 'E2E Unit test 2', assessment_type: 'unit_test' });
+  const tt = { ...(r.body?.timetable ?? {}), entries: r.body?.entries };
+  if (r.status === 201 && tt.id && tt.entries?.length === 1) pass('timetable', 'CSV uploaded, 1 exam read');
+  else { fail('timetable', `upload → ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`); await admin.context.close(); return; }
+  const bad = await jsonAs(admin.page, 'POST', '/api/admin/timetables/undefined/publish');
+  if (bad.status === 404) pass('timetable', 'malformed id → 404, not a server error'); else fail('timetable', `malformed id → ${bad.status}`);
+  r = await jsonAs(admin.page, 'POST', `/api/admin/timetables/${tt.id}/publish`);
+  if (r.status === 200) pass('timetable', 'published'); else fail('timetable', `publish → ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
+  await admin.context.close();
+
+  for (const role of ['professor', 'student']) {
+    const u = await signIn(browser, role);
+    const up = await jsonAs(u.page, 'GET', '/api/exams/upcoming');
+    const hit = (up.body ?? []).find(e => e.course_code === 'CS3200' && e.exam_date === day);
+    if (hit) pass('timetable', `${role} sees CS3200 on ${day} (${hit.session}, ${hit.venue})`); else fail('timetable', `${role} upcoming: ${JSON.stringify(up.body).slice(0, 200)}`);
+    await u.page.goto(`${APP}/exams`);
+    await expectText(u.page, `${role} /exams`, 'E2E Unit test 2');
+    if (role === 'student') {
+      const link = await jsonAs(u.page, 'POST', '/api/calendar/feed-link');
+      const ics = link.body?.url ? await fetch(link.body.url).then(x => x.text()) : '';
+      if (/BEGIN:VCALENDAR/.test(ics) && /CS3200/.test(ics)) pass('calendar', 'student feed has the exam');
+      else fail('calendar', `feed: ${link.status} ${ics.slice(0, 120)}`);
+    }
+    await u.context.close();
+  }
+  // Admin's own calendar feed works too (it 500'd before #53).
+  const a2 = await signIn(browser, 'admin');
+  const link = await jsonAs(a2.page, 'POST', '/api/calendar/feed-link');
+  const ics = link.body?.url ? await fetch(link.body.url) : null;
+  if (ics?.status === 200) pass('calendar', 'admin feed serves (200)'); else fail('calendar', `admin feed → ${ics?.status}`);
+  await a2.context.close();
+}
+
+export const FLOWS = { adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();
