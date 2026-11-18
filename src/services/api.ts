@@ -193,10 +193,31 @@ export interface MarksPreview {
   missing: number;
 }
 
+export interface AppNotification {
+  id: number;
+  type: string;
+  message: string;
+  read: boolean;
+  created_at: string;
+  metadata?: { course_id?: number; unit_exam_id?: number; timetable_id?: number; [k: string]: unknown } | null;
+}
+
+export interface CourseSummary {
+  id: number;
+  code: string;
+  name: string;
+  instructor_id: number | null;
+  instructor_name: string | null;
+  department_id?: number | null;
+  semester?: number | null;
+  module_count: number;
+  student_count: number;
+}
+
 /** Backend origin. Every browser call to the API builds its URL from this. */
 export const API_BASE: string =
   (import.meta as any).env?.VITE_API_BASE_URL ||
-  'https://learnit-api-sg.onrender.com'; // production fallback (Singapore) — never empty
+  'https://learnit-api-912681143217.asia-south1.run.app'; // production fallback (Cloud Run, Mumbai) — never empty
 const BASE = API_BASE;
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -431,8 +452,15 @@ export const api = {
   /** GET /api/auth/me — returns the current user's profile row */
   getMe: () => request('/api/auth/me'),
 
-  // Courses
-  getCourses: () => request('/api/courses'),
+  // Notifications (the bell)
+  getNotifications: () => request<AppNotification[]>('/api/notifications'),
+  getUnreadNotificationCount: () => request<{ count: number }>('/api/notifications/unread-count'),
+  markNotificationRead: (id: number) => request(`/api/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: () => request('/api/notifications/read-all', { method: 'POST' }),
+
+  // Courses: admins get the college's courses, professors the ones they
+  // teach, students the ones they're enrolled in.
+  getCourses: () => request<CourseSummary[]>('/api/courses'),
   getCourseModules: (courseId: number) => request(`/api/courses/${courseId}/modules`),
   createModule: (courseId: number, name: string, content: string) =>
     request(`/api/courses/${courseId}/modules`, { method: 'POST', body: JSON.stringify({ name, content }) }),

@@ -820,11 +820,30 @@ async function startServer() {
   });
 
   // ── Courses ───────────────────────────────────────────────────────────────
+  // Admins: every course in the college. Professors: the courses they teach.
+  // Students: the courses they're enrolled in. Counts are real.
   app.get("/api/courses", requireAuth, async (req, res) => {
     try {
+      const caller = callerOf(req);
       const courses = await query(
-        "SELECT * FROM courses WHERE institution_id=$1 ORDER BY name",
-        [callerOf(req).institutionId]
+        `SELECT c.id, c.code, c.name, c.instructor_id, c.department_id, c.semester,
+                u.name AS instructor_name,
+                (SELECT count(*)::int FROM modules m WHERE m.course_id = c.id) AS module_count,
+                (SELECT count(*)::int FROM enrollments e
+                   JOIN institution_members im
+                     ON im.user_id = e.student_id AND im.institution_id = c.institution_id
+                    AND im.role = 'student' AND im.status = 'active'
+                  WHERE e.course_id = c.id) AS student_count
+         FROM courses c
+         LEFT JOIN users u ON u.id = c.instructor_id
+         WHERE c.institution_id = $1
+           AND CASE $2::text
+                 WHEN 'admin' THEN true
+                 WHEN 'instructor' THEN c.instructor_id = $3
+                 ELSE EXISTS (SELECT 1 FROM enrollments e WHERE e.course_id = c.id AND e.student_id = $3)
+               END
+         ORDER BY c.name`,
+        [caller.institutionId, caller.role, caller.legacyUserId]
       );
       res.json(courses);
     } catch (e: any) { sendServerError(res, e); }

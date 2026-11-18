@@ -94,6 +94,73 @@ jobs:
             }'
 
 
+  e2e:
+    name: End-to-end (admin, professor, student)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: learnit_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGURL: postgres://postgres:postgres@127.0.0.1:5432/learnit_e2e
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/learnit_e2e?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Database (shim + all migrations + test accounts)
+        run: e2e/setup-db.sh
+      - name: Browser
+        run: |
+          npm install --no-save playwright@1.49.1
+          npx playwright install --with-deps chromium
+      - name: Start Supabase stand-in, API and frontend
+        env:
+          SUPABASE_URL: http://127.0.0.1:54321
+          SUPABASE_SERVICE_ROLE_KEY: e2e-service-role
+          PUBLIC_API_URL: http://127.0.0.1:3001
+          PORT: '3001'
+          NODE_ENV: development
+          VITE_SUPABASE_URL: http://127.0.0.1:54321
+          VITE_SUPABASE_ANON_KEY: e2e-anon
+          VITE_API_BASE_URL: http://127.0.0.1:3001
+        run: |
+          nohup node e2e/supabase-mock.mjs > mock.log 2>&1 &
+          nohup npx tsx server.ts > api.log 2>&1 &
+          npx vite build > vite-build.log 2>&1 || { cat vite-build.log; exit 1; }
+          nohup npx vite preview --host 127.0.0.1 --port 4173 --strictPort > web.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3001/api/health > /dev/null && curl -fsS http://127.0.0.1:4173 > /dev/null; then echo ready; exit 0; fi
+            sleep 2
+          done
+          echo "::error::stack did not start"; tail -50 api.log mock.log web.log; exit 1
+      - name: Run end-to-end checks
+        run: node e2e/roles.mjs
+      - name: Report
+        if: always()
+        run: |
+          [ -f e2e-report/report.md ] && cat e2e-report/report.md >> "$GITHUB_STEP_SUMMARY"
+          echo "── API log (last 80 lines)"; tail -80 api.log || true
+          echo "── Supabase stand-in log"; tail -30 mock.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-report
+          path: |
+            e2e-report
+            api.log
+          retention-days: 7
+
   docker:
     name: API container image
     runs-on: ubuntu-latest
