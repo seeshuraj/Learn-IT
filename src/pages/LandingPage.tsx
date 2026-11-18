@@ -128,7 +128,7 @@ export default function LandingPage() {
 
       <header className="sticky top-0 z-40 border-b border-[var(--rule)] bg-[var(--paper)]/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[72rem] items-center justify-between gap-4 px-4 sm:px-6">
-          <Link to="/landing" className="lp-focus rounded-md" aria-label="LearnIT home">
+          <Link to="/" className="lp-focus rounded-md" aria-label="LearnIT home">
             <Logo />
           </Link>
           <nav aria-label="Primary" className="flex items-center gap-1 sm:gap-2">
@@ -149,7 +149,7 @@ export default function LandingPage() {
               Every mark, explained.
             </h1>
             <p className="mt-6 max-w-[34rem] text-[clamp(1.05rem,2vw,1.2rem)] leading-[1.6] text-[var(--muted)]">
-              LearnIT is a learning platform for Indian engineering colleges. It reads unit test results,
+              LearnIT Analytics is a learning platform for Indian engineering colleges. It reads unit test results,
               finds the topics each student is weak in, and builds a study plan from your own course
               notes, with faculty in charge of every grade.
             </p>

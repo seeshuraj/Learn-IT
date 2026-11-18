@@ -4,14 +4,70 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LearnIT: every mark, explained</title>
-    <meta name="description" content="LearnIT is a learning platform for Indian engineering colleges. It finds the topics each student is weak in from unit tests and builds a study plan from your own course notes, with faculty in charge of every grade." />
+    <title>LearnIT Analytics: learning analytics for engineering colleges</title>
+    <meta name="description" content="LearnIT Analytics is a learning platform for Indian engineering colleges. It finds the topics each student is weak in from unit tests and builds a study plan from your own course notes, with faculty in charge of every grade." />
+    <link rel="canonical" href="https://www.learnitanalytics.com/" />
     <meta name="theme-color" content="#F6F8FB" />
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="LearnIT" />
-    <meta property="og:title" content="LearnIT: every mark, explained" />
+    <meta property="og:site_name" content="LearnIT Analytics" />
+    <meta property="og:url" content="https://www.learnitanalytics.com/" />
+    <meta property="og:title" content="LearnIT Analytics: every mark, explained" />
     <meta property="og:description" content="Weak-topic detection, study plans from your own course notes, and AI grading drafts that faculty approve. Built for Indian engineering colleges." />
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:image" content="https://www.learnitanalytics.com/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="LearnIT Analytics: every mark, explained" />
+    <meta property="og:locale" content="en_IN" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="LearnIT Analytics: every mark, explained" />
+    <meta name="twitter:description" content="Weak-topic detection and study plans from your own course notes, for Indian engineering colleges." />
+    <meta name="twitter:image" content="https://www.learnitanalytics.com/og.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://www.learnitanalytics.com/#org",
+            "name": "LearnIT Analytics",
+            "legalName": "LearnIT Analytics Pvt Ltd",
+            "alternateName": ["LearnIT", "LearnIT Analytics Pvt Ltd"],
+            "url": "https://www.learnitanalytics.com/",
+            "logo": "https://www.learnitanalytics.com/logo.png",
+            "areaServed": "IN"
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://www.learnitanalytics.com/#website",
+            "name": "LearnIT Analytics",
+            "alternateName": "LearnIT",
+            "url": "https://www.learnitanalytics.com/",
+            "publisher": { "@id": "https://www.learnitanalytics.com/#org" },
+            "inLanguage": "en-IN"
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "LearnIT",
+            "applicationCategory": "EducationalApplication",
+            "operatingSystem": "Web",
+            "url": "https://www.learnitanalytics.com/",
+            "description": "Learning analytics for Indian engineering colleges: weak-topic detection from unit tests, study plans from course notes, and AI grading drafts that faculty approve.",
+            "publisher": { "@id": "https://www.learnitanalytics.com/#org" }
+          }
+        ]
+      }
+    </script>
+    <!-- Hide the prerendered landing page before first paint when the app, not the landing page, will show. -->
+    <script>
+      try {
+        var p = location.pathname;
+        if ((p !== "/" && p !== "/landing") || sessionStorage.getItem("learnit_user")) {
+          document.documentElement.classList.add("app-route");
+        }
+      } catch (e) {}
+    </script>
+    <style>.app-route #prerender { display: none; }</style>
   </head>
   <body>
     <div id="root"></div>
