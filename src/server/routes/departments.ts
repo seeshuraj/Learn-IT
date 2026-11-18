@@ -15,7 +15,7 @@ import type pkg from 'pg';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { sendServerError } from '../lib/httpErrors.js';
-import { cleanName } from '../lib/departments.js';
+import { cleanName, readPlacement } from '../lib/departments.js';
 
 const CODE_RE = /^[A-Z0-9][A-Z0-9&.\-]{0,19}$/;
 const PG_UNIQUE = '23505';
@@ -115,15 +115,9 @@ export function createDepartmentsRouter(pool: pkg.Pool): Router {
   router.patch('/courses/:id/placement', ...admin, async (req: Request, res: Response) => {
     try {
       const auth = authOf(req);
-      const body = req.body ?? {};
-      const hasDept = body.department_id !== undefined;
-      const hasSem = body.semester !== undefined;
-      const dept = body.department_id === null || body.department_id === '' ? null : Number(body.department_id);
-      const sem = body.semester === null || body.semester === '' ? null : Number(body.semester);
-      if (hasDept && dept !== null && !Number.isInteger(dept)) return res.status(422).json({ error: 'Invalid department' });
-      if (hasSem && sem !== null && !(Number.isInteger(sem) && sem >= 1 && sem <= 12)) {
-        return res.status(422).json({ error: 'Semester must be 1–12' });
-      }
+      const p = readPlacement(req.body);
+      if ('error' in p) return res.status(422).json({ error: p.error });
+      const { hasDept, dept, hasSem, sem } = p;
       if (dept !== null && hasDept) {
         const ok = await pool.query('SELECT 1 FROM departments WHERE id = $1 AND institution_id = $2', [dept, auth.institutionId]);
         if (!ok.rows.length) return res.status(422).json({ error: 'Department not found' });

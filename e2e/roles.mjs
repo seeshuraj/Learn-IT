@@ -318,6 +318,14 @@ async function adminStats(browser) {
   const row = page.getByRole('row', { name: /CS3200/ });
   const cells = (await row.locator('td').allTextContents()).map(t => t.trim());
   if (cells.includes('2')) pass_('admin courses', 'CS3200 shows 2 students'); else fail('admin courses', `CS3200 row: ${JSON.stringify(cells)}`);
+  // Placing a course: department alone, then semester alone (each used to 500).
+  const { rows: [dep] } = await db.query(`select id from departments order by id limit 1`);
+  const p1 = await jsonAs(page, 'PATCH', '/api/admin/courses/1/placement', { department_id: dep.id });
+  const p2 = await jsonAs(page, 'PATCH', '/api/admin/courses/1/placement', { semester: 3 });
+  const { rows: [placed] } = await db.query(`select department_id, semester from courses where id = 1`);
+  if (p1.status === 200 && p2.status === 200 && placed.department_id === dep.id && placed.semester === 3) pass_('admin courses', 'department and semester set separately');
+  else fail('admin courses', `placement → ${p1.status}/${p2.status} ${JSON.stringify(placed)}`);
+
   // Settings: the AI switch is real and saves.
   await page.goto(`${APP}/admin/settings`);
   const sw = page.getByRole('switch', { name: /AI for students and professors/ });
