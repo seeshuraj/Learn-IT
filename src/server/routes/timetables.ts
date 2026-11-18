@@ -152,6 +152,12 @@ export function createTimetablesRouter(pool: pkg.Pool, supabaseAdmin: Pick<Supab
     return { timetable: { ...timetable, has_source: !!source_path }, entries: rows.map((r: any) => ({ ...r, problems: entryProblems(r) })) };
   }
 
+  // Timetable ids are numbers; anything else is simply not found (not a 500).
+  router.param('id', (req, res, next, id) => {
+    if (/^\d{1,10}$/.test(String(id))) return next();
+    res.status(404).json({ error: 'Timetable not found' });
+  });
+
   router.get('/timetables', ...admin, async (req: Request, res: Response) => {
     try {
       const { rows } = await pool.query(

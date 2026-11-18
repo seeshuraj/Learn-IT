@@ -413,9 +413,11 @@ async function timetableFlow(browser) {
   const csv = `date,session,course_code,venue\n${d}/${m}/${y},FN,CS3200,Hall 2\n`;
   const admin = await signIn(browser, 'admin');
   let r = await uploadAs(admin.page, '/api/admin/timetables', 'tt.csv', csv, { title: 'E2E Unit test 2', assessment_type: 'unit_test' });
-  const tt = r.body;
-  if (r.status === 201 && tt?.entries?.length === 1) pass('timetable', 'CSV uploaded, 1 exam read');
+  const tt = { ...(r.body?.timetable ?? {}), entries: r.body?.entries };
+  if (r.status === 201 && tt.id && tt.entries?.length === 1) pass('timetable', 'CSV uploaded, 1 exam read');
   else { fail('timetable', `upload → ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`); await admin.context.close(); return; }
+  const bad = await jsonAs(admin.page, 'POST', '/api/admin/timetables/undefined/publish');
+  if (bad.status === 404) pass('timetable', 'malformed id → 404, not a server error'); else fail('timetable', `malformed id → ${bad.status}`);
   r = await jsonAs(admin.page, 'POST', `/api/admin/timetables/${tt.id}/publish`);
   if (r.status === 200) pass('timetable', 'published'); else fail('timetable', `publish → ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
   await admin.context.close();
