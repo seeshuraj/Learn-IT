@@ -1643,9 +1643,11 @@ async function startServer() {
     try {
       await assertManagesCourse(pool, callerOf(req), Number(req.params.courseId));
       const enrollments = await query(
-        `SELECT e.*, u.name AS student_name, u.email AS student_email
+        `SELECT e.id, e.student_id, e.course_id, e.enrolled_at,
+                u.name, u.email, u.name AS student_name, u.email AS student_email
          FROM enrollments e JOIN users u ON e.student_id=u.id
-         WHERE e.course_id=$1 AND e.institution_id=$2`,
+         WHERE e.course_id=$1 AND e.institution_id=$2
+         ORDER BY u.name`,
         [req.params.courseId, callerOf(req).institutionId]
       );
       res.json(enrollments);
