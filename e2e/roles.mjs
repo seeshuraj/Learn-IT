@@ -285,7 +285,20 @@ async function noticeBoard(browser) {
   await stu.context.close();
 }
 
-export const FLOWS = { allPages, courses, bell, questionWiseMarks, noticeBoard };
+/** The Notes page lists the modules of the courses each role can see. */
+async function notesModules(browser) {
+  for (const role of ['professor', 'student']) {
+    const { context, page } = await signIn(browser, role);
+    await page.goto(`${APP}/notes`);
+    await page.waitForLoadState('networkidle');
+    const none = await page.getByText('No modules found.').count();
+    if (none) fail(`${role} /notes`, 'shows "No modules found." although its courses have modules');
+    else pass(`${role} /notes`, 'lists course modules');
+    await context.close();
+  }
+}
+
+export const FLOWS = { notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();
