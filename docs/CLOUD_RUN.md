@@ -85,7 +85,7 @@ gcloud run deploy learnit-api \
   --image="$IMAGE" --region="$REGION" \
   --service-account="$RUNTIME_SA" \
   --allow-unauthenticated \
-  --min-instances=1 --max-instances=4 \
+  --min=1 --min-instances=0 --max-instances=4 \
   --cpu=1 --memory=1Gi --no-cpu-throttling \
   --concurrency=80 --timeout=3600 \
   --set-env-vars="^@^SUPABASE_URL=https://idytyybyyqutkgwrqjzl.supabase.co@ALLOWED_ORIGIN=https://www.learnitanalytics.com,https://learnitanalytics.com@APP_URL=https://www.learnitanalytics.com@NVIDIA_CHAT_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b,minimaxai/minimax-m3.1-flash" \
@@ -94,7 +94,7 @@ gcloud run deploy learnit-api \
 
 - `ALLOWED_ORIGIN`: copy Render's value if it differs from the one shown. `^@^` makes `@` the separator, so the commas inside the value are kept.
 - Copy any other non-secret settings you set on Render (`AI_MONTHLY_TOKEN_BUDGET`, `RATE_*`) the same way.
-- `--min-instances=1 --no-cpu-throttling`: one instance always on, with CPU between requests, so background jobs keep running.
+- `--min=1 --min-instances=0 --no-cpu-throttling`: one instance always on for the service, with CPU between requests, so background jobs keep running. Use the service-level `--min`, not `--min-instances=1`: a revision-level minimum keeps every old revision running after a deploy, each with its own database connections and background jobs. To clean up old revisions: `gcloud run revisions list --service learnit-api --region asia-south1`, then delete the ones without traffic.
 - `--max-instances=4`: with `DB_POOL_MAX` 5, at most 20 client connections. That needs the **transaction** pooler (port 6543); the session pooler (port 5432) allows only 15 clients in total and refuses the rest with `EMAXCONNSESSION`, which shows up as random 500s.
 - `--timeout=3600`: long AI answers stream to the browser.
 

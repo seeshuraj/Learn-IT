@@ -67,6 +67,10 @@ jobs:
           docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
+      # Keep one instance warm for the *service* (--min), not for each revision
+      # (--min-instances): a revision-level minimum keeps every old revision
+      # running after traffic moves on, each with its own database connections
+      # and background jobs (and its own bill).
       - name: Deploy new revision (no traffic yet)
         run: |
           gcloud run deploy "$SERVICE" \
@@ -75,6 +79,8 @@ jobs:
             --image "${{ steps.image.outputs.image }}" \
             --tag "sha-${GITHUB_SHA::7}" \
             --no-traffic \
+            --min-instances=0 \
+            --min=1 \
             --quiet
 
       - name: Health check on the new revision
