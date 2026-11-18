@@ -10,6 +10,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, GraduationCap, Loader2 } from 'lucide-react';
 import { api, type StudentMarks, type StudentResult } from '../services/api';
 import { TYPE_LABELS, fmtDate, fmtNum } from '../components/assessments/shared';
+import { QuestionBreakdown } from '../components/assessments/QuestionBreakdown';
 
 interface Props { user: { id: number } }
 
@@ -144,7 +145,8 @@ export default function MyMarksPage({ user }: Props) {
                       </thead>
                       <tbody>
                         {s.rows.map(r => (
-                          <tr key={r.exam_id} className="border-t border-slate-100">
+                          <React.Fragment key={r.exam_id}>
+                          <tr className="border-t border-slate-100">
                             <th scope="row" className="px-4 py-2.5 text-left font-normal">
                               <span className="block font-medium text-slate-900">{r.course_code ?? r.course_name}</span>
                               {r.course_code && <span className="block text-xs text-slate-500">{r.course_name}</span>}
@@ -157,6 +159,12 @@ export default function MyMarksPage({ user }: Props) {
                               <span className={`font-bold ${r.grade && FAIL_GRADES.has(r.grade) ? 'text-red-700' : 'text-slate-900'}`}>{r.grade ?? '—'}</span>
                             </td>
                           </tr>
+                          {!r.is_absent && r.question_pattern && (
+                            <tr><td colSpan={6} className="px-4 pb-3">
+                              <QuestionBreakdown pattern={r.question_pattern} marks={r.question_marks} topics={r.topic_breakdown} />
+                            </td></tr>
+                          )}
+                          </React.Fragment>
                         ))}
                       </tbody>
                     </table>
@@ -189,11 +197,17 @@ export default function MyMarksPage({ user }: Props) {
                             {scoreText(r)}
                             {!r.is_absent && r.percentage !== null && <span className="ml-2 text-sm font-normal text-slate-600">{Number(r.percentage).toFixed(0)}%</span>}
                           </p>
+                          {!r.is_absent && r.converted_marks != null && r.counted_out_of != null && (
+                            <p className="text-xs text-slate-600">Counts as {fmtNum(r.converted_marks)}/{fmtNum(r.counted_out_of)}</p>
+                          )}
                           {r.class_avg_pct !== null && (
                             <p className="text-xs text-slate-500">Class average {Number(r.class_avg_pct).toFixed(0)}%</p>
                           )}
                         </div>
                         {r.remarks && <p className="w-full text-sm text-slate-600">{r.remarks}</p>}
+                        {!r.is_absent && r.question_pattern && (
+                          <QuestionBreakdown pattern={r.question_pattern} marks={r.question_marks} topics={r.topic_breakdown} />
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -205,7 +219,7 @@ export default function MyMarksPage({ user }: Props) {
           {data!.weak_topics.length > 0 && (
             <section className="rounded-xl border border-slate-200 bg-white p-4">
               <h2 className="font-semibold text-slate-900">Topics to work on</h2>
-              <p className="mt-1 text-sm text-slate-600">From tests where you scored in the weak band.</p>
+              <p className="mt-1 text-sm text-slate-600">From the questions and units where you lost the most marks.</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {data!.weak_topics.map(t => (
                   <span key={t} className="rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-xs text-red-800">{t}</span>

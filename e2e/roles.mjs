@@ -90,8 +90,9 @@ async function visit(page, w, role, path) {
   if (new URL(page.url()).pathname === '/landing') problems.push('signed out unexpectedly');
   const name = `${role}${path.replace(/\//g, '_') || '_home'}`;
   await page.screenshot({ path: `${OUT}/${name}.png`, fullPage: true });
+  const h1 = ((await page.locator('main h1').first().textContent({ timeout: 1500 }).catch(() => '')) ?? '').trim();
   if (problems.length) fail(`${role} ${path}`, problems.join(' | '));
-  else pass(`${role} ${path}`, 'loads without errors');
+  else pass(`${role} ${path}`, `loads without errors${h1 ? ` (“${h1.slice(0, 60)}”)` : ''}`);
   return body;
 }
 
@@ -156,7 +157,83 @@ async function bell(browser) {
   await stu.context.close();
 }
 
-export const FLOWS = { allPages, courses, bell };
+/**
+ * Professor builds a Part A/B/C paper, enters marks question by question and
+ * publishes; the student sees the total, the conversion, the breakdown and
+ * a notification.
+ */
+async function questionWiseMarks(browser) {
+  const prof = await signIn(browser, 'professor');
+  const { page } = prof;
+  await page.goto(`${APP}/assessments`);
+  await page.getByRole('button', { name: 'New assessment' }).first().click();
+  const form = page.getByRole('dialog');
+  await form.getByLabel('Course').selectOption({ label: 'CS3200: Database Systems' });
+  await form.getByLabel('Title').fill('E2E Unit test 1');
+  await expectText(form, 'professor new assessment', 'Paper total: 50');
+  await form.getByLabel('Counts as (optional)').fill('20');
+  await form.getByLabel('Pattern name').fill('E2E unit test 50');
+  await form.getByRole('button', { name: 'Save pattern' }).click();
+  await expectText(form, 'professor save pattern', 'Saved as “E2E unit test 50”');
+  await form.getByRole('button', { name: 'Create and enter marks' }).click();
+
+  const cell = (q, who) => page.getByLabel(new RegExp(`^Q${q} \\(out of .*\\) for ${who}$`));
+  try { await cell(1, 'Sarah Johnson').waitFor({ timeout: 10_000 }); pass('professor marks grid', 'shows one cell per question'); }
+  catch { fail('professor marks grid', 'question cells did not appear'); await prof.context.close(); return; }
+
+  const sarah = { 1: '2', 2: '2', 3: '1.5', 4: '2', 5: '0', 6: '10b', 7: '12', 8: '11' };
+  for (const [q, v] of Object.entries(sarah)) await cell(q, 'Sarah Johnson').fill(v);
+  const row = page.getByRole('row', { name: /Sarah Johnson/ });
+  await expectText(row, 'professor live total', '40.5');
+
+  await cell(1, 'Michael Chen').fill('3');
+  await expectText(page, 'professor over-max cell', 'Q1 is out of 2');
+  await cell(1, 'Michael Chen').fill('1');
+  for (const [q, v] of Object.entries({ 2: '1', 6: '7', 7: '6a', 8: '5' })) await cell(q, 'Michael Chen').fill(v);
+  await page.getByText('All changes saved').waitFor({ timeout: 15_000 }).catch(() => fail('professor autosave', 'marks did not save'));
+
+  const { rows: [r] } = await db.query(
+    `select r.marks_obtained::float as total, r.converted_marks::float as conv, r.question_marks->'6' as q6, r.topic_breakdown
+     from unit_exam_results r join unit_exams e on e.id = r.unit_exam_id
+     where e.title = 'E2E Unit test 1' and r.student_id = 2`);
+  if (r?.total === 40.5 && r?.conv === 16.2 && r?.q6?.o === 'b') pass('database', 'stores 40.5, counts as 16.2, Q6 option (b)');
+  else fail('database', `stored ${JSON.stringify(r)}`);
+
+  await page.getByRole('button', { name: 'Publish results' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Publish' }).click();
+  await expectText(page, 'professor publish', 'Unpublish');
+  // Editing a published question-wise assessment (not its paper) must work.
+  const { rows: [ex] } = await db.query(`select id, question_pattern from unit_exams where title = 'E2E Unit test 1'`);
+  const st = await page.evaluate(async ({ api, id, pattern }) => {
+    // The app keeps its Supabase session in sessionStorage.
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const key = store && Object.keys(store).find(k => k.endsWith('-auth-token'));
+    const token = key ? JSON.parse(store.getItem(key)).access_token : '';
+    const r = await fetch(`${api}/api/unit-exams/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'E2E Unit test 1', question_pattern: pattern }) });
+    return r.status;
+  }, { api: API, id: ex.id, pattern: ex.question_pattern });
+  if (st === 200) pass('professor edit published', 'unchanged paper saves (200)'); else fail('professor edit published', `PATCH → ${st}`);
+  await page.getByRole('tab', { name: /Analysis/i }).click();
+  await expectText(page, 'professor analysis', 'Question by question');
+  await prof.context.close();
+
+  const stu = await signIn(browser, 'student');
+  await stu.page.getByRole('button', { name: 'Notifications' }).click();
+  await expectText(stu.page, 'student bell', 'E2E Unit test 1');
+  await stu.page.goto(`${APP}/marks`);
+  await expectText(stu.page, 'student My Marks', '40.5/50');
+  await expectText(stu.page, 'student My Marks', 'Counts as 16.2/20');
+  await stu.page.getByText('Show question-wise marks').first().click();
+  await expectText(stu.page, 'student breakdown', 'Q6 (b)');
+  await expectText(stu.page, 'student breakdown', 'Part B · 22/26');
+  await stu.page.screenshot({ path: `${OUT}/student_marks_breakdown.png`, fullPage: true });
+  const left = stu.w.take();
+  if (left.length) fail('student marks flow', left.join(' | '));
+  await stu.context.close();
+}
+
+export const FLOWS = { allPages, courses, bell, questionWiseMarks };
 
 async function main() {
   const browser = await chromium.launch();

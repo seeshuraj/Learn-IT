@@ -44,9 +44,36 @@ export interface Assessment {
   /** Modules this exam covers (its portion), set by the professor. */
   portion_module_ids?: number[] | null;
   portion_notes?: string | null;
+  /** Question-wise entry (Part A/B/C). Null = one total per student. */
+  question_pattern?: QuestionPattern | null;
+  /** "Counts as" scale, e.g. a 50-mark paper counted out of 20. */
+  counted_out_of?: number | string | null;
   result_count?: number;
   absent_count?: number;
   enrolled_count?: number;
+}
+
+export interface PatternQuestion {
+  no: string;
+  marks: number;
+  either_or: boolean;
+  module_id: number | null;
+  module_id_b?: number | null;
+}
+export interface PatternPart { key: string; label: string; answer_count: number | null; questions: PatternQuestion[] }
+export interface QuestionPattern { version: 1; parts: PatternPart[] }
+/** A stored question mark: a number, or the mark and option for either/or. */
+export type QuestionMark = number | { m: number; o: 'a' | 'b' };
+
+export interface SavedPattern {
+  id: number | string;
+  name: string;
+  assessment_type: AssessmentType | null;
+  pattern: QuestionPattern;
+  total: number;
+  built_in: boolean;
+  created_by?: number | null;
+  created_by_name?: string | null;
 }
 
 export interface RosterStudent {
@@ -63,6 +90,8 @@ export interface RosterStudent {
   grade_point: string | null;
   remarks: string | null;
   updated_at: string | null;
+  question_marks?: Record<string, QuestionMark> | null;
+  converted_marks?: string | null;
 }
 
 export interface MarksEntry {
@@ -73,6 +102,8 @@ export interface MarksEntry {
   absent?: boolean;
   grade?: string | null;
   remarks?: string | null;
+  /** Question-wise marks: { "1": 2, "11": "10b" }. */
+  questions?: Record<string, string | number | null> | null;
 }
 
 /** One published result, as the student sees it. */
@@ -101,6 +132,12 @@ export interface StudentResult {
   remarks: string | null;
   /** Only when at least 5 students wrote. */
   class_avg_pct: string | null;
+  question_pattern?: QuestionPattern | null;
+  question_marks?: Record<string, QuestionMark> | null;
+  counted_out_of?: string | null;
+  converted_marks?: string | null;
+  /** Percentage per unit, from tagged questions. */
+  topic_breakdown?: Record<string, number> | null;
 }
 
 export interface StudentMarks {
@@ -648,6 +685,12 @@ export const api = {
 
   unpublishUnitExam: (examId: number) =>
     request<Assessment>(`/api/unit-exams/${examId}/unpublish`, { method: 'POST' }),
+
+  /** Saved question-paper patterns of the college, plus built-in presets. */
+  getExamPatterns: () => request<SavedPattern[]>('/api/exam-patterns'),
+  saveExamPattern: (name: string, pattern: QuestionPattern, assessment_type: AssessmentType | null) =>
+    request<SavedPattern>('/api/exam-patterns', { method: 'POST', body: JSON.stringify({ name, pattern, assessment_type }) }),
+  deleteExamPattern: (id: number | string) => request(`/api/exam-patterns/${id}`, { method: 'DELETE' }),
 
   /** Get full analytics for an exam (stats + band distribution + student results). */
   getExamAnalytics: (examId: number) =>
