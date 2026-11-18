@@ -298,7 +298,41 @@ async function notesModules(browser) {
   }
 }
 
-export const FLOWS = { notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
+/** Admin dashboard shows real numbers, not blanks. */
+async function adminStats(browser) {
+  const { context, page } = await signIn(browser, 'admin');
+  await page.waitForLoadState('networkidle');
+  const val = async label => (await page.locator('p', { hasText: new RegExp(`^${label}$`) }).first().locator('xpath=following-sibling::h3').textContent().catch(() => '')).trim();
+  const users = await val('Active Users'), courses = await val('Total Courses'), pass = await val('Pass rate');
+  if (/^\d+$/.test(users) && Number(users) > 0) pass_('admin dashboard', `Active Users = ${users}`); else fail('admin dashboard', `Active Users shows “${users}”`);
+  if (/^\d+$/.test(courses) && Number(courses) > 0) pass_('admin dashboard', `Total Courses = ${courses}`); else fail('admin dashboard', `Total Courses shows “${courses}”`);
+  if (/^(—|\d+(\.\d)?%)$/.test(pass)) pass_('admin dashboard', `Pass rate = ${pass}`); else fail('admin dashboard', `Pass rate shows “${pass}”`);
+  // Endpoints every role calls; admins used to get a 500 (unused SQL parameter).
+  for (const p of ['/api/exams/upcoming', '/api/announcements/upcoming']) {
+    const st = await apiAs(page, 'GET', p);
+    if (st === 200) pass_('admin API', `${p} → 200`); else fail('admin API', `${p} → ${st}`);
+  }
+  // Course list shows how many students are enrolled.
+  await page.goto(`${APP}/admin/courses`);
+  await page.waitForLoadState('networkidle');
+  const row = page.getByRole('row', { name: /CS3200/ });
+  const cells = (await row.locator('td').allTextContents()).map(t => t.trim());
+  if (cells.includes('2')) pass_('admin courses', 'CS3200 shows 2 students'); else fail('admin courses', `CS3200 row: ${JSON.stringify(cells)}`);
+  // Settings: the AI switch is real and saves.
+  await page.goto(`${APP}/admin/settings`);
+  const sw = page.getByRole('switch', { name: /AI for students and professors/ });
+  await sw.waitFor();
+  await sw.click();
+  await expectText(page, 'admin settings', 'AI features turned off');
+  const { rows: [setting] } = await db.query(`select value from settings where key = 'ai_enabled' limit 1`);
+  if (setting?.value === 'false') pass_('admin settings', 'AI switch saved as off'); else fail('admin settings', `ai_enabled = ${setting?.value}`);
+  await sw.click();
+  await expectText(page, 'admin settings', 'AI features turned on');
+  await context.close();
+}
+const pass_ = (w, m) => pass(w, m);
+
+export const FLOWS = { adminStats, notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();

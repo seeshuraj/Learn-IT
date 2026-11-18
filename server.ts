@@ -1540,14 +1540,28 @@ async function startServer() {
              WHERE im.institution_id = $1 AND im.status = 'active' AND u.active = 1) AS users,
            (SELECT COUNT(*) FROM courses     WHERE institution_id = $1) AS courses,
            (SELECT COUNT(*) FROM submissions WHERE institution_id = $1) AS submissions,
-           (SELECT COUNT(*) FROM enrollments WHERE institution_id = $1) AS enrollments`,
+           (SELECT COUNT(*) FROM enrollments WHERE institution_id = $1) AS enrollments,
+           -- Pass rate over published results that were written: a passing
+           -- grade where grades apply, otherwise at least 50%.
+           (SELECT ROUND(100.0 * COUNT(*) FILTER (
+                     WHERE CASE WHEN r.grade IS NOT NULL THEN r.grade NOT IN ('RA', 'U', 'F', 'AB', 'W')
+                                ELSE r.percentage >= 50 END)
+                   / NULLIF(COUNT(*), 0), 1)
+              FROM unit_exam_results r
+              JOIN unit_exams e ON e.id = r.unit_exam_id
+             WHERE e.institution_id = $1 AND e.published_at IS NOT NULL AND NOT r.is_absent) AS pass_rate`,
         [inst]
       );
+      const users = Number(row?.users ?? 0);
+      const courses = Number(row?.courses ?? 0);
       res.json({
-        users:       Number(row?.users ?? 0),
-        courses:     Number(row?.courses ?? 0),
+        users, courses,
         submissions: Number(row?.submissions ?? 0),
         enrollments: Number(row?.enrollments ?? 0),
+        // Names the dashboard reads; pass rate is null until results are published.
+        activeUsers: users,
+        totalCourses: courses,
+        passRate: row?.pass_rate === null || row?.pass_rate === undefined ? null : Number(row.pass_rate),
       });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1572,6 +1586,9 @@ async function startServer() {
          ON CONFLICT (institution_id, key) DO UPDATE SET value = EXCLUDED.value`,
         [callerOf(req).institutionId, key, value]
       );
+      const a = (req as AuthenticatedRequest).auth;
+      writeAudit({ action: "settings.update", resourceType: "setting", resourceId: String(key),
+        actorUserId: a.legacyUserId, actorEmail: a.email, actorRole: a.role, metadata: { key, value: String(value).slice(0, 40) }, req });
       res.json({ success: true });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1579,7 +1596,8 @@ async function startServer() {
   app.get("/api/admin/courses", requireAuth, requireRole("admin"), async (req, res) => {
     try {
       const courses = await query(
-        `SELECT c.*, u.name AS instructor_name, d.code AS department_code, d.name AS department_name
+        `SELECT c.*, u.name AS instructor_name, d.code AS department_code, d.name AS department_name,
+                (SELECT count(*)::int FROM enrollments e WHERE e.course_id = c.id) AS enrollment_count
          FROM courses c LEFT JOIN users u ON c.instructor_id=u.id
          LEFT JOIN departments d ON d.id = c.department_id
          WHERE c.institution_id = $1

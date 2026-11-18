@@ -144,8 +144,8 @@ export class AiUsageRecorder {
 
 export class AiBudgetExceeded extends Error {
   readonly status = 429;
-  constructor() {
-    super("Your college's AI allowance for this month has been used up. AI features will be available again next month, or ask your college administrator to contact LearnIT.");
+  constructor(message?: string) {
+    super(message ?? "Your college's AI allowance for this month has been used up. AI features will be available again next month, or ask your college administrator to contact LearnIT.");
     this.name = 'AiBudgetExceeded';
   }
 }
@@ -156,7 +156,7 @@ export function monthStart(nowMs: number): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
 
-interface BudgetState { budget: number | null; usedAtLoad: number; addedSince: number; loadedAt: number; month: number }
+interface BudgetState { budget: number | null; usedAtLoad: number; addedSince: number; loadedAt: number; month: number; disabled: boolean }
 
 /**
  * Month-to-date token check per college. The DB total is cached for
@@ -182,7 +182,8 @@ export class AiBudgetGuard {
     const { rows } = await this.db.query(
       `SELECT i.ai_monthly_token_budget AS budget,
               COALESCE((SELECT SUM(prompt_tokens + completion_tokens) FROM ai_usage_events e
-                         WHERE e.institution_id = i.id AND e.created_at >= $2), 0) AS used
+                         WHERE e.institution_id = i.id AND e.created_at >= $2), 0) AS used,
+              (SELECT s.value FROM settings s WHERE s.institution_id = i.id AND s.key = 'ai_enabled') AS ai_enabled
        FROM institutions i WHERE i.id = $1`,
       [institutionId, new Date(month).toISOString()],
     );
@@ -194,6 +195,8 @@ export class AiBudgetGuard {
       addedSince: 0,
       loadedAt: t,
       month,
+      // The college admin's switch (Settings). Unset means on.
+      disabled: rows[0]?.ai_enabled === 'false',
     };
     this.state.set(institutionId, next);
     return next;
@@ -202,6 +205,7 @@ export class AiBudgetGuard {
   /** Throws AiBudgetExceeded when the college has no allowance left this month. */
   async check(institutionId: string): Promise<void> {
     const s = await this.load(institutionId);
+    if (s.disabled) throw new AiBudgetExceeded('AI features are turned off for your college. Your college administrator can turn them back on in Settings.');
     if (s.budget !== null && s.usedAtLoad + s.addedSince >= s.budget) throw new AiBudgetExceeded();
   }
 

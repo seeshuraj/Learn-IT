@@ -9,7 +9,8 @@ import { api } from "../services/api";
 interface AdminStats {
   activeUsers: number;
   totalCourses: number;
-  averageGrade: number;
+  /** % of published results that passed; null before any are published. */
+  passRate: number | null;
 }
 
 interface AiUsage {
@@ -106,7 +107,7 @@ export const AdminDashboard: React.FC = () => {
               <h3 className="text-2xl font-bold text-slate-900">{stats.totalCourses}</h3>
             </div>
           </div>
-          <p className="text-xs text-slate-400 font-medium">Active semesters</p>
+          <p className="text-xs text-slate-400 font-medium">In your college</p>
         </div>
 
         <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
@@ -115,11 +116,13 @@ export const AdminDashboard: React.FC = () => {
               <TrendingUp className="w-6 h-6" />
             </div>
             <div>
-              <p className="text-sm text-slate-500 font-medium">Avg Pass Rate</p>
-              <h3 className="text-2xl font-bold text-slate-900">{stats.averageGrade}%</h3>
+              <p className="text-sm text-slate-500 font-medium">Pass rate</p>
+              <h3 className="text-2xl font-bold text-slate-900">{stats.passRate == null ? "—" : `${stats.passRate}%`}</h3>
             </div>
           </div>
-          <p className="text-xs text-slate-400 font-medium">Global average</p>
+          <p className="text-xs text-slate-400 font-medium">
+            {stats.passRate == null ? "Shown once professors publish results" : "Published assessment results"}
+          </p>
         </div>
       </div>
 

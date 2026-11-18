@@ -38,7 +38,7 @@ const EXAMS_SQL = (role: string) => `
   LEFT JOIN courses c ON c.id = e.course_id
   LEFT JOIN departments d ON d.id = e.department_id
   WHERE e.institution_id = $2 AND e.exam_date BETWEEN $3 AND $4
-    AND ${role === 'admin' ? 'true'
+    AND ${role === 'admin' ? '$1::int IS NOT NULL'  /* every query must use $1, or Postgres can't type it */
       : role === 'instructor' ? 'c.instructor_id = $1'
       : `(EXISTS (SELECT 1 FROM enrollments en WHERE en.course_id = e.course_id AND en.student_id = $1)
           OR (e.course_id IS NULL AND EXISTS (

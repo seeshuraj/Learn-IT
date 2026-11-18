@@ -121,3 +121,15 @@ test('LLM client reports provider token counts, estimates when absent, and lets 
   await assert.rejects(client.chat(messages), AiBudgetExceeded);
   assert.equal(seen.length, 2, 'refused calls are not metered');
 });
+
+test('a college admin can turn AI off; calls are refused with a clear message', async () => {
+  let enabled: string | null = 'false';
+  const db = { query: async () => ({ rows: [{ budget: null, used: 0, ai_enabled: enabled }] }) };
+  let now = Date.UTC(2026, 10, 18);
+  const guard = new AiBudgetGuard(db, { defaultBudget: null, cacheMs: 60_000, now: () => now });
+  await assert.rejects(guard.check('inst-a'), (e: any) => e instanceof AiBudgetExceeded && /turned off/.test(e.message));
+  enabled = 'true'; now += 61_000;
+  await guard.check('inst-a');
+  enabled = null; now += 61_000;                       // never set: on
+  await guard.check('inst-a');
+});
