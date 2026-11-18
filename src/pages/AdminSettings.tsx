@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Cpu, Loader2 } from "lucide-react";
+import { CalendarRange, Cpu, Loader2 } from "lucide-react";
 import { toast, Toaster } from "sonner";
 import { api } from "../services/api";
 
@@ -10,7 +10,17 @@ import { api } from "../services/api";
  * AI features: when off, every AI call for the college (tutor, analytics
  * summaries, study plans, grading help, timetable reading) is refused with a
  * clear message. Takes effect within a minute.
+ *
+ * Current semester: decides which semester's courses each year's students
+ * get (year 2 → semester 3 or 4). Automatic follows the calendar.
  */
+
+type Term = "auto" | "odd" | "even";
+const TERM_OPTIONS: { value: Term; label: string; hint: string }[] = [
+  { value: "auto", label: "Automatic", hint: "Odd semesters July–December, even semesters January–June" },
+  { value: "odd",  label: "Odd semester", hint: "Semesters 1, 3, 5, 7" },
+  { value: "even", label: "Even semester", hint: "Semesters 2, 4, 6, 8" },
+];
 
 interface Usage { month: { used: number; budget: number | null; remaining: number | null } }
 
@@ -20,14 +30,18 @@ export const AdminSettings: React.FC = () => {
   const [aiOn, setAiOn] = useState<boolean | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [saving, setSaving] = useState(false);
+  const [term, setTerm] = useState<Term | null>(null);
+  const [termSaving, setTermSaving] = useState(false);
 
   useEffect(() => {
     api.getAdminSettings()
       .then((data: any) => {
-        const row = (Array.isArray(data) ? data : []).find((s: any) => s.key === "ai_enabled");
-        setAiOn(row?.value !== "false");
+        const rows = Array.isArray(data) ? data : [];
+        setAiOn(rows.find((s: any) => s.key === "ai_enabled")?.value !== "false");
+        const t = rows.find((s: any) => s.key === "current_term")?.value;
+        setTerm(t === "odd" || t === "even" ? t : "auto");
       })
-      .catch(() => setAiOn(true));
+      .catch(() => { setAiOn(true); setTerm("auto"); });
     api.getAiUsage(30).then((u: any) => setUsage(u)).catch(() => setUsage(null));
   }, []);
 
@@ -43,6 +57,23 @@ export const AdminSettings: React.FC = () => {
       toast.error(e.message || "Could not change the setting");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const changeTerm = async (next: Term) => {
+    if (next === term) return;
+    setTermSaving(true);
+    try {
+      const r: any = await api.saveAdminSetting("current_term", next);
+      setTerm(next);
+      const e = r?.enrolments;
+      toast.success(e && (e.added || e.removed)
+        ? `Saved. ${e.added} class enrolments added, ${e.removed} withdrawn.`
+        : "Saved. Class enrolments are up to date.");
+    } catch (e: any) {
+      toast.error(e.message || "Could not change the semester");
+    } finally {
+      setTermSaving(false);
     }
   };
 
@@ -91,6 +122,32 @@ export const AdminSettings: React.FC = () => {
             <span className="mt-1 block text-xs text-slate-500">To change the allowance, contact LearnIT.</span>
           </div>
         )}
+      </section>
+
+      <section className="space-y-4 rounded-3xl border border-slate-100 bg-white p-6 shadow-sm sm:p-8" aria-labelledby="term-title">
+        <div className="flex items-center gap-3">
+          <CalendarRange className="h-5 w-5 text-indigo-500" />
+          <h2 id="term-title" className="text-lg font-bold text-slate-900">Current semester</h2>
+        </div>
+        <p className="text-sm text-slate-500">
+          Students get their department's courses for their year's current semester: a 2nd-year student gets semester 3 or 4 courses,
+          including students who join mid-way. Courses an admin enrolled by hand are never removed.
+        </p>
+        <div role="radiogroup" aria-labelledby="term-title" className="grid gap-2 sm:grid-cols-3">
+          {TERM_OPTIONS.map(o => (
+            <button
+              key={o.value}
+              role="radio"
+              aria-checked={term === o.value}
+              disabled={term === null || termSaving}
+              onClick={() => void changeTerm(o.value)}
+              className={`rounded-2xl border px-4 py-3 text-left transition-colors disabled:opacity-60 ${term === o.value ? "border-indigo-500 bg-indigo-50" : "border-slate-200 hover:bg-slate-50"}`}
+            >
+              <span className="block text-sm font-semibold text-slate-900">{o.label}</span>
+              <span className="mt-0.5 block text-xs text-slate-500">{o.hint}</span>
+            </button>
+          ))}
+        </div>
       </section>
     </div>
   );

@@ -21,6 +21,8 @@ interface Enrollment {
   year: number | null;
   major: string | null;
   enrolled_at: string;
+  /** 'auto' = the student has the course through their department and year. */
+  source?: 'manual' | 'auto';
 }
 
 interface User {
@@ -54,6 +56,19 @@ export default function AdminCourseManagement() {
   // Temp credentials returned from bulk enroll
   const [tempCredentials, setTempCredentials] = useState<TempCredential[]>([]);
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  async function syncClasses() {
+    setSyncing(true); setError(''); setSuccess('');
+    try {
+      const r: any = await api.syncClassEnrolments();
+      setSuccess(r.added || r.removed
+        ? `Class enrolments updated (${r.parity} semester): ${r.added} added, ${r.removed} withdrawn.`
+        : `Class enrolments are up to date (${r.parity} semester).`);
+      await loadData();
+    } catch (e: any) { setError(e.message); }
+    finally { setSyncing(false); }
+  }
 
   useEffect(() => { loadData(); }, []);
 
@@ -195,13 +210,27 @@ export default function AdminCourseManagement() {
           <h1 className="text-3xl sm:text-4xl font-bold text-slate-900">Course Management</h1>
           <p className="text-slate-500 mt-1">Create, manage and enrol students in courses.</p>
         </div>
+        <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => void syncClasses()}
+          disabled={syncing}
+          title="Give every student the courses of their department for their year's current semester"
+          className="px-5 py-2.5 bg-white border border-slate-200 text-slate-700 rounded-2xl text-sm font-bold hover:bg-slate-50 disabled:opacity-50"
+        >
+          {syncing ? 'Syncing…' : 'Sync class enrolments'}
+        </button>
         <button
           onClick={() => { setShowCreateModal(true); setError(''); setSuccess(''); }}
           className="px-5 py-2.5 bg-indigo-600 text-white rounded-2xl text-sm font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20"
         >
           + New Course
         </button>
+        </div>
       </div>
+      <p className="-mt-4 text-sm text-slate-500">
+        Students get their department's courses for their year automatically: set each course's department and semester below,
+        and each student's department and year in User Management. A professor can teach courses in any department.
+      </p>
 
       {error && <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">{error}</div>}
       {success && <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-sm">{success}</div>}
@@ -346,7 +375,11 @@ export default function AdminCourseManagement() {
                           <td className="px-3 py-2">{e.name}</td>
                           <td className="px-3 py-2 text-slate-400">{e.email}</td>
                           <td className="px-3 py-2 text-slate-400">{new Date(e.enrolled_at).toLocaleDateString()}</td>
-                          <td className="px-3 py-2"><button onClick={() => handleRemoveEnrollment(e.id)} className="text-red-500 hover:text-red-700 text-xs font-bold">Remove</button></td>
+                          <td className="px-3 py-2 text-right">
+                            {e.source === 'auto'
+                              ? <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700" title="Through their department and year. Change those in User Management to remove it.">From class</span>
+                              : <button onClick={() => handleRemoveEnrollment(e.id)} className="text-red-500 hover:text-red-700 text-xs font-bold">Remove</button>}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

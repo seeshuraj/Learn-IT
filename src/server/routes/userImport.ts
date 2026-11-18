@@ -36,6 +36,7 @@ import {
   validateImportRows, ImportRow, IMPORT_BATCH_SIZE, IMPORT_MAX_ROWS,
 } from '../lib/userImport.js';
 import { provisionAccount, AccountExists } from '../lib/provisionAccount.js';
+import { syncClassEnrolments } from '../lib/classEnrolment.js';
 
 const require = createRequire(import.meta.url);
 const multer = require('multer');
@@ -190,6 +191,14 @@ export function createUserImportRouter(
         failed: results.filter(r => r.status === 'failed').length,
         emailPending: results.filter(r => r.status === 'created' && r.emailPending).length,
       };
+      // New students get their class's courses straight away.
+      const enrolments = tally.created
+        ? await syncClassEnrolments(pool, institutionId).catch(err => {
+            log.error('class enrolment sync after import failed (non-fatal)', errorFields(err));
+            return null;
+          })
+        : null;
+
       const auth = (req as AuthenticatedRequest).auth;
       writeAudit({
         action: 'users.bulk_import',
@@ -203,7 +212,7 @@ export function createUserImportRouter(
       });
 
       res.setHeader('Cache-Control', 'no-store'); // may carry temporary passwords
-      res.json({ results, tally });
+      res.json({ results, tally, enrolments });
     } catch (e) {
       sendServerError(res, e);
     }

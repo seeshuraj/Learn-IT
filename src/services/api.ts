@@ -753,6 +753,8 @@ export const api = {
   getUserRoleCounts: () => request('/api/admin/users/role-counts'),
   getAdminStats:    () => request('/api/admin/stats'),
   getAdminSettings: () => request('/api/admin/settings'),
+  syncClassEnrolments: () =>
+    request('/api/admin/class-enrolments/sync', { method: 'POST' }),
   saveAdminSetting: (key: string, value: string) =>
     request('/api/admin/settings', { method: 'POST', body: JSON.stringify({ key, value }) }),
   createAdminUser:  (data: any) =>

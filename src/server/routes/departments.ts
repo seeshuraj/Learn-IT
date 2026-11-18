@@ -16,6 +16,8 @@ import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/au
 import { writeAudit } from '../middleware/audit.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { cleanName, readPlacement } from '../lib/departments.js';
+import { syncClassEnrolments } from '../lib/classEnrolment.js';
+import { log, errorFields } from '../lib/log.js';
 
 const CODE_RE = /^[A-Z0-9][A-Z0-9&.\-]{0,19}$/;
 const PG_UNIQUE = '23505';
@@ -108,6 +110,9 @@ export function createDepartmentsRouter(pool: pkg.Pool): Router {
       );
       if (!rows[0]) return res.status(404).json({ error: 'Department not found' });
       audit(req, 'department.delete', req.params.id, { code: rows[0].code });
+      // Its students and courses lost the department, so they no longer form a class.
+      await syncClassEnrolments(pool, authOf(req).institutionId)
+        .catch(err => log.error('class enrolment sync failed (non-fatal)', errorFields(err)));
       res.json({ deleted: true });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -132,7 +137,11 @@ export function createDepartmentsRouter(pool: pkg.Pool): Router {
       );
       if (!rows[0]) return res.status(404).json({ error: 'Course not found' });
       audit(req, 'course.placement', rows[0].id, { department_id: rows[0].department_id, semester: rows[0].semester });
-      res.json(rows[0]);
+      // The course's class changed: give it to that class's students (and
+      // withdraw it from students who only had it through the old class).
+      const enrolments = await syncClassEnrolments(pool, auth.institutionId, { courseIds: [rows[0].id] })
+        .catch(err => { log.error('class enrolment sync failed (non-fatal)', errorFields(err)); return null; });
+      res.json({ ...rows[0], enrolments });
     } catch (e: any) { sendServerError(res, e); }
   });
 
