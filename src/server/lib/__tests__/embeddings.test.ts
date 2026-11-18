@@ -86,15 +86,18 @@ test('cosine similarity never compares vectors of different dimensions', () => {
 
 // ── reembedStaleChunks against an in-memory note_chunks table ────────────────
 function fakePool(rows: { id: number; chunk_text: string; embedding_model: string | null; embedding?: string }[],
-                  { lockFree = true } = {}) {
+                  { lockedIds = [] as number[] } = {}) {
   let released = 0;
+  const log: string[] = [];
   const client = {
     async query(sql: string, p: any[] = []) {
-      const s = sql.replace(/\s+/g, ' ');
-      if (s.includes('pg_try_advisory_lock')) return { rows: [{ ok: lockFree }] };
-      if (s.includes('pg_advisory_unlock')) return { rows: [{}] };
+      const s = sql.replace(/\s+/g, ' ').trim();
+      if (/advisory/.test(s)) throw new Error('session-level advisory locks break under the transaction pooler');
+      if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') { log.push(s); return { rows: [] }; }
       if (s.startsWith('SELECT id, chunk_text FROM note_chunks')) {
-        const stale = rows.filter(r => r.embedding_model !== p[0] && r.chunk_text).slice(0, p[1]);
+        assert.match(s, /FOR UPDATE SKIP LOCKED/);
+        assert.equal(log.at(-1), 'BEGIN', 'rows are claimed inside a transaction');
+        const stale = rows.filter(r => r.embedding_model !== p[0] && r.chunk_text && !lockedIds.includes(r.id)).slice(0, p[1]);
         return { rows: stale.map(r => ({ id: r.id, chunk_text: r.chunk_text })) };
       }
       if (s.startsWith('UPDATE note_chunks')) {
@@ -109,7 +112,7 @@ function fakePool(rows: { id: number; chunk_text: string; embedding_model: strin
     },
     release() { released++; },
   };
-  return { pool: { connect: async () => client } as any, released: () => released };
+  return { pool: { connect: async () => client } as any, released: () => released, log };
 }
 
 const fakeEmbedder = (model: string, fail = false): Embedder & { calls: number } => ({
@@ -135,15 +138,18 @@ test('re-embeds only stale chunks, in batches, and is a no-op once current', asy
   assert.equal(released(), 2);
 });
 
-test('re-embed respects the per-run cap, the advisory lock, and never throws', async () => {
+test('re-embed respects the per-run cap, skips rows another instance holds, and never throws', async () => {
   const rows = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, chunk_text: `c${i}`, embedding_model: null }));
   assert.equal(await reembedStaleChunks(fakePool(rows).pool, fakeEmbedder('new'), 4), 4);
 
-  const locked = fakePool(rows.map(r => ({ ...r, embedding_model: null })), { lockFree: false });
-  assert.equal(await reembedStaleChunks(locked.pool, fakeEmbedder('new')), 0);
-  assert.equal(locked.released(), 1);
+  // Rows locked by another instance are left to it.
+  const fresh = rows.map(r => ({ ...r, embedding_model: null }));
+  const busy = fakePool(fresh, { lockedIds: [1, 2, 3] });
+  assert.equal(await reembedStaleChunks(busy.pool, fakeEmbedder('new')), 7);
+  assert.ok(fresh.filter(r => r.id <= 3).every(r => r.embedding_model === null));
 
   const failing = fakePool(rows.map(r => ({ ...r, embedding_model: null })));
   assert.equal(await reembedStaleChunks(failing.pool, fakeEmbedder('new', true)), 0);
   assert.equal(failing.released(), 1);
+  assert.equal(failing.log.at(-1), 'ROLLBACK', 'a failed batch is rolled back, releasing its rows');
 });

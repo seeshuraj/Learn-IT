@@ -50,7 +50,7 @@ Add the values per college: two colleges need 1,000 sign-ins per 5 minutes, and 
 
 | Variable | Default | When to change |
 |---|---|---|
-| `DB_POOL_MAX` | 10 | Keep `instances × DB_POOL_MAX` below the database connection limit. With more than one instance or a background worker, set `DATABASE_URL` to Supabase's **transaction pooler** (port 6543); the code keeps no session state, so it is compatible. Minimum 3, because background jobs hold one connection while they run. |
+| `DB_POOL_MAX` | 5 | Keep `instances × DB_POOL_MAX` below the database connection limit. With more than one instance or a background worker, set `DATABASE_URL` to Supabase's **transaction pooler** (port 6543); the code keeps no session state, so it is compatible. Minimum 3, because background jobs hold one connection while they run. |
 | `AUTH_CACHE_TTL_MS` | 60000 | How long a verified token and a user's role/college are reused. A role change or deactivation applies within this time on other instances. |
 | `AUTH_VERIFY_MODE` | `local` | `local` checks token signatures in the API. A signed-out token keeps working until it expires, so set the JWT expiry to 15–30 minutes (Supabase → Authentication → Sessions). `remote` asks Supabase Auth for every new token and also sees revoked sessions, but counts against the per-IP sign-in limit. |
 | `NVIDIA_BASE_URL` | hosted API | OpenAI-compatible endpoint for chat and embeddings: a partner or self-hosted NIM for production volume. The hosted build.nvidia.com API allows about 40 requests per minute per key, shared by every model and by embeddings. |

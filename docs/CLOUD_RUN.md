@@ -95,7 +95,7 @@ gcloud run deploy learnit-api \
 - `ALLOWED_ORIGIN`: copy Render's value if it differs from the one shown. `^@^` makes `@` the separator, so the commas inside the value are kept.
 - Copy any other non-secret settings you set on Render (`AI_MONTHLY_TOKEN_BUDGET`, `RATE_*`) the same way.
 - `--min-instances=1 --no-cpu-throttling`: one instance always on, with CPU between requests, so background jobs keep running.
-- `--max-instances=4`: with `DB_POOL_MAX` 10, at most 40 pooled connections. Raise it after upgrading Supabase.
+- `--max-instances=4`: with `DB_POOL_MAX` 5, at most 20 client connections. That needs the **transaction** pooler (port 6543); the session pooler (port 5432) allows only 15 clients in total and refuses the rest with `EMAXCONNSESSION`, which shows up as random 500s.
 - `--timeout=3600`: long AI answers stream to the browser.
 
 ## 7. Check it

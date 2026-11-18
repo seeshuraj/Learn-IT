@@ -142,13 +142,16 @@ export function cosineSim(a: number[], b: number[]): number {
 }
 
 let reembedRunning = false;
-const REEMBED_LOCK = 'learnit.reembed_stale_chunks';
 
 /**
  * Re-embed chunks whose vectors came from a different model. Idempotent and
  * safe to call on every startup / cron tick: a no-op once everything is
- * current, guarded against overlap in-process and across instances by an
- * advisory lock, and capped per run to bound API cost.
+ * current, and capped per run to bound API cost.
+ *
+ * Each batch is claimed with FOR UPDATE SKIP LOCKED inside its own
+ * transaction, so several instances can run it at once without doing the
+ * same rows twice. This needs no session state, so it works through
+ * Supabase's transaction pooler (a session-level advisory lock would not).
  *
  * Returns the number of chunks re-embedded.
  */
@@ -158,18 +161,18 @@ export async function reembedStaleChunks(pool: Pool, embedder: Embedder, maxChun
   const client = await pool.connect();
   let done = 0;
   try {
-    const { rows: [lock] } = await client.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok', [REEMBED_LOCK]);
-    if (!lock?.ok) return 0;
-    try {
-      while (done < maxChunks) {
+    while (done < maxChunks) {
+      await client.query('BEGIN');
+      try {
         const { rows } = await client.query(
           `SELECT id, chunk_text FROM note_chunks
            WHERE embedding_model IS DISTINCT FROM $1 AND coalesce(chunk_text, '') <> ''
            ORDER BY id
-           LIMIT $2`,
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED`,
           [embedder.model, Math.min(EMBED_BATCH_SIZE, maxChunks - done)]
         );
-        if (!rows.length) break;
+        if (!rows.length) { await client.query('COMMIT'); break; }
         const vectors = await embedder.embed(rows.map((r: any) => r.chunk_text), 'passage');
         await client.query(
           `UPDATE note_chunks nc
@@ -178,10 +181,12 @@ export async function reembedStaleChunks(pool: Pool, embedder: Embedder, maxChun
            WHERE nc.id = v.id`,
           [embedder.model, rows.map((r: any) => r.id), vectors.map(v => `[${v.join(',')}]`)]
         );
+        await client.query('COMMIT');
         done += rows.length;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
       }
-    } finally {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [REEMBED_LOCK]);
     }
     if (done) log.info('re-embedded stale chunks', { count: done, model: embedder.model });
     return done;

@@ -207,9 +207,11 @@ const isProduction = process.env.NODE_ENV === "production";
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  // Size to the database plan: keep (instances × DB_POOL_MAX) under the
-  // connection limit, or point DATABASE_URL at the Supabase pooler.
-  max: Math.max(1, Number(process.env.DB_POOL_MAX) || 10),
+  // Supabase's session pooler allows 15 clients in total on this plan, shared by
+  // every API instance (and anything else connected). Keep
+  // (instances × DB_POOL_MAX) under it; 5 per instance leaves room for a
+  // rolling deploy (old + new revision) plus one spare.
+  max: Math.max(1, Number(process.env.DB_POOL_MAX) || 5),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
