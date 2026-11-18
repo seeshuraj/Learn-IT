@@ -99,3 +99,16 @@ jobs:
         run: |
           gcloud run services update-traffic "$SERVICE" \
             --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --to-latest --quiet
+
+      # Each deploy tags its revision (sha-xxxxxxx) for the pre-traffic health
+      # check. Drop the older tags so they don't pile up; the revisions stay
+      # (scaled to zero) for rollback.
+      - name: Remove older revision tags
+        run: |
+          KEEP="sha-${GITHUB_SHA::7}"
+          OLD=$(gcloud run services describe "$SERVICE" --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --format=json \
+                | jq -r --arg keep "$KEEP" '[.status.traffic[] | select(.tag != null and .tag != $keep) | .tag] | join(",")')
+          if [ -n "$OLD" ]; then
+            gcloud run services update-traffic "$SERVICE" \
+              --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" --remove-tags "$OLD" --quiet
+          fi
