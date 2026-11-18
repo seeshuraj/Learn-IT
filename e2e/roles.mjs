@@ -461,6 +461,11 @@ async function publicSite(browser) {
     'title names LearnIT Analytics': /<title>[^<]*LearnIT Analytics/.test(raw),
     'canonical link': raw.includes('<link rel="canonical" href="https://www.learnitanalytics.com/"'),
     'structured data': raw.includes('application/ld+json'),
+    'meta description 50–160 characters': (() => {
+      const d = raw.match(/<meta name="description" content="([^"]*)"/)?.[1]?.replace(/&#39;/g, "'") ?? '';
+      return d.length >= 50 && d.length <= 160;
+    })(),
+    'exactly one <h1>': (raw.match(/<h1[\s>]/g) ?? []).length === 1,
   };
   const missing = Object.entries(want).filter(([, ok]) => !ok).map(([k]) => k);
   if (missing.length) fail('public / (HTML source)', `missing: ${missing.join(', ')}`);
