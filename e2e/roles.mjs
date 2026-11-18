@@ -537,7 +537,81 @@ async function publicSite(browser) {
   await context.close();
 }
 
-export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard };
+/**
+ * Class enrolment: a student (e.g. lateral entry into 2nd year) gets their
+ * department's courses for the current semester; a professor can teach in
+ * two departments; hand-made enrolments are never withdrawn.
+ */
+async function classEnrolment(browser) {
+  const admin = await signIn(browser, 'admin');
+  const { page } = admin;
+  const ok = (r, what) => { if (r.status >= 300) fail('class enrolment setup', `${what} → ${r.status} ${JSON.stringify(r.body)}`); return r.body; };
+  ok(await jsonAs(page, 'POST', '/api/admin/settings', { key: 'current_term', value: 'odd' }), 'term');
+  const bad = await jsonAs(page, 'POST', '/api/admin/settings', { key: 'current_term', value: 'summer' });
+  if (bad.status === 422) pass('class enrolment', 'term setting accepts only odd, even or auto'); else fail('class enrolment', `bad term → ${bad.status}`);
+
+  const { rows: [cse] } = await db.query(`select id from departments where code = 'COMPUTERSCIENCE'`);
+  const ece = ok(await jsonAs(page, 'POST', '/api/admin/departments', { code: 'E2EECE', name: 'E2E Electronics' }), 'department');
+  const csCourse = ok(await jsonAs(page, 'POST', '/api/admin/courses', { code: 'E2E-CS301', name: 'E2E Data Structures', instructor_id: 4 }), 'CSE course');
+  const ecCourse = ok(await jsonAs(page, 'POST', '/api/admin/courses', { code: 'E2E-EC301', name: 'E2E Signals', instructor_id: 4 }), 'ECE course');
+  ok(await jsonAs(page, 'PATCH', `/api/admin/courses/${csCourse.id}/placement`, { department_id: cse.id, semester: 3 }), 'place CSE');
+  ok(await jsonAs(page, 'PATCH', `/api/admin/courses/${ecCourse.id}/placement`, { department_id: ece.id, semester: 3 }), 'place ECE');
+
+  // Lateral entry: a new 2nd-year CSE student.
+  const stu = ok(await jsonAs(page, 'POST', '/api/admin/users', { name: 'E2E Lateral Student', email: 'lateral@e2e.test', role: 'student', year: 2, major: 'COMPUTERSCIENCE' }), 'student');
+  const enrolments = async () => (await db.query(
+    `select c.code, e.source, e.id from enrollments e join courses c on c.id = e.course_id where e.student_id = $1 order by c.code`, [stu.id])).rows;
+  let rows = await enrolments();
+  if (rows.length === 1 && rows[0].code === 'E2E-CS301' && rows[0].source === 'auto') pass('class enrolment', 'a new 2nd-year CSE student gets the CSE semester 3 course, not the ECE one');
+  else fail('class enrolment', `new student enrolments: ${JSON.stringify(rows)}`);
+  const { rows: [note] } = await db.query(`select message from notifications where user_id = $1 and type = 'enrollment_confirmed'`, [stu.id]);
+  if (note?.message?.includes('E2E-CS301')) pass('class enrolment', `student notified: “${note.message}”`); else fail('class enrolment', 'student not notified');
+
+  // An admin can't remove a class enrolment by hand; a manual one is kept.
+  const del = await jsonAs(page, 'DELETE', `/api/admin/enrollments/${rows[0].id}`);
+  if (del.status === 409) pass('class enrolment', 'removing a class enrolment by hand is refused with a reason'); else fail('class enrolment', `delete auto → ${del.status}`);
+  ok(await jsonAs(page, 'POST', '/api/admin/enrollments', { course_id: ecCourse.id, student_id: stu.id }), 'manual enrol');
+
+  // Next year (3rd year, odd term → semester 5): the semester 3 course is
+  // withdrawn, CSE's semester 5 course (CS3200 in the seed) is added, and
+  // the hand-made enrolment stays.
+  ok(await jsonAs(page, 'PUT', `/api/admin/users/${stu.id}`, { year: 3 }), 'year 3');
+  rows = await enrolments();
+  const now3 = rows.map(r => `${r.code}:${r.source}`).join(',');
+  if (now3 === 'CS3200:auto,E2E-EC301:manual') pass('class enrolment', 'moving to 3rd year swaps the class courses and keeps the hand-made one');
+  else fail('class enrolment', `after year change: ${now3}`);
+
+  // Back to year 2, then re-placing the course moves it with its class.
+  ok(await jsonAs(page, 'PUT', `/api/admin/users/${stu.id}`, { year: 2 }), 'year 2');
+  ok(await jsonAs(page, 'PATCH', `/api/admin/courses/${csCourse.id}/placement`, { semester: 5 }), 'replace');
+  rows = await enrolments();
+  if (!rows.some(r => r.code === 'E2E-CS301')) pass('class enrolment', 'a course moved to another semester leaves the old class'); else fail('class enrolment', `after re-placing: ${JSON.stringify(rows)}`);
+  ok(await jsonAs(page, 'PATCH', `/api/admin/courses/${csCourse.id}/placement`, { semester: 3 }), 'place back');
+  const sync = ok(await jsonAs(page, 'POST', '/api/admin/class-enrolments/sync'), 'sync');
+  if (sync && typeof sync.added === 'number') pass('class enrolment', `sync button: ${sync.added} added, ${sync.removed} withdrawn`);
+
+  // Even semester: year 2 means semester 4, so the semester 3 course goes.
+  const even = ok(await jsonAs(page, 'POST', '/api/admin/settings', { key: 'current_term', value: 'even' }), 'even');
+  rows = await enrolments();
+  if (!rows.some(r => r.code === 'E2E-CS301') && even?.enrolments) pass('class enrolment', 'switching to the even semester moves classes on');
+  else fail('class enrolment', `after even term: ${JSON.stringify(rows)}`);
+  await jsonAs(page, 'POST', '/api/admin/settings', { key: 'current_term', value: 'auto' });
+
+  // The Settings page shows the semester choice.
+  await page.goto(`${APP}/admin/settings`);
+  await expectText(page, 'admin settings', 'Current semester');
+  await admin.context.close();
+
+  // One professor, courses in two departments.
+  const prof = await signIn(browser, 'professor');
+  const mine = await jsonAs(prof.page, 'GET', '/api/courses');
+  const codes = (mine.body ?? []).map(c => c.code);
+  if (codes.includes('E2E-CS301') && codes.includes('E2E-EC301')) pass('professor', 'teaches courses in two departments and sees both');
+  else fail('professor', `courses: ${JSON.stringify(codes)}`);
+  await prof.context.close();
+}
+
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment };
 
 async function main() {
   const browser = await chromium.launch();

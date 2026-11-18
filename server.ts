@@ -70,6 +70,7 @@ import { createGradingRouter } from "./src/server/routes/grading.js";
 import { createUserImportRouter } from "./src/server/routes/userImport.js";
 import { generateTempPassword } from "./src/server/lib/tempPassword.js";
 import { notify } from "./src/server/lib/notify.js";
+import { syncClassEnrolments, readTermSetting, TERM_SETTING_KEY } from "./src/server/lib/classEnrolment.js";
 import { sendServerError } from './src/server/lib/httpErrors.js';
 import { log, errorFields } from './src/server/lib/log.js';
 import { TtlCache } from './src/server/lib/ttlCache.js';
@@ -1480,6 +1481,22 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
+  /**
+   * Give students their class's courses after something that decides them
+   * changed (student added or edited, course placed, term changed). Never
+   * fails the request that triggered it: the next sync fixes any miss.
+   */
+  async function syncClass(institutionId: string, scope: { studentIds?: number[]; courseIds?: number[] }, why: string) {
+    try {
+      const r = await syncClassEnrolments(pool, institutionId, scope);
+      if (r.added || r.removed) log.info("class enrolments synced", { why, added: r.added, removed: r.removed });
+      return r;
+    } catch (err) {
+      log.error("class enrolment sync failed (non-fatal)", { why, ...errorFields(err) });
+      return null;
+    }
+  }
+
   app.post("/api/admin/users", requireAuth, requireRole("admin"), validateBody(adminUserCreateSchema), async (req, res) => {
     try {
       const { name, email, role, year, major, gpa } = req.body;
@@ -1492,6 +1509,7 @@ async function startServer() {
         password: tempPassword, forcePasswordChange: true,
       });
       log.info("user created by admin", { userId });
+      if (role === "student") await syncClass(institutionId, { studentIds: [userId] }, "student added");
       const created = await queryOne(
         "SELECT id, name, email, role, active, year, major, gpa FROM users WHERE id = $1", [userId]
       );
@@ -1570,6 +1588,10 @@ async function startServer() {
         // Role or status changed: stop serving the cached membership on this
         // instance now (other instances pick it up within AUTH_CACHE_TTL_MS).
         clearMembershipCache();
+        // Department, year, role or status may have changed the student's class.
+        if (major !== undefined || year != null || role || active != null) {
+          await syncClass(caller.institutionId, { studentIds: [targetId] }, "student edited");
+        }
         res.json(user.rows[0]);
       } catch (err: any) {
         await client.query("ROLLBACK");
@@ -1631,6 +1653,9 @@ async function startServer() {
   app.post("/api/admin/settings", requireAuth, requireRole("admin"), validateBody(settingsSchema), async (req, res) => {
     try {
       const { key, value } = req.body;
+      if (key === TERM_SETTING_KEY && readTermSetting(value) !== String(value).trim().toLowerCase()) {
+        return res.status(422).json({ error: "Current term must be odd, even or auto" });
+      }
       await run(
         `INSERT INTO settings (institution_id, key, value) VALUES ($1,$2,$3)
          ON CONFLICT (institution_id, key) DO UPDATE SET value = EXCLUDED.value`,
@@ -1639,6 +1664,10 @@ async function startServer() {
       const a = (req as AuthenticatedRequest).auth;
       writeAudit({ action: "settings.update", resourceType: "setting", resourceId: String(key),
         actorUserId: a.legacyUserId, actorEmail: a.email, actorRole: a.role, metadata: { key, value: String(value).slice(0, 40) }, req });
+      if (key === TERM_SETTING_KEY) {
+        const r = await syncClass(callerOf(req).institutionId, {}, "term changed");
+        return res.json({ success: true, enrolments: r });
+      }
       res.json({ success: true });
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1688,11 +1717,22 @@ async function startServer() {
     }
   });
 
+  // Re-check every student's class now (e.g. at the start of a semester).
+  app.post("/api/admin/class-enrolments/sync", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const r = await syncClassEnrolments(pool, callerOf(req).institutionId);
+      const a = (req as AuthenticatedRequest).auth;
+      writeAudit({ action: "enrollment.class_sync", resourceType: "institution",
+        actorUserId: a.legacyUserId, actorEmail: a.email, actorRole: a.role, metadata: r, req });
+      res.json(r);
+    } catch (e: any) { sendServerError(res, e); }
+  });
+
   app.get("/api/admin/enrollments/:courseId", requireAuth, requireRole("admin"), validateParams(routeParamCourseId), async (req, res) => {
     try {
       await assertManagesCourse(pool, callerOf(req), Number(req.params.courseId));
       const enrollments = await query(
-        `SELECT e.id, e.student_id, e.course_id, e.enrolled_at,
+        `SELECT e.id, e.student_id, e.course_id, e.enrolled_at, e.source,
                 u.name, u.email, u.name AS student_name, u.email AS student_email
          FROM enrollments e JOIN users u ON e.student_id=u.id
          WHERE e.course_id=$1 AND e.institution_id=$2
@@ -1711,12 +1751,17 @@ async function startServer() {
       if (!(await isMemberOfInstitution(pool, caller, student_id, "student"))) {
         return res.status(400).json({ error: "student_id is not a student in this institution" });
       }
+      // A hand-made enrolment is 'manual' and stays even if the student's class
+      // changes; enrolling someone who already has the course through their
+      // class keeps the course for them the same way.
       const enrollment = await queryOne(
-        "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING *",
+        `INSERT INTO enrollments (course_id, student_id, source) VALUES ($1, $2, 'manual')
+         ON CONFLICT (course_id, student_id) DO UPDATE SET source = 'manual'
+         RETURNING *, (xmax = 0) AS inserted`,
         [course_id, student_id]
       );
-      if (enrollment) notify(pool, student_id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
-      res.status(201).json(enrollment ?? { message: "Already enrolled" });
+      if (enrollment?.inserted) notify(pool, student_id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
+      res.status(201).json(enrollment?.inserted ? enrollment : { ...enrollment, message: "Already enrolled" });
     } catch (e: any) { sendServerError(res, e); }
   });
 
@@ -1736,11 +1781,13 @@ async function startServer() {
         );
         if (!student) { results.push({ email, status: "not_found" }); continue; }
         const enrollment = await queryOne(
-          "INSERT INTO enrollments (course_id,student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING *",
+          `INSERT INTO enrollments (course_id, student_id, source) VALUES ($1, $2, 'manual')
+           ON CONFLICT (course_id, student_id) DO UPDATE SET source = 'manual'
+           RETURNING (xmax = 0) AS inserted`,
           [course_id, student.id]
         );
-        if (enrollment) notify(pool, student.id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
-        results.push({ email, status: enrollment ? "enrolled" : "already_enrolled" });
+        if (enrollment?.inserted) notify(pool, student.id, "enrollment_confirmed", "You have been enrolled in a new course.", { course_id });
+        results.push({ email, status: enrollment?.inserted ? "enrolled" : "already_enrolled" });
       }
       res.json(results);
     } catch (e: any) { sendServerError(res, e); }
@@ -1748,11 +1795,15 @@ async function startServer() {
 
   app.delete("/api/admin/enrollments/:id", requireAuth, requireRole("admin"), validateParams(routeParamId), async (req, res) => {
     try {
-      const { changes } = await run(
-        "DELETE FROM enrollments WHERE id=$1 AND institution_id=$2",
+      const found = await queryOne(
+        "SELECT source FROM enrollments WHERE id=$1 AND institution_id=$2",
         [req.params.id, callerOf(req).institutionId]
       );
-      if (!changes) return res.status(404).json({ error: "Enrollment not found" });
+      if (!found) return res.status(404).json({ error: "Enrollment not found" });
+      if (found.source === "auto") {
+        return res.status(409).json({ error: "This student has the course through their department and year. Change their department or year in User Management, or the course's department or semester." });
+      }
+      await run("DELETE FROM enrollments WHERE id=$1 AND institution_id=$2", [req.params.id, callerOf(req).institutionId]);
       res.json({ success: true });
     } catch (e: any) { sendServerError(res, e); }
   });
