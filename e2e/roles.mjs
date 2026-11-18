@@ -181,6 +181,11 @@ async function questionWiseMarks(browser) {
   try { await cell(1, 'Sarah Johnson').waitFor({ timeout: 10_000 }); pass('professor marks grid', 'shows one cell per question'); }
   catch { fail('professor marks grid', 'question cells did not appear'); await prof.context.close(); return; }
 
+  // The cells must look like inputs: bordered and narrow, not bare 190px fields.
+  const look = await cell(1, 'Sarah Johnson').evaluate(el => { const c = getComputedStyle(el); return { w: el.getBoundingClientRect().width, b: c.borderTopWidth }; });
+  if (look.w <= 90 && look.b !== '0px') pass('professor marks grid', `question cells styled (${Math.round(look.w)}px, border ${look.b})`);
+  else fail('professor marks grid', `question cells unstyled: ${JSON.stringify(look)}`);
+
   const sarah = { 1: '2', 2: '2', 3: '1.5', 4: '2', 5: '0', 6: '10b', 7: '12', 8: '11' };
   for (const [q, v] of Object.entries(sarah)) await cell(q, 'Sarah Johnson').fill(v);
   const row = page.getByRole('row', { name: /Sarah Johnson/ });
@@ -280,7 +285,20 @@ async function noticeBoard(browser) {
   await stu.context.close();
 }
 
-export const FLOWS = { allPages, courses, bell, questionWiseMarks, noticeBoard };
+/** The Notes page lists the modules of the courses each role can see. */
+async function notesModules(browser) {
+  for (const role of ['professor', 'student']) {
+    const { context, page } = await signIn(browser, role);
+    await page.goto(`${APP}/notes`);
+    await page.waitForLoadState('networkidle');
+    const none = await page.getByText('No modules found.').count();
+    if (none) fail(`${role} /notes`, 'shows "No modules found." although its courses have modules');
+    else pass(`${role} /notes`, 'lists course modules');
+    await context.close();
+  }
+}
+
+export const FLOWS = { notesModules, allPages, courses, bell, questionWiseMarks, noticeBoard };
 
 async function main() {
   const browser = await chromium.launch();

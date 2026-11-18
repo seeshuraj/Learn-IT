@@ -77,7 +77,8 @@ export default function NotesPage({ user }: Props) {
   async function loadData() {
     setLoading(true);
     try {
-      const courses = await api.getStudentCourses(user.id).catch(() => []);
+      // Role-scoped: a student's enrolled courses, a professor's own courses.
+      const courses = await api.getCourses().catch(() => []);
       const courseList: any[] = Array.isArray(courses) ? courses : [];
       // Modules of every course and the notes list load in parallel, not one after another.
       const [moduleLists, notesData] = await Promise.all([

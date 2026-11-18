@@ -404,7 +404,7 @@ export function MarksGrid({ exam, onCountsChange }: {
                             aria-invalid={bad} value={v} disabled={r.absent} maxLength={6}
                             onChange={e => editQ(sid, q.no, e.target.value)} onKeyDown={e => moveQ(e, i, `q:${q.no}`)}
                             onBlur={() => void save()}
-                            className={`CELL min-w-[2.75rem] ${bad ? 'border-red-400 bg-red-50 text-red-800' : ''}`} />
+                            className={`w-full rounded-md border border-slate-200 bg-white px-1 py-1.5 text-center tabular-nums focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 disabled:bg-slate-100 disabled:text-slate-400 min-w-[2.75rem] ${bad ? 'border-red-400 bg-red-50 text-red-800' : ''}`} />
                         </td>
                       );
                     })}

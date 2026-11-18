@@ -215,6 +215,8 @@ function AssessmentDetail({ exam, courses, onBack, onChange, onDeleted }: {
           <p className="text-sm text-slate-600">
             Out of {fmtNum(exam.max_marks)}
             {isSplit(exam) && ` (internal ${fmtNum(exam.internal_max)} + external ${fmtNum(exam.external_max)})`}
+            {exam.counted_out_of != null && ` · counts as ${fmtNum(exam.counted_out_of)}`}
+            {exam.question_pattern && ` · question-wise (${exam.question_pattern.parts.map(p => p.key).join(', ')})`}
             {exam.credits != null && ` · ${fmtNum(exam.credits)} credits`}
             {exam.semester != null && ` · semester ${exam.semester}`}
           </p>
