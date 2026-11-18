@@ -44,3 +44,24 @@ export async function resolveDepartmentId(
 
 /** Year of study for a semester: 1–2 → 1, 3–4 → 2… */
 export const yearOfSemester = (semester: number) => Math.ceil(semester / 2);
+
+export type Placement =
+  | { hasDept: boolean; dept: number | null; hasSem: boolean; sem: number | null }
+  | { error: string };
+
+/**
+ * A course placement edit. Only the fields sent change; a field that isn't
+ * sent is never turned into a value (an earlier version sent NaN to Postgres).
+ */
+export function readPlacement(body: any): Placement {
+  const b = body ?? {};
+  const hasDept = b.department_id !== undefined;
+  const hasSem = b.semester !== undefined;
+  if (!hasDept && !hasSem) return { error: 'Nothing to change' };
+  const blank = (v: unknown) => v === null || v === '';
+  const dept = hasDept && !blank(b.department_id) ? Number(b.department_id) : null;
+  const sem = hasSem && !blank(b.semester) ? Number(b.semester) : null;
+  if (dept !== null && !(Number.isInteger(dept) && dept > 0)) return { error: 'Invalid department' };
+  if (sem !== null && !(Number.isInteger(sem) && sem >= 1 && sem <= 12)) return { error: 'Semester must be 1–12' };
+  return { hasDept, dept, hasSem, sem };
+}
