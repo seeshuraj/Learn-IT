@@ -982,6 +982,30 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
+  /**
+   * Tell a course's active students that an assignment was posted. One insert,
+   * no per-student round trips. Drafts (status other than 'active') are skipped.
+   */
+  async function notifyAssignmentPosted(a: { id: number; module_id: number; title: string; due_date: string | null; status?: string | null }) {
+    if (a.status && a.status !== "active") return;
+    const due = /^\d{4}-\d{2}-\d{2}/.test(a.due_date ?? "")
+      ? new Date(`${a.due_date!.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" })
+      : null;
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, message, metadata)
+       SELECT e.student_id, 'new_assignment',
+              coalesce(c.code || ' · ', '') || 'New assignment: ' || $2 || coalesce(' (due ' || $3 || ')', ''),
+              jsonb_build_object('course_id', c.id, 'assignment_id', $4::int)
+       FROM modules m
+       JOIN courses c ON c.id = m.course_id
+       JOIN enrollments e ON e.course_id = c.id
+       JOIN institution_members im ON im.user_id = e.student_id AND im.institution_id = c.institution_id
+        AND im.role = 'student' AND im.status = 'active'
+       WHERE m.id = $1`,
+      [a.module_id, a.title, due, a.id]
+    ).catch(err => log.error("assignment notification failed (non-fatal)", { assignment_id: a.id, ...errorFields(err) }));
+  }
+
   app.post("/api/modules/:id/assignments", requireAuth, requireRole("instructor","admin"), validateParams(routeParamId), validateBody(assignmentCreateSchema), async (req, res) => {
     try {
       await assertManagesCourse(pool, callerOf(req), await courseOfModule(pool, Number(req.params.id)));
@@ -991,6 +1015,7 @@ async function startServer() {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [req.params.id, title, description, due_date, max_points, rubric, status]
       );
+      await notifyAssignmentPosted(assignment);
       res.status(201).json(assignment);
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1254,6 +1279,7 @@ async function startServer() {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [module_id, title, description, due_date, max_points, rubric, status]
       );
+      await notifyAssignmentPosted(assignment);
       res.status(201).json(assignment);
     } catch (e: any) { sendServerError(res, e); }
   });
