@@ -48,6 +48,9 @@ jobs:
             exit 1
           fi
 
+      - name: Typecheck (client)
+        run: npm run lint
+
       - name: Unit tests
         run: npm test
 
@@ -146,6 +149,9 @@ jobs:
           echo "::error::stack did not start"; tail -50 api.log mock.log web.log; exit 1
       - name: Run end-to-end checks
         run: node e2e/roles.mjs
+      - name: Tenant isolation (API, grants, RLS)
+        if: always()
+        run: node e2e/tenancy.mjs
       - name: Report
         if: always()
         run: |
