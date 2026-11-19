@@ -624,7 +624,9 @@ async function noDeadEnds(browser) {
   } catch { fail('search', `student search did not open the course (at ${stu.page.url()})`); }
   const leak = await jsonAs(stu.page, 'GET', '/api/search?q=CS');
   const codes = (leak.body?.courses ?? []).map(c => c.code);
-  if (leak.status === 200 && !(leak.body?.people ?? []).length && codes.every(c => ['CS3200'].includes(c)))
+  const { rows: mine } = await db.query(`select c.code from enrollments e join courses c on c.id = e.course_id where e.student_id = 2`);
+  const enrolled = new Set(mine.map(r => r.code));
+  if (leak.status === 200 && !(leak.body?.people ?? []).length && codes.length && codes.every(c => enrolled.has(c)))
     pass('search', `student sees only their own courses (${codes.join(', ') || 'none'}) and no people`);
   else fail('search', `student search scope: ${JSON.stringify(leak.body)}`);
 
@@ -670,7 +672,10 @@ async function noDeadEnds(browser) {
   try {
     const heading = prof.page.getByRole('heading', { name: 'Upload Module Notes' });
     await heading.waitFor({ timeout: 6000 });
-    const chosen = await heading.locator('xpath=ancestor::*[.//select][1]').locator('select').first().inputValue();
+    const courseSelect = heading.locator('xpath=ancestor::*[.//select][1]').locator('select').first();
+    // The course list loads after the dialog opens.
+    await courseSelect.locator('option[value="2"]').waitFor({ state: 'attached', timeout: 6000 });
+    const chosen = await courseSelect.inputValue();
     if (chosen === '2') pass('course page', '“Upload notes” opens the upload dialog with the course chosen');
     else fail('course page', `upload dialog course = ${chosen}`);
   } catch { fail('course page', '“Upload notes” did not open the upload dialog'); }
@@ -692,7 +697,7 @@ async function noDeadEnds(browser) {
   try {
     await admin.page.getByRole('option', { name: /Sarah/ }).first().click({ timeout: 6000 });
     await admin.page.waitForURL(/\/admin\/users\?q=/, { timeout: 5000 });
-    await expectText(admin.page, 'admin search', 'sarah@');
+    await admin.page.locator('text=sarah@ >> visible=true').first().waitFor({ timeout: 8000 });
     pass('search', 'admin finds a person and opens User Management filtered to them');
   } catch { fail('search', `admin person search failed (at ${admin.page.url()})`); }
   // Admin on a course page: no links to pages admins don't have.
