@@ -93,6 +93,12 @@ export const moduleCreateSchema = z.object({
 });
 
 // ── AI ────────────────────────────────────────────────────────────────────
+// Text-only grading suggestion: both fields are interpolated into the prompt.
+export const aiGradeTextSchema = z.object({
+  submissionContent: z.string().trim().min(1).max(20000),
+  rubric:            z.string().trim().max(10000).nullish().transform(v => v ?? ''),
+}).strict();
+
 export const gradePdfSchema = z.object({
   submission_id: positiveId,
   rubric:        z.string().max(10000).optional(),

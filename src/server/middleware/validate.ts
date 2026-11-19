@@ -11,8 +11,8 @@ import { ZodSchema, ZodError } from 'zod';
 function formatError(err: ZodError) {
   return {
     error:  'Validation error',
-    issues: err.errors.map(e => ({
-      path:    e.path.join('.'),
+    issues: err.issues.map(e => ({
+      path:    e.path.map(String).join('.'),
       message: e.message,
     })),
   };

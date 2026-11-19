@@ -8,6 +8,10 @@ import { NewPasswordForm } from "../components/brand/NewPasswordForm";
 
 // Captured at module load: supabase-js strips the URL hash once it has read the recovery tokens.
 const initialHash = typeof window !== "undefined" ? window.location.hash : "";
+const initialSearch = typeof window !== "undefined" ? window.location.search : "";
+// A recovery link carries tokens in the hash (implicit flow) or a code in the query (PKCE).
+const hasRecoveryParams =
+  /access_token=|type=recovery/.test(initialHash) || /[?&](code|token_hash)=/.test(initialSearch);
 
 type Status = "checking" | "ready" | "invalid";
 
@@ -26,7 +30,11 @@ export default function ResetPasswordPage() {
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY" || session) settle("ready");
     });
-    supabase.auth.getSession().then(({ data }) => { if (data.session) settle("ready"); });
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) settle("ready");
+      // Opened without a link token and not signed in: nothing to wait for.
+      else if (!hasRecoveryParams) settle("invalid");
+    });
     const timer = window.setTimeout(() => settle("invalid"), 10000);
 
     return () => { sub.subscription.unsubscribe(); window.clearTimeout(timer); };

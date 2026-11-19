@@ -18,4 +18,5 @@ for f in supabase/migrations/*.sql; do
     || { echo "migration failed: $f"; exit 1; }
 done
 psql "$PGURL" -q -v ON_ERROR_STOP=1 -f e2e/seed.sql
+psql "$PGURL" -q -v ON_ERROR_STOP=1 -1 -f e2e/seed-tenant-b.sql
 echo "e2e database ready ($i migrations)"
