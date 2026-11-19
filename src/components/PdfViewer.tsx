@@ -9,13 +9,12 @@ import React, { useEffect, useRef, useState } from "react";
  * drawn to canvases at the container's width, rendered lazily as they scroll
  * into view, and re-rendered when the width changes (rotation, split view).
  *
- * pdf.js is loaded from cdnjs (pinned version) only when a PDF is opened, so
- * it costs nothing on other pages. If it can't load, `onUnavailable` lets the
- * caller fall back to the browser's own viewer.
+ * pdf.js (pdfjs-dist, pinned) is bundled and served from our own origin, but
+ * loaded only when a PDF is opened, so it costs nothing on other pages and
+ * doesn't depend on a third-party CDN that a college network may block. If it
+ * can't load, `onUnavailable` lets the caller fall back to the browser's own
+ * viewer.
  */
-
-const PDFJS_VERSION = "4.10.38";
-const PDFJS_BASE = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
 
 type PdfJs = {
   getDocument: (src: { data: ArrayBuffer }) => { promise: Promise<PdfDoc>; destroy: () => Promise<void> };
@@ -30,9 +29,12 @@ type PdfPage = {
 let pdfjsPromise: Promise<PdfJs> | null = null;
 function loadPdfJs(): Promise<PdfJs> {
   if (!pdfjsPromise) {
-    pdfjsPromise = import(/* @vite-ignore */ `${PDFJS_BASE}/pdf.min.mjs`).then((m: any) => {
-      const lib = (m?.getDocument ? m : m?.default ?? (globalThis as any).pdfjsLib) as PdfJs;
-      lib.GlobalWorkerOptions.workerSrc = `${PDFJS_BASE}/pdf.worker.min.mjs`;
+    pdfjsPromise = Promise.all([
+      import("pdfjs-dist/build/pdf.min.mjs"),
+      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+    ]).then(([m, worker]) => {
+      const lib = ((m as any)?.getDocument ? m : (m as any).default) as unknown as PdfJs;
+      lib.GlobalWorkerOptions.workerSrc = worker.default;
       return lib;
     });
     pdfjsPromise.catch(() => { pdfjsPromise = null; });   // allow a retry later

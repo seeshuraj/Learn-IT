@@ -627,7 +627,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
   useEffect(() => {
     loadSubmissions();
-    api.getInstructorCourses(user.id)
+    api.getInstructorCourses()
       .then((d: any) => setCourses(Array.isArray(d) ? d : []))
       .catch(() => {});
   }, [user.id]);
