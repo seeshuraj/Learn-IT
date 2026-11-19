@@ -693,11 +693,11 @@ async function noDeadEnds(browser) {
   // ── Admin: search finds people and opens User Management filtered ──
   const admin = await signIn(browser, 'admin');
   await admin.page.goto(`${APP}/`);
-  await admin.page.getByRole('combobox', { name: 'Search' }).fill('sarah');
+  await admin.page.getByRole('combobox', { name: 'Search' }).fill('Sarah Johnson');
   try {
-    await admin.page.getByRole('option', { name: /Sarah/ }).first().click({ timeout: 6000 });
+    await admin.page.getByRole('option', { name: /Sarah Johnson/ }).first().click({ timeout: 6000 });
     await admin.page.waitForURL(/\/admin\/users\?q=/, { timeout: 5000 });
-    await admin.page.locator('text=sarah@ >> visible=true').first().waitFor({ timeout: 8000 });
+    await admin.page.locator('text=Sarah Johnson >> visible=true').first().waitFor({ timeout: 8000 });
     pass('search', 'admin finds a person and opens User Management filtered to them');
   } catch { fail('search', `admin person search failed (at ${admin.page.url()})`); }
   // Admin on a course page: no links to pages admins don't have.
