@@ -31,6 +31,11 @@ Consequences until the history is repaired:
   older files as unapplied and re-run them. Apply new migrations with the
   Supabase MCP connector (`apply_migration`) or the SQL editor, then rename the
   new file here to the version production recorded (`list_migrations`).
+- `20261119120000_rls_tenant_isolation_and_lockdown.sql` was run from the
+  SQL Editor on 2026-11-19 (the connector's confirmation kept timing out), so
+  production's `schema_migrations` has no row for it even though it is applied.
+  Verified afterwards: 31 `tenant_isolation` policies, no `anon`/`authenticated`
+  table privileges, helpers `SECURITY DEFINER`. Include it when repairing.
 - To repair, mark each file as applied with
   `supabase migration repair --status applied <file-version>` and revert the
   remote-only versions with `--status reverted <remote-version>`, then check
