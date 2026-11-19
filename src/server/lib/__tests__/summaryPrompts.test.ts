@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyticsSummaryMessages } from '../summaryPrompts.js';
+import { analyticsSummaryMessages, classOverviewMessages } from '../summaryPrompts.js';
 
 const a = {
   studentName: 'Sarah Johnson', overallAverage: 83.5, submissionRate: 67,
@@ -21,4 +21,22 @@ test('staff get "this student", also without the name', () => {
   const all = m.map(x => x.content).join('\n');
   assert.match(m[0].content, /this student/);
   assert.doesNotMatch(all, /Sarah|Johnson/);
+});
+
+test('class overview sends labels, not student names, and restores names in the reply', () => {
+  const { messages, restoreNames } = classOverviewMessages({
+    courseName: 'Database Systems', classAverage: 71,
+    students: [
+      { name: 'Sarah Johnson', average: 83, missed: 0, status: 'On track' },
+      { name: 'Michael Chen', average: 41, missed: 3, status: 'At risk' },
+    ],
+  });
+  const all = messages.map(x => x.content).join('\n');
+  assert.doesNotMatch(all, /Sarah|Johnson|Michael|Chen/);
+  assert.match(all, /S1: avg 83%, missed 0/);
+  assert.match(all, /S2: avg 41%, missed 3, status: At risk/);
+  assert.equal(
+    restoreNames('**S2** is at risk; **S1** leads. S3 and S10 are unknown.'),
+    '**Michael Chen** is at risk; **Sarah Johnson** leads. S3 and S10 are unknown.',
+  );
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aiChatSchema, gradeSchema, analyticsSummarySchema } from '../schemas.js';
+import { aiChatSchema, gradeSchema, analyticsSummarySchema, aiGradeTextSchema } from '../schemas.js';
 
 test('AI chat rejects client-supplied system turns and unknown fields', () => {
   const ok = aiChatSchema.safeParse({ question: 'What is backprop?', moduleId: 1, history: [{ role: 'user', content: 'hi' }] });
@@ -25,4 +25,14 @@ test('analytics summary payloads are bounded and coerce pg numeric strings', () 
   assert.equal(analyticsSummarySchema.safeParse({ analytics: { ...base, overallAverage: 'NaN' } }).success, false);
   assert.equal(analyticsSummarySchema.safeParse({ analytics: { ...base, studentName: 'x'.repeat(121) } }).success, false);
   assert.equal(analyticsSummarySchema.safeParse({ analytics: base, extra: true }).success, false);
+});
+
+test('aiGradeTextSchema requires submission text, bounds sizes, tolerates a null rubric', () => {
+  assert.equal(aiGradeTextSchema.safeParse({}).success, false);
+  assert.equal(aiGradeTextSchema.safeParse({ submissionContent: '   ' }).success, false);
+  assert.equal(aiGradeTextSchema.safeParse({ submissionContent: 'x'.repeat(20001) }).success, false);
+  assert.equal(aiGradeTextSchema.safeParse({ submissionContent: 'ok', extra: 1 }).success, false);
+  const r = aiGradeTextSchema.safeParse({ submissionContent: 'my answer', rubric: null });
+  assert.ok(r.success);
+  assert.deepEqual(r.data, { submissionContent: 'my answer', rubric: '' });
 });
