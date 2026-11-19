@@ -556,6 +556,12 @@ export function createUnitExamsRouter(
           return res.status(409).json({ error: 'Unpublish the results before deleting this assessment' });
         }
         const removed = await inTransaction(async client => {
+          // Study plans built for this assessment, or told it was scheduled,
+          // now say it was cancelled instead of pointing at something gone.
+          await client.query(
+            `UPDATE student_roadmaps SET stale_reason = left($3 || ' was cancelled', 200), stale_since = now()
+             WHERE course_id = $1 AND (target_unit_exam_id = $2 OR stale_reason LIKE $3 || ' %')`,
+            [exam.course_id, exam.id, exam.title]);
           const r = await client.query('DELETE FROM unit_exam_results WHERE unit_exam_id = $1', [exam.id]);
           await client.query('DELETE FROM unit_exams WHERE id = $1', [exam.id]);
           return r.rowCount ?? 0;

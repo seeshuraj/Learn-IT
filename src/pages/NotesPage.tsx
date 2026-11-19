@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { ChatBot } from '../components/ChatBot';
 import { PdfViewer } from '../components/PdfViewer';
 import { api, API_BASE } from '../services/api';
@@ -96,7 +97,11 @@ export default function NotesPage({ user }: Props) {
       const fetchedNotes: Note[] = Array.isArray(notesData) ? notesData : [];
       setNotes(fetchedNotes);
 
-      if (fetchedNotes.length > 0) {
+      // ?module=ID (from search) opens that module.
+      const fromUrl = Number(new URLSearchParams(window.location.search).get('module'));
+      if (fromUrl && allModules.some(m => m.id === fromUrl)) {
+        setSelectedModuleId(fromUrl);
+      } else if (fetchedNotes.length > 0) {
         setSelectedModuleId(prev => prev ?? fetchedNotes[0].module_id);
       } else if (allModules.length > 0) {
         setSelectedModuleId(prev => prev ?? allModules[0].id);
@@ -211,13 +216,21 @@ export default function NotesPage({ user }: Props) {
 
   return (
     <div className={`max-w-5xl mx-auto px-4 py-8 ${besideChat}`}>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-800">Course Notes</h1>
-        <p className="text-slate-500 text-sm mt-1">
-          {isInstructor
-            ? 'Use the Upload Notes button on the dashboard to add lecture materials.'
-            : 'Lecture notes and materials uploaded by your instructor.'}
-        </p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Course Notes</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            {isInstructor ? 'Lecture notes and materials for your courses.' : 'Lecture notes and materials uploaded by your instructor.'}
+          </p>
+        </div>
+        {isInstructor && (
+          <Link
+            to="/?upload=notes"
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+          >
+            Upload notes
+          </Link>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">

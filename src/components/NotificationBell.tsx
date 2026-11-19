@@ -7,7 +7,8 @@ function linkFor(n: Notification): string | null {
   const m = n.metadata ?? {};
   if (n.type === "marks_published") return "/marks";
   if (n.type === "exam_schedule") return "/exams";
-  if (n.type === "new_assignment" || n.type === "grade_posted") return "/assignments";
+  if (n.type === "new_assignment" || n.type === "grade_posted" || n.type === "submission_received") return "/assignments";
+  if (n.type === "new_submission") return "/";  // the professor's grading queue
   if (typeof m.course_id === "number") return `/courses/${m.course_id}`;
   return null;
 }
@@ -96,6 +97,7 @@ const NotificationBell: React.FC = () => {
     if (type === "marks_published") return "📊";
     if (type === "exam_schedule") return "🗓️";
     if (type === "course_notice") return "📌";
+    if (type === "new_submission" || type === "submission_received") return "📥";
     return "🔔";
   };
 

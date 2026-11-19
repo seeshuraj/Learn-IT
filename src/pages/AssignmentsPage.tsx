@@ -43,7 +43,12 @@ export default function AssignmentsPage({ user }: Props) {
     setLoading(true);
     try {
       const data = await api.getStudentAssignments(user.id);
-      setAssignments(Array.isArray(data) ? data : []);
+      const list: Assignment[] = Array.isArray(data) ? data : [];
+      setAssignments(list);
+      // ?id=ID (from search or a notification) opens that assignment.
+      const fromUrl = Number(new URLSearchParams(window.location.search).get('id'));
+      const linked = fromUrl ? list.find(a => a.id === fromUrl) : undefined;
+      if (linked) setSelected(prev => prev ?? linked);
     } catch {
       setError('Could not load assignments.');
     } finally {

@@ -5,7 +5,7 @@ import {
   Bot, Loader2, TrendingUp, TrendingDown, BarChart3, FileText,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { Toaster, toast } from "sonner";
+import { Toaster } from "sonner";
 import { api, type StudentMarks } from "../services/api";
 import {
   getAnalyticsSummary, hasGradedWork, toAISummaryData, StudentAnalyticsResponse,
@@ -268,12 +268,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user }) => {
         <Bot className="w-8 h-8 text-indigo-300 mb-3" />
         <h3 className="text-lg font-bold mb-1">Need Help?</h3>
         <p className="text-sm text-indigo-200 mb-4">Ask the LearnIT AI tutor about any module notes.</p>
-        <button
-          onClick={() => toast.info('Open a course module to start chatting with the AI Tutor!')}
-          className="w-full py-2.5 bg-white text-indigo-600 rounded-xl text-sm font-bold shadow-lg hover:bg-indigo-50 transition-colors"
+        <Link
+          to="/notes"
+          className="block w-full py-2.5 bg-white text-center text-indigo-600 rounded-xl text-sm font-bold shadow-lg hover:bg-indigo-50 transition-colors"
         >
           Open AI Tutor
-        </button>
+        </Link>
       </div>
     </div>
   );

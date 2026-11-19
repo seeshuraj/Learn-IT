@@ -36,26 +36,27 @@ const STATUS_CFG = {
 };
 
 interface Props {
+  studentId: number;
   studentName: string;
   courseId: number;
   courseName: string;
   onClose: () => void;
 }
 
-const InstructorRoadmapView: React.FC<Props> = ({ studentName, courseId, courseName, onClose }) => {
+const InstructorRoadmapView: React.FC<Props> = ({ studentId, studentName, courseId, courseName, onClose }) => {
   const [roadmap, setRoadmap] = useState<Roadmap | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]   = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true); setError(null);
-    api.getRoadmap(courseId)
+    api.getRoadmap(courseId, studentId)
       .then(d => setRoadmap(d as Roadmap))
       .catch(e => {
         if (!e.message?.includes('404') && !e.message?.includes('No roadmap')) setError(e.message);
       })
       .finally(() => setLoading(false));
-  }, [courseId]);
+  }, [courseId, studentId]);
 
   const completed = roadmap?.milestones.filter(m => m.status === 'completed').length ?? 0;
   const total     = roadmap?.milestones.length ?? 0;

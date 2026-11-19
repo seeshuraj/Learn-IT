@@ -95,7 +95,8 @@ const TempPasswordModal: React.FC<TempPasswordModalProps> = ({ name, email, pass
 // ── Main page ────────────────────────────────────────────────────────────
 export const AdminUserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
-  const [search, setSearch] = useState("");
+  // ?q= (from the search box) pre-fills the search.
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [tempCreds, setTempCreds] = useState<{ name: string; email: string; password: string } | null>(null);
@@ -106,7 +107,7 @@ export const AdminUserManagement: React.FC = () => {
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => search.trim());
 
   // Debounce typing so each keystroke doesn't hit the server.
   useEffect(() => {

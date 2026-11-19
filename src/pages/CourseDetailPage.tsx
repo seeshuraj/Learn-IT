@@ -255,7 +255,9 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                 ))}
               </ul>
             )}
-            <Link to="/exams" className="mt-4 inline-block text-sm font-semibold text-indigo-600 hover:underline">All exams</Link>
+            {user.role !== "admin" && (
+              <Link to="/exams" className="mt-4 inline-block text-sm font-semibold text-indigo-600 hover:underline">All exams</Link>
+            )}
           </section>
 
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -266,11 +268,13 @@ export const CourseDetailPage: React.FC<CourseDetailPageProps> = ({ user }) => {
                   <Link to="/marks" className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><GraduationCap className="h-4 w-4 text-indigo-500" /> My marks</Link>
                   <Link to="/assignments" className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><ClipboardList className="h-4 w-4 text-indigo-500" /> My assignments</Link>
                 </>
-              ) : (
+              ) : user.role === "instructor" ? (
                 <>
                   <Link to="/assessments" className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><ClipboardList className="h-4 w-4 text-indigo-500" /> Enter marks</Link>
-                  <Link to="/notes" className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Upload className="h-4 w-4 text-indigo-500" /> Upload notes</Link>
+                  <Link to={`/?upload=notes&course=${course.id}`} className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Upload className="h-4 w-4 text-indigo-500" /> Upload notes</Link>
                 </>
+              ) : (
+                <Link to="/admin/courses" className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><ClipboardList className="h-4 w-4 text-indigo-500" /> Manage courses and students</Link>
               )}
             </div>
             {!isStudent && <p className="mt-3 text-xs text-slate-500">{course.student_count} {course.student_count === 1 ? "student" : "students"} enrolled</p>}

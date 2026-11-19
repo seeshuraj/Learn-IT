@@ -1,6 +1,7 @@
 import React from "react";
 import { User } from "../types";
-import { LogOut, Menu, Search } from "lucide-react";
+import { LogOut, Menu } from "lucide-react";
+import { GlobalSearch } from "./GlobalSearch";
 import NotificationBell from "./NotificationBell";
 import { Logo } from "./brand/Logo";
 
@@ -30,15 +31,7 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout, onOpenMenu, menu
       </div>
 
       <div className="hidden md:flex items-center gap-4 flex-1 max-w-xl">
-        <div className="relative w-full">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" aria-hidden="true" />
-          <input
-            type="search"
-            aria-label="Search"
-            placeholder="Search courses, assignments, or notes..."
-            className="w-full pl-10 pr-4 py-2 bg-white border border-rule rounded-[10px] text-sm text-ink placeholder:text-muted focus:outline-none focus:border-brand focus:ring-4 focus:ring-brand/15 transition-colors"
-          />
-        </div>
+        <GlobalSearch role={user?.role} />
       </div>
 
       <div className="flex items-center gap-2 sm:gap-4 ml-auto">
