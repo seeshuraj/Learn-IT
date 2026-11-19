@@ -60,6 +60,7 @@ import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
 import { createExamPatternsRouter } from "./src/server/routes/examPatterns.js";
 import { analyticsSummaryMessages } from "./src/server/lib/summaryPrompts.js";
 import { createCourseNoticesRouter } from "./src/server/routes/courseNotices.js";
+import { createSearchRouter } from "./src/server/routes/search.js";
 import { createDepartmentsRouter } from "./src/server/routes/departments.js";
 import { createTimetablesRouter, storeEntries, TIMETABLE_BUCKET } from "./src/server/routes/timetables.js";
 import { createExamCalendarRouter } from "./src/server/routes/examCalendar.js";
@@ -733,6 +734,7 @@ async function startServer() {
   app.use("/api/unit-exams",         createUnitExamsRouter(pool, supabaseAdmin, nimChat));
   app.use("/api/exam-patterns",      createExamPatternsRouter(pool));
   app.use("/api",                    createCourseNoticesRouter(pool));
+  app.use("/api",                    createSearchRouter(pool));
   app.use("/api/admin",              createDepartmentsRouter(pool));
   app.use("/api/admin",              createTimetablesRouter(pool, supabaseAdmin, jobQueue));
   app.use("/api",                    createExamCalendarRouter(pool, { publicApiUrl: process.env.PUBLIC_API_URL }));
@@ -1065,6 +1067,21 @@ async function startServer() {
     if (assignment.status !== "active") throw new AccessDenied(403, "This assignment is not accepting submissions");
   }
 
+  /** Tell the student their work arrived and the course's professor that it needs grading. */
+  async function notifySubmitted(sub: { id: number; assignment_id: number; student_id: number }) {
+    notify(pool, sub.student_id, "submission_received", "Your submission was received.", { assignment_id: sub.assignment_id });
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, message, metadata)
+       SELECT c.instructor_id, 'new_submission',
+              coalesce(u.name, 'A student') || ' submitted ' || a.title || coalesce(' (' || c.code || ')', ''),
+              jsonb_build_object('course_id', c.id, 'assignment_id', a.id, 'submission_id', $3::int)
+       FROM assignments a JOIN modules m ON m.id = a.module_id JOIN courses c ON c.id = m.course_id
+       LEFT JOIN users u ON u.id = $2
+       WHERE a.id = $1 AND c.instructor_id IS NOT NULL`,
+      [sub.assignment_id, sub.student_id, sub.id]
+    ).catch(err => log.error("submission notification failed (non-fatal)", { submission_id: sub.id, ...errorFields(err) }));
+  }
+
   app.post("/api/submissions", requireAuth, requireRole("student"), validateBody(submissionCreateSchema), async (req, res) => {
     try {
       const authReq = req as AuthenticatedRequest;
@@ -1074,7 +1091,7 @@ async function startServer() {
         "INSERT INTO submissions (assignment_id,student_id,content,submitted_at) VALUES ($1,$2,$3,NOW()) RETURNING *",
         [assignment_id, authReq.auth.legacyUserId, content]
       );
-      notify(pool, authReq.auth.legacyUserId, "submission_received", "Your submission was received.");
+      await notifySubmitted(sub);
       res.status(201).json(sub);
     } catch (e: any) { sendServerError(res, e); }
   });
@@ -1108,6 +1125,7 @@ async function startServer() {
         fileRecords.push(fileRecord);
       }
 
+      await notifySubmitted(sub);
       res.status(201).json({ ...sub, files: fileRecords });
     } catch (e: any) { sendServerError(res, e); }
   });

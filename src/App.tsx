@@ -175,7 +175,8 @@ const AppContent: React.FC = () => {
         <Header user={user} onLogout={handleLogout} onOpenMenu={() => setMenuOpen(true)} menuOpen={menuOpen} />
         <main className="app-main flex-1 min-w-0 px-4 py-5 sm:p-6 lg:p-8">
           <React.Suspense fallback={<PageLoading />}>
-          <Routes>
+          {/* Re-open the page when only its ?query changes (search results, deep links). */}
+          <Routes key={location.search}>
             <Route path="/" element={
               user?.role === "instructor" ? <InstructorDashboard user={user} /> :
               user?.role === "admin" ? <AdminDashboard /> :

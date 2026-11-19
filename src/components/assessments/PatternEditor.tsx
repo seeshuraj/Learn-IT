@@ -97,6 +97,19 @@ export function PatternEditor({ value, onChange, modules, assessmentType, error 
     }
   };
 
+  const removeTemplate = async (id: number | string, name: string) => {
+    if (!window.confirm(`Delete the saved pattern “${name}”? Assessments that used it keep their questions.`)) return;
+    setSaveMsg('');
+    try {
+      await api.deleteExamPattern(id);
+      setSaved(prev => (prev ?? []).filter(p => p.id !== id));
+      setSaveMsg(`Deleted “${name}”`);
+    } catch (e: any) {
+      setSaveMsg(e.message || 'Could not delete');
+    }
+  };
+  const ownSaved = (saved ?? []).filter(s => !s.built_in);
+
   const total = paperTotal(value);
 
   return (
@@ -109,6 +122,22 @@ export function PatternEditor({ value, onChange, modules, assessmentType, error 
             {saved.map(s => <option key={s.id} value={String(s.id)}>{s.name} · {s.total} marks</option>)}
           </select>
         </label>
+      )}
+      {ownSaved.length > 0 && (
+        <details className="text-xs text-slate-600">
+          <summary className="cursor-pointer select-none font-medium">Manage saved patterns</summary>
+          <ul className="mt-2 space-y-1">
+            {ownSaved.map(s => (
+              <li key={s.id} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5">
+                <span className="truncate">{s.name} · {s.total} marks{s.created_by_name ? ` · ${s.created_by_name}` : ''}</span>
+                <button type="button" onClick={() => void removeTemplate(s.id, s.name)}
+                  className="shrink-0 rounded p-1 text-slate-400 hover:text-red-600" aria-label={`Delete saved pattern ${s.name}`}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {parts.map((part, i) => {

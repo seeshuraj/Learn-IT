@@ -611,7 +611,104 @@ async function classEnrolment(browser) {
   await prof.context.close();
 }
 
-export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment };
+/** Every link and button leads somewhere: search, shortcuts, deep links, notifications. */
+async function noDeadEnds(browser) {
+  // ── Search box: student finds their course and goes to it ──
+  const stu = await signIn(browser, 'student');
+  await stu.page.goto(`${APP}/`);
+  await stu.page.getByRole('combobox', { name: 'Search' }).fill('Database');
+  try {
+    await stu.page.getByRole('option', { name: /Database Systems/ }).first().click({ timeout: 6000 });
+    await stu.page.waitForURL(/\/courses\/2$/, { timeout: 5000 });
+    pass('search', 'student finds “Database Systems” and opens the course');
+  } catch { fail('search', `student search did not open the course (at ${stu.page.url()})`); }
+  const leak = await jsonAs(stu.page, 'GET', '/api/search?q=CS');
+  const codes = (leak.body?.courses ?? []).map(c => c.code);
+  const { rows: mine } = await db.query(`select c.code from enrollments e join courses c on c.id = e.course_id where e.student_id = 2`);
+  const enrolled = new Set(mine.map(r => r.code));
+  if (leak.status === 200 && !(leak.body?.people ?? []).length && codes.length && codes.every(c => enrolled.has(c)))
+    pass('search', `student sees only their own courses (${codes.join(', ') || 'none'}) and no people`);
+  else fail('search', `student search scope: ${JSON.stringify(leak.body)}`);
+
+  // ── “Open AI Tutor” goes to Notes & AI Chat ──
+  await stu.page.goto(`${APP}/`);
+  await stu.page.getByRole('link', { name: 'Open AI Tutor' }).click();
+  try { await stu.page.waitForURL(/\/notes$/, { timeout: 5000 }); pass('student dashboard', '“Open AI Tutor” opens Notes & AI Chat'); }
+  catch { fail('student dashboard', '“Open AI Tutor” went nowhere'); }
+
+  // A student can't read another student's plan.
+  const other = await jsonAs(stu.page, 'GET', '/api/roadmaps/2?student_id=3');
+  if (other.status === 403) pass('roadmap', 'a student cannot read another student’s plan'); else fail('roadmap', `student → other plan: ${other.status}`);
+
+  // ── Submitting notifies the professor ──
+  const prof = await signIn(browser, 'professor');
+  const { rows: [mod] } = await db.query(`select id from modules where course_id = 2 order by id limit 1`);
+  const asg = await jsonAs(prof.page, 'POST', `/api/modules/${mod.id}/assignments`,
+    { title: 'E2E dead-ends assignment', description: 'x', due_date: '2099-02-01', max_points: 10, status: 'active' });
+  const sub = await jsonAs(stu.page, 'POST', '/api/submissions', { assignment_id: asg.body?.id, content: 'My answer' });
+  const { rows: [pn] } = await db.query(
+    `select message from notifications where user_id = 4 and type = 'new_submission' and metadata->>'submission_id' = $1`, [String(sub.body?.id)]);
+  if (sub.status === 201 && pn?.message?.includes('E2E dead-ends assignment')) pass('submission', `professor notified: “${pn.message}”`);
+  else fail('submission', `submit → ${sub.status}; professor notification ${JSON.stringify(pn)}`);
+
+  // Search result for an assignment opens it directly.
+  await stu.page.goto(`${APP}/assignments?id=${asg.body?.id}`);
+  await expectText(stu.page, 'assignment deep link', 'Submitted');
+  await stu.context.close();
+
+  // ── Professor: roadmap panel reads the student's plan, not their own ──
+  const asProf = await jsonAs(prof.page, 'GET', '/api/roadmaps/2?student_id=2');
+  if (asProf.status === 200 || asProf.status === 404) pass('roadmap', `professor reads a student's plan for their course (${asProf.status === 404 ? 'none yet' : 'found'})`);
+  else fail('roadmap', `professor → student plan: ${asProf.status} ${JSON.stringify(asProf.body)}`);
+  await db.query(`insert into student_roadmaps (student_id, course_id, institution_id, title, summary)
+                  select 2, 2, institution_id, 'E2E plan', 'x' from courses where id = 2 on conflict do nothing`).catch(() => undefined);
+  const seen = await jsonAs(prof.page, 'GET', '/api/roadmaps/2?student_id=2');
+  if (seen.status === 200 && seen.body?.student_id === 2) pass('roadmap', 'professor sees the student’s own plan');
+  else fail('roadmap', `professor sees ${seen.status} ${JSON.stringify(seen.body)?.slice(0, 120)}`);
+
+  // ── Course page “Upload notes” opens the upload dialog for that course ──
+  await prof.page.goto(`${APP}/courses/2`);
+  await prof.page.getByRole('link', { name: 'Upload notes' }).click();
+  try {
+    const heading = prof.page.getByRole('heading', { name: 'Upload Module Notes' });
+    await heading.waitFor({ timeout: 6000 });
+    const courseSelect = heading.locator('xpath=ancestor::*[.//select][1]').locator('select').first();
+    // The course list loads after the dialog opens.
+    await courseSelect.locator('option[value="2"]').waitFor({ state: 'attached', timeout: 6000 });
+    const chosen = await courseSelect.inputValue();
+    if (chosen === '2') pass('course page', '“Upload notes” opens the upload dialog with the course chosen');
+    else fail('course page', `upload dialog course = ${chosen}`);
+  } catch { fail('course page', '“Upload notes” did not open the upload dialog'); }
+
+  // ── Deleting an assessment updates the “was scheduled” prompt ──
+  const ex = await jsonAs(prof.page, 'POST', '/api/unit-exams', { course_id: 2, title: 'E2E Cancelled test', max_marks: 50, assessment_type: 'unit_test' });
+  await db.query(`update student_roadmaps set stale_reason = 'E2E Cancelled test was scheduled' where student_id = 2 and course_id = 2`);
+  const del = await jsonAs(prof.page, 'DELETE', `/api/unit-exams/${ex.body?.id}`);
+  const { rows: [plan] } = await db.query(`select stale_reason from student_roadmaps where student_id = 2 and course_id = 2`);
+  if (del.status === 200 && plan?.stale_reason === 'E2E Cancelled test was cancelled') pass('study plan', 'deleting an assessment says it was cancelled');
+  else fail('study plan', `delete → ${del.status}, reason “${plan?.stale_reason}”`);
+  await db.query(`delete from student_roadmaps where title = 'E2E plan'`);
+  await prof.context.close();
+
+  // ── Admin: search finds people and opens User Management filtered ──
+  const admin = await signIn(browser, 'admin');
+  await admin.page.goto(`${APP}/`);
+  await admin.page.getByRole('combobox', { name: 'Search' }).fill('Sarah Johnson');
+  try {
+    await admin.page.getByRole('option', { name: /Sarah Johnson/ }).first().click({ timeout: 6000 });
+    await admin.page.waitForURL(/\/admin\/users\?q=/, { timeout: 5000 });
+    await admin.page.locator('text=Sarah Johnson >> visible=true').first().waitFor({ timeout: 8000 });
+    pass('search', 'admin finds a person and opens User Management filtered to them');
+  } catch { fail('search', `admin person search failed (at ${admin.page.url()})`); }
+  // Admin on a course page: no links to pages admins don't have.
+  await admin.page.goto(`${APP}/courses/2`);
+  await admin.page.waitForLoadState('networkidle');
+  const dead = await admin.page.locator('a[href="/exams"], a[href="/assessments"], a[href^="/?upload"]').count();
+  if (dead === 0) pass('course page', 'admins see only links they can open'); else fail('course page', `${dead} dead links for admin`);
+  await admin.context.close();
+}
+
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, noDeadEnds };
 
 async function main() {
   const browser = await chromium.launch();

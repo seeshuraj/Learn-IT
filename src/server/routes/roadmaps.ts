@@ -27,7 +27,7 @@ import {
 import { sendServerError } from '../lib/httpErrors.js';
 import { log, errorFields } from '../lib/log.js';
 import type { JobQueue } from '../lib/jobs.js';
-import { studentVisibleNotes } from '../lib/access.js';
+import { studentVisibleNotes, assertManagesCourse, AccessDenied } from '../lib/access.js';
 import {
   schedulePlan, rankWeakTopics, revisionDays, milestoneCount, todayIst, daysBetween, addDays, type TargetExam,
 } from '../lib/studyPlan.js';
@@ -110,10 +110,28 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
   });
 
   // ── GET /api/roadmaps/:courseId ─────────────────────────────────────────
+  // A student gets their own plan. The course's professor (or an admin) can
+  // read a student's plan with ?student_id=.
   router.get('/:courseId', requireAuth, async (req, res) => {
     try {
-      const studentId = (req as AuthenticatedRequest).auth.legacyUserId;
+      const auth = (req as AuthenticatedRequest).auth;
       const courseId  = req.params.courseId;
+      let studentId = auth.legacyUserId;
+      if (req.query.student_id !== undefined) {
+        const asked = Number(req.query.student_id);
+        if (!Number.isInteger(asked) || asked <= 0) return res.status(400).json({ error: 'student_id must be a number' });
+        if (auth.role === 'student' && asked !== auth.legacyUserId) return res.status(403).json({ error: 'Access denied' });
+        if (auth.role !== 'student') {
+          try {
+            await assertManagesCourse(pool, { legacyUserId: auth.legacyUserId, role: auth.role, institutionId: auth.institutionId },
+              /^\d+$/.test(courseId) ? Number(courseId) : null);
+          } catch (e) {
+            if (e instanceof AccessDenied) return res.status(e.status).json({ error: e.message });
+            throw e;
+          }
+        }
+        studentId = asked;
+      }
 
       const roadmap = await q1(
         `SELECT r.id, r.student_id, r.course_id, r.title, r.summary, r.generated_at, r.updated_at,

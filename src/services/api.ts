@@ -249,6 +249,13 @@ export interface CourseNotice {
 }
 export type NoticeInput = Partial<Pick<CourseNotice, 'kind' | 'title' | 'body' | 'due_date' | 'pinned'>>;
 
+export interface SearchResults {
+  courses: { id: number; code: string | null; name: string }[];
+  assignments: { id: number; title: string; due_date: string | null; course_id: number; course_code: string | null }[];
+  notes: { id: number; name: string; module_id: number; module_name: string | null; course_code: string | null }[];
+  people: { id: number; name: string; email: string; role: string }[];
+}
+
 export interface AppNotification {
   id: number;
   type: string;
@@ -509,6 +516,7 @@ export const api = {
   getMe: () => request('/api/auth/me'),
 
   // Notifications (the bell)
+  search: (q: string) => request<SearchResults>(`/api/search?q=${encodeURIComponent(q)}`),
   getNotifications: () => request<AppNotification[]>('/api/notifications'),
   getUnreadNotificationCount: () => request<{ count: number }>('/api/notifications/unread-count'),
   markNotificationRead: (id: number) => request(`/api/notifications/${id}/read`, { method: 'PATCH' }),
@@ -821,7 +829,8 @@ export const api = {
     request('/api/ai/class-overview-summary', { method: 'POST', body: JSON.stringify({ overview }) }),
 
   // Roadmaps
-  getRoadmap:          (courseId: number) => request(`/api/roadmaps/${courseId}`),
+  getRoadmap:          (courseId: number, studentId?: number) =>
+    request(`/api/roadmaps/${courseId}${studentId ? `?student_id=${studentId}` : ''}`),
   /** Today's and overdue study-plan steps across all courses. */
   getTodayPlan: () => request<{ today: string; items: TodayStep[] }>('/api/roadmaps/today'),
   generateRoadmap:     (courseId: number) =>

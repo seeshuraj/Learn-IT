@@ -6,6 +6,7 @@ import { getClassOverviewSummary, ClassOverviewData } from "../services/aiServic
 import { toast, Toaster } from "sonner";
 import { api, asPage } from "../services/api";
 import InstructorRoadmapView from "./InstructorRoadmapView";
+import { UpcomingNoticesCard } from "../components/course/UpcomingNotices";
 import { UpcomingExamsCard } from "../components/exams/UpcomingExams";
 
 interface InstructorDashboardProps {
@@ -236,8 +237,8 @@ function CreateAssignmentModal({
 }
 
 // ─── Upload Notes Modal ─────────────────────────────────────────────────────────
-function UploadNotesModal({ courses, onClose }: { courses: Course[]; onClose: () => void }) {
-  const [courseId, setCourseId] = useState<number | ''>('');
+function UploadNotesModal({ courses, onClose, initialCourseId }: { courses: Course[]; onClose: () => void; initialCourseId?: number }) {
+  const [courseId, setCourseId] = useState<number | ''>(initialCourseId ?? '');
   const [moduleId, setModuleId] = useState<number | ''>('');
   const [modules, setModules] = useState<Module[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -537,11 +538,18 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   const [classSummary, setClassSummary] = useState("");
   const [classSummaryLoading, setClassSummaryLoading] = useState(false);
   const [showCreateAssignment, setShowCreateAssignment] = useState(false);
-  const [showUploadNotes, setShowUploadNotes] = useState(false);
+  // ?upload=notes&course=ID (from a course page or the Notes page) opens the
+  // upload dialog with that course chosen.
+  const [uploadLink] = useState(() => {
+    const p = new URLSearchParams(window.location.search);
+    return p.get('upload') === 'notes' ? { course: Number(p.get('course')) || undefined } : null;
+  });
+  const [showUploadNotes, setShowUploadNotes] = useState(!!uploadLink);
   const [studentSearch, setStudentSearch] = useState('');
   const [submissionFileCount, setSubmissionFileCount] = useState<Record<number, number>>({});
 
   const [roadmapPanel, setRoadmapPanel] = useState<{
+    studentId: number;
     studentName: string;
     courseId: number;
     courseName: string;
@@ -771,6 +779,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
       <AnimatePresence>
         {roadmapPanel && (
           <InstructorRoadmapView
+            studentId={roadmapPanel.studentId}
             studentName={roadmapPanel.studentName}
             courseId={roadmapPanel.courseId}
             courseName={roadmapPanel.courseName}
@@ -781,7 +790,13 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       <AnimatePresence>
         {showCreateAssignment && <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={loadSubmissions} />}
-        {showUploadNotes && <UploadNotesModal courses={courses} onClose={() => setShowUploadNotes(false)} />}
+        {showUploadNotes && (
+          <UploadNotesModal
+            courses={courses}
+            initialCourseId={uploadLink?.course}
+            onClose={() => { setShowUploadNotes(false); if (uploadLink) window.history.replaceState(null, '', '/'); }}
+          />
+        )}
       </AnimatePresence>
 
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -829,6 +844,9 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
           </div>
         ))}
       </div>
+
+      {/* Notices due in the next two days across this professor's courses. */}
+      <UpcomingNoticesCard />
 
       <UpcomingExamsCard limit={3} />
 
@@ -1180,9 +1198,10 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                             <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${tone.pill}`}>{student.status}</span>
                           </td>
                           <td className="px-6 py-3 text-right">
-                            {student.course_id ? (
+                            {student.course_id && student.student_id ? (
                               <button
                                 onClick={() => setRoadmapPanel({
+                                  studentId: student.student_id!,
                                   studentName: student.name,
                                   courseId: student.course_id!,
                                   courseName: student.course_name ?? 'Course',
