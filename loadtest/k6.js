@@ -43,9 +43,15 @@ for (const n of NAMES) options.thresholds[`http_req_duration{name:${n}}`] = ['p(
 const pick = a => a[Math.floor(Math.random() * a.length)];
 const think = (lo, hi) => sleep(lo + Math.random() * (hi - lo));
 
+// 404 is the normal answer for "no study plan yet"; only that endpoint gets it.
+const OK_404 = new Set(['my roadmap']);
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 }, 404));
+
 function get(path, name, token) {
   const r = http.get(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` }, tags: { name, kind: 'read' } });
-  check(r, { [`${name} ok`]: x => x.status === 200 });
+  const ok = r.status === 200 || (r.status === 404 && OK_404.has(name));
+  check(r, { [`${name} ok`]: () => ok });
+  if (!ok) console.warn(`FAIL ${name} ${r.status} ${String(r.body).slice(0, 120)}`);
   return r;
 }
 

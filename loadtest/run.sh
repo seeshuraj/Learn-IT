@@ -71,3 +71,7 @@ TOKENS="$OUT/tokens.json" k6 run --quiet --summary-export "$OUT/summary.json" k6
 echo "5/5 Results"
 echo "Network round trip from this Cloud Shell to the API: $(awk "BEGIN{printf \"%d\", $BASE*1000}") ms (included in every timing below)"
 node report.mjs "$OUT/summary.json"
+if grep -q "FAIL " "$OUT/k6.log"; then
+  echo; echo "Failed requests by endpoint and status:"
+  grep -o 'FAIL [^"]*' "$OUT/k6.log" | awk '{print $2, $3, $4}' | sort | uniq -c | sort -rn | head -15
+fi
