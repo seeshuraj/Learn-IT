@@ -193,6 +193,21 @@ function AssessmentDetail({ exam, courses, onBack, onChange, onDeleted }: {
     try { await fn(); } catch (e: any) { setActionError(e.message); } finally { setBusy(false); setConfirm(null); }
   };
 
+  // The question paper is analysed in the background: check until it's done or failed
+  // (about two minutes at most), so both tabs update without a reload.
+  useEffect(() => {
+    if (exam.analysis_status !== 'processing') return;
+    let tries = 0;
+    const timer = setInterval(async () => {
+      tries++;
+      const d: any = await api.getExamAnalytics(exam.id).catch(() => null);
+      const status = d?.exam?.analysis_status;
+      if (status && status !== 'processing') { clearInterval(timer); onChange({ ...exam, analysis_status: status }); }
+      else if (tries >= 30) clearInterval(timer);
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [exam.id, exam.analysis_status]);
+
   const publish = () => run(async () => onChange(await api.publishUnitExam(exam.id)));
   const unpublish = () => run(async () => onChange(await api.unpublishUnitExam(exam.id)));
   const remove = () => run(async () => { await api.deleteUnitExam(exam.id); onDeleted(); });
