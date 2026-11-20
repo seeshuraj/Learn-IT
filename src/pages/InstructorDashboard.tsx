@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef } from "react";
 import { User, Submission, Course } from "../types";
-import { BookOpen, Clock, CheckCircle2, AlertCircle, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map, FileText, ChevronDown, ChevronUp, Zap } from "lucide-react";
+import { BookOpen, Clock, CheckCircle2, AlertCircle, Brain, Search, BarChart3, Star, Loader2, Sparkles, ThumbsUp, RefreshCw, Plus, X, Upload, Trash2, Map, FileText, ChevronDown, ChevronUp, Zap, Target } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { getClassOverviewSummary, ClassOverviewData } from "../services/aiService";
 import { toast, Toaster } from "sonner";
 import { api, asPage } from "../services/api";
 import InstructorRoadmapView from "./InstructorRoadmapView";
+import { StudentTopicsPanel } from "../components/StudentTopicsPanel";
 import { UpcomingNoticesCard } from "../components/course/UpcomingNotices";
 import { UpcomingExamsCard } from "../components/exams/UpcomingExams";
 
@@ -554,6 +555,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     courseId: number;
     courseName: string;
   } | null>(null);
+  const [topicsPanel, setTopicsPanel] = useState<typeof roadmapPanel>(null);
 
   // Grading queue, one page at a time (newest first). File counts come with
   // each row, so there is no per-submission request.
@@ -784,6 +786,18 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
             courseId={roadmapPanel.courseId}
             courseName={roadmapPanel.courseName}
             onClose={() => setRoadmapPanel(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {topicsPanel && (
+          <StudentTopicsPanel
+            studentId={topicsPanel.studentId}
+            studentName={topicsPanel.studentName}
+            courseId={topicsPanel.courseId}
+            courseName={topicsPanel.courseName}
+            onClose={() => setTopicsPanel(null)}
           />
         )}
       </AnimatePresence>
@@ -1174,7 +1188,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                       <th className="px-4 py-3">Late</th>
                       <th className="px-4 py-3">Missed</th>
                       <th className="px-4 py-3">Status</th>
-                      <th className="px-6 py-3"><span className="sr-only">Roadmap</span></th>
+                      <th className="px-6 py-3"><span className="sr-only">Topics and roadmap</span></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
@@ -1199,6 +1213,18 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                           </td>
                           <td className="px-6 py-3 text-right">
                             {student.course_id && student.student_id ? (
+                              <div className="inline-flex gap-2">
+                              <button
+                                onClick={() => setTopicsPanel({
+                                  studentId: student.student_id!,
+                                  studentName: student.name,
+                                  courseId: student.course_id!,
+                                  courseName: student.course_name ?? 'Course',
+                                })}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 rounded-xl transition-colors"
+                              >
+                                <Target className="w-3.5 h-3.5" /> Topics
+                              </button>
                               <button
                                 onClick={() => setRoadmapPanel({
                                   studentId: student.student_id!,
@@ -1210,6 +1236,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                               >
                                 <Map className="w-3.5 h-3.5" /> Roadmap
                               </button>
+                              </div>
                             ) : null}
                           </td>
                         </tr>

@@ -140,11 +140,34 @@ export interface StudentResult {
   topic_breakdown?: Record<string, number> | null;
 }
 
+/** A student's mastery of one course topic across its published assessments. */
+export interface TopicMasteryRow {
+  course_id: number;
+  course_code: string;
+  topic: string;
+  latest_pct: number;
+  avg_pct: number;
+  tests: number;
+  /** Latest against the previous assessment with this topic (5-point threshold). */
+  trend: 'up' | 'down' | 'same' | null;
+  /** Class average on the latest assessment; null under 5 students. */
+  class_avg: number | null;
+  /** Latest assessment, and its questions on this topic where marks were lost ("3", "7b"). */
+  latest: { exam_id: number; title: string; lost: string[] };
+}
+
+export interface StudentTopicReport {
+  student: { id: number; name: string | null };
+  assessments: { exam_id: number; title: string; exam_date: string | null; is_absent: boolean; percentage: number | null }[];
+  topics: TopicMasteryRow[];
+}
+
 export interface StudentMarks {
   results: StudentResult[];
   latest: StudentResult | null;
   overall_avg: number | null;
   weak_topics: string[];
+  topics: TopicMasteryRow[];
   gpa: { semesters: { semester: number; sgpa: number | null; credits: number; courses: number }[]; cgpa: number | null };
 }
 
@@ -743,6 +766,9 @@ export const api = {
   /** Get a student's unit exam insights (all exams, weak topics, trend). */
   getStudentExamInsights: (studentId: number) =>
     request<StudentMarks>(`/api/unit-exams/student/${studentId}/insights`),
+  /** A student's topic mastery in one course (the course's instructor or an admin). */
+  getStudentCourseTopics: (courseId: number, studentId: number) =>
+    request<StudentTopicReport>(`/api/unit-exams/course/${courseId}/student/${studentId}/topics`),
 
   // Instructor
   /**

@@ -40,6 +40,7 @@ import {
   validatePattern, paperTotal, topicBreakdown, scoreQuestions, samePattern, type QuestionPattern,
   resolveQuestionRefs, paperTopicWeights, paperTopicBreakdown, type MappedTopic,
 } from '../lib/questionPattern.js';
+import { topicDetails, topicsFromUnits, topicMastery, type ExamTopicScores } from '../lib/topicMastery.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -326,6 +327,73 @@ export function createUnitExamsRouter(
     const topics = !p || !marks ? null
       : (paperTopics.length ? paperTopicBreakdown(p, marks, paperTopics) : null) ?? topicBreakdown(p, marks, names);
     return { ...row, topic_breakdown: topics };
+  }
+
+  /**
+   * Topic mastery across a student's published results (newest first): the
+   * paper's mapped topics where it has them, otherwise the units on the
+   * questions; a paper without question-wise marks contributes its stored
+   * per-topic %. Class average per topic only where at least 5 students wrote.
+   */
+  async function masteryFor(results: any[], institutionId: string) {
+    const written = results.filter(r => !r.is_absent);
+    if (!written.length) return [];
+    const examIds = [...new Set(written.map(r => Number(r.exam_id)))];
+    const courseIds = [...new Set(written.map(r => Number(r.course_id)))];
+    const [topicRows, moduleRows, classRows] = await Promise.all([
+      q(`SELECT unit_exam_id, topic_name, evidence FROM unit_exam_topic_analysis
+         WHERE unit_exam_id = ANY($1::int[]) AND institution_id = $2 ORDER BY id`, [examIds, institutionId]),
+      q(`SELECT id, course_id, name FROM modules WHERE course_id = ANY($1::int[])`, [courseIds]),
+      q(`SELECT o.unit_exam_id, t.key AS topic, round(avg((t.value #>> '{}')::numeric), 1) AS avg_pct
+         FROM unit_exam_results o, jsonb_each(o.topic_breakdown) t
+         WHERE o.unit_exam_id = ANY($1::int[]) AND o.institution_id = $2 AND NOT o.is_absent
+           AND jsonb_typeof(o.topic_breakdown) = 'object' AND jsonb_typeof(t.value) = 'number'
+         GROUP BY o.unit_exam_id, t.key
+         HAVING count(*) >= 5`, [examIds, institutionId]),
+    ]);
+    const paperTopics = new Map<number, MappedTopic[]>();
+    for (const t of topicRows) {
+      const questions = Array.isArray(t.evidence?.questions) ? t.evidence.questions.map(String) : [];
+      if (!questions.length) continue;
+      const list = paperTopics.get(Number(t.unit_exam_id)) ?? [];
+      list.push({ topic: t.topic_name, questions });
+      paperTopics.set(Number(t.unit_exam_id), list);
+    }
+    const names = new Map<number, Map<number, string>>();
+    for (const m of moduleRows) {
+      const map = names.get(Number(m.course_id)) ?? new Map<number, string>();
+      map.set(Number(m.id), m.name);
+      names.set(Number(m.course_id), map);
+    }
+    const classAvg = new Map<number, Record<string, number>>();
+    for (const c of classRows) {
+      const rec = classAvg.get(Number(c.unit_exam_id)) ?? {};
+      rec[c.topic] = Number(c.avg_pct);
+      classAvg.set(Number(c.unit_exam_id), rec);
+    }
+
+    const exams: ExamTopicScores[] = [];
+    for (const r of written) {
+      const examId = Number(r.exam_id);
+      const p = r.question_pattern as QuestionPattern | null;
+      let scores = [] as ExamTopicScores['scores'];
+      if (p && r.question_marks) {
+        const mapped = paperTopics.get(examId) ?? [];
+        scores = mapped.length ? topicDetails(p, r.question_marks, mapped) : [];
+        if (!scores.length) scores = topicDetails(p, r.question_marks, topicsFromUnits(p, names.get(Number(r.course_id)) ?? new Map()));
+      } else if (r.topic_breakdown && typeof r.topic_breakdown === 'object') {
+        scores = Object.entries(r.topic_breakdown as Record<string, unknown>)
+          .filter(([, v]) => Number.isFinite(Number(v)))
+          .map(([topic, v]) => ({ topic, pct: Number(v), got: 0, max: 0, questions: [], lost: [] }));
+      }
+      if (scores.length) {
+        exams.push({
+          examId, title: r.exam_title, courseId: Number(r.course_id), courseCode: r.course_code,
+          scores, classAvg: classAvg.get(examId) ?? {},
+        });
+      }
+    }
+    return topicMastery(exams);
   }
 
   /** Recompute every stored result's topic scores (after the paper's topics change). */
@@ -1172,13 +1240,58 @@ export function createUnitExamsRouter(
             }))
         );
 
+        const topics = await masteryFor(results, auth.institutionId);
+
         res.json({
           // topic_breakdown is the student's own per-unit %, shown with the breakdown.
           results: results.map(({ grade_scale, ...r }: any) => r),
+          // Per-topic mastery across assessments, weakest first.
+          topics,
           latest: written[0] ?? null,
           overall_avg,
           weak_topics: topWeakTopics,
           gpa,
+        });
+      } catch (e: any) { sendServerError(res, e); }
+    }
+  );
+
+  // ── GET /api/unit-exams/course/:courseId/student/:studentId/topics ─────────
+  // A student's topic mastery in one course, for the course's instructor (or an
+  // admin of the college). The student must be enrolled; published results only.
+  router.get(
+    '/course/:courseId/student/:studentId/topics',
+    requireAuth,
+    requireRole('instructor', 'admin'),
+    async (req: Request, res: Response) => {
+      try {
+        const auth = (req as AuthenticatedRequest).auth;
+        const { courseId, studentId } = req.params;
+        if (!/^\d+$/.test(courseId) || !/^\d+$/.test(studentId)) return res.status(400).json({ error: 'Invalid id' });
+        if (!(await ownsCourse(auth, courseId))) return res.status(404).json({ error: 'Course not found' });
+        const student = await qOne(
+          `SELECT u.id, u.name FROM enrollments e
+           JOIN users u ON u.id = e.student_id
+           WHERE e.course_id = $1 AND e.student_id = $2 AND e.institution_id = $3`,
+          [courseId, studentId, auth.institutionId]
+        );
+        if (!student) return res.status(404).json({ error: 'This student isn\'t enrolled in the course' });
+        const results = await q(
+          `SELECT ue.id AS exam_id, ue.title AS exam_title, ue.exam_date, ue.question_pattern, ue.course_id,
+                  c.code AS course_code, r.is_absent, r.percentage, r.topic_breakdown, r.question_marks
+           FROM unit_exam_results r
+           JOIN unit_exams ue ON r.unit_exam_id = ue.id
+           JOIN courses c ON ue.course_id = c.id
+           WHERE r.student_id = $1 AND ue.course_id = $2 AND r.institution_id = $3 AND ue.published_at IS NOT NULL
+           ORDER BY ue.exam_date DESC NULLS LAST, ue.published_at DESC`,
+          [studentId, courseId, auth.institutionId]
+        );
+        res.json({
+          student: { id: student.id, name: student.name },
+          assessments: results.map((r: any) => ({
+            exam_id: r.exam_id, title: r.exam_title, exam_date: r.exam_date, is_absent: r.is_absent, percentage: r.percentage,
+          })),
+          topics: await masteryFor(results, auth.institutionId),
         });
       } catch (e: any) { sendServerError(res, e); }
     }

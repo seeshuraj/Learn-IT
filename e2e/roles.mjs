@@ -822,7 +822,59 @@ async function paperTopicScores(browser) {
     await stu.page.goto(`${APP}/marks`);
     await stu.page.getByText('Show question-wise marks').first().click().catch(() => {});
     await expectText(stu.page, 'paper topics (student)', 'Join basics');
+
+    // Topic mastery: per topic, the latest score and the questions where marks were lost.
+    const ins = await jsonAs(stu.page, 'GET', '/api/unit-exams/student/2/insights');
+    const byTopic = Object.fromEntries((ins.body?.topics ?? []).map(t => [t.topic, t]));
+    const jb = byTopic['Join basics'], gb = byTopic['GROUP BY and aggregates'], js = byTopic['Joins and subqueries'];
+    if (ins.status === 200 && jb?.latest_pct === 0 && JSON.stringify(jb.latest.lost) === '["5"]'
+        && gb?.latest_pct === 75 && JSON.stringify(gb.latest.lost) === '["3"]'
+        && js?.latest_pct === 92.31 && JSON.stringify(js.latest.lost) === '["7a"]'
+        && ins.body.topics[0].latest_pct <= ins.body.topics.at(-1).latest_pct)
+      pass('topic mastery', 'student insights give each paper topic, its score and the questions where marks were lost, weakest first');
+    else fail('topic mastery', `insights ${ins.status} ${JSON.stringify(ins.body?.topics)?.slice(0, 300)}`);
+
+    await stu.page.goto(`${APP}/analytics`);
+    try {
+      await stu.page.getByRole('heading', { name: 'Topic mastery' }).waitFor({ timeout: 10000 });
+      await stu.page.getByText('Marks lost in Q5 of E2E Unit test 1').first().waitFor({ timeout: 3000 });
+      await stu.page.getByText('Marks lost in Q7(a) of E2E Unit test 1').first().waitFor({ timeout: 3000 });
+      await stu.page.getByTestId('assessment-results').getByText('E2E Unit test 1').first().waitFor({ timeout: 3000 });
+      pass('topic mastery', 'My Analytics lists assessments and topic mastery with the questions to revisit');
+    } catch (e) { fail('topic mastery', `My Analytics: ${e.message.split('\n')[0]}`); }
+
+    // Another course's instructor endpoint is refused to students.
+    const { rows: [{ course_id: courseId }] } = await db.query(`select course_id from unit_exams where id = $1`, [ex.id]);
+    const asStudent = await jsonAs(stu.page, 'GET', `/api/unit-exams/course/${courseId}/student/2/topics`);
+    if (asStudent.status === 403) pass('topic mastery', 'students cannot use the instructor topics view');
+    else fail('topic mastery', `student → instructor topics view: ${asStudent.status}`);
     await stu.context.close();
+
+    // The course's professor sees the same topics for the student.
+    const forProf = await jsonAs(prof.page, 'GET', `/api/unit-exams/course/${courseId}/student/2/topics`);
+    const profJb = (forProf.body?.topics ?? []).find(t => t.topic === 'Join basics');
+    if (forProf.status === 200 && profJb?.latest_pct === 0 && forProf.body?.student?.id === 2)
+      pass('topic mastery', 'the professor sees the student\'s topic mastery in their course');
+    else fail('topic mastery', `professor view ${forProf.status} ${JSON.stringify(forProf.body)?.slice(0, 200)}`);
+    const { rows: [outsider] } = await db.query(
+      `select u.id from users u where not exists (select 1 from enrollments e where e.student_id = u.id and e.course_id = $1) order by u.id limit 1`, [courseId]);
+    const notEnrolled = await jsonAs(prof.page, 'GET', `/api/unit-exams/course/${courseId}/student/${outsider.id}/topics`);
+    if (notEnrolled.status === 404) pass('topic mastery', 'a student not in the course is refused');
+    else fail('topic mastery', `not-enrolled student → ${notEnrolled.status}`);
+
+    await prof.page.goto(`${APP}/`);
+    await prof.page.getByRole('tab', { name: 'Students' }).click();
+    try {
+      const sarahRows = prof.page.getByRole('row').filter({ hasText: 'Sarah Johnson' });
+      await sarahRows.first().waitFor({ timeout: 8000 });
+      const { rows: [{ code }] } = await db.query(`select code from courses where id = $1`, [courseId]);
+      const inCourse = sarahRows.filter({ hasText: code });
+      const row = (await inCourse.count()) > 0 ? inCourse.first() : sarahRows.first();
+      await row.getByRole('button', { name: 'Topics' }).click();
+      const panel = prof.page.getByRole('dialog', { name: "Sarah Johnson's topics" });
+      await panel.getByText('Marks lost in Q5 of E2E Unit test 1').waitFor({ timeout: 8000 });
+      pass('topic mastery', 'Students tab → Topics opens the student\'s topic mastery');
+    } catch (e) { fail('topic mastery', `Topics panel: ${e.message.split('\n')[0]}`); }
   } finally {
     // Back to unit-based scores for the flows after this one.
     await db.query(`delete from unit_exam_topic_analysis where unit_exam_id = $1`, [ex.id]);

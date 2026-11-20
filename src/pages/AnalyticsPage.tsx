@@ -4,7 +4,8 @@ import { AIAnalyticsSummary } from '../components/AIAnalyticsSummary';
 import {
   StudentAnalyticsResponse, submissionRateOf, toAISummaryData,
 } from '../services/aiService';
-import { api } from '../services/api';
+import { api, type StudentMarks } from '../services/api';
+import { TopicMastery } from '../components/TopicMastery';
 
 type AnalyticsData = StudentAnalyticsResponse;
 
@@ -127,13 +128,15 @@ function GradingInsightsPanel({ userId }: { userId: number }) {
 }
 
 // ── Unit Exam Section ────────────────────────────────────────────────────────────────────────────────
+// Published assessments with their marks, then topic mastery worked out from
+// the question-wise marks against each question paper.
 function UnitExamSection({ userId }: { userId: number }) {
-  const [insights, setInsights] = useState<any>(null);
+  const [insights, setInsights] = useState<StudentMarks | null>(null);
   const [loading,  setLoading]  = useState(true);
 
   useEffect(() => {
     api.getStudentExamInsights(userId)
-      .then((d: any) => setInsights(d))
+      .then(d => setInsights(d))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [userId]);
@@ -145,111 +148,65 @@ function UnitExamSection({ userId }: { userId: number }) {
     </div>
   );
 
-  if (!insights || !insights.exams || insights.exams.length === 0) return null;
-
-  const exams: any[] = insights.exams;
-  const weakTopics: string[]   = insights.weak_topics?.slice(0, 6)   ?? [];
-  const strongTopics: string[] = insights.strong_topics?.slice(0, 6) ?? [];
-  const trend: string          = insights.trend ?? 'stable';
+  const exams = insights?.results ?? [];
+  if (!insights || exams.length === 0) return null;
+  const topics = insights.topics ?? [];
+  const courses = new Set(topics.map(t => t.course_id));
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-      {/* Header */}
-      <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
-        <FileText className="w-4 h-4 text-teal-600" />
-        <h2 className="text-sm font-semibold text-slate-800">Unit Exam Performance</h2>
-        {trend !== 'stable' && (
-          <span className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full ${
-            trend === 'improving' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
-          }`}>
-            {trend === 'improving' ? '↑ Improving' : '↓ Declining'}
-          </span>
-        )}
-      </div>
-
-      {/* Exam rows */}
-      <div className="divide-y divide-slate-50">
-        {exams.map((ex: any, idx: number) => {
-          const pct = ex.percentage ?? Math.round((ex.marks_obtained / (ex.max_marks || 100)) * 100);
-          const band = ex.performance_band ?? 'moderate';
-          const topicBreakdown: Record<string, number> | null =
-            typeof ex.topic_breakdown === 'object' ? ex.topic_breakdown : null;
-
-          return (
-            <div key={idx} className="px-5 py-4 space-y-2">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    {ex.course_code && (
-                      <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded shrink-0">
-                        {ex.course_code}
-                      </span>
-                    )}
-                    <span className="text-sm font-semibold text-slate-800 truncate">{ex.title}</span>
-                  </div>
-                  {ex.exam_date && (
-                    <p className="text-xs text-slate-400">
-                      {new Date(ex.exam_date).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-sm font-bold tabular-nums text-slate-700">
-                    {ex.marks_obtained}/{ex.max_marks}
-                    <span className="text-xs font-normal text-slate-400 ml-1">({pct}%)</span>
-                  </span>
-                  <BandBadge band={band} />
-                </div>
-              </div>
-
-              {/* Score bar */}
-              <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                <div
-                  className={`h-2 rounded-full transition-all duration-700 ${BAND_BAR[band] ?? 'bg-slate-400'}`}
-                  style={{ width: `${Math.min(100, pct)}%` }}
-                />
-              </div>
-
-              {/* Per-topic breakdown chips */}
-              {topicBreakdown && Object.keys(topicBreakdown).length > 0 && (
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {Object.entries(topicBreakdown).slice(0, 6).map(([topic, score]) => (
-                    <span key={topic} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                      {topic}: <strong>{score}</strong>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Aggregate weak / strong chips */}
-      {(weakTopics.length > 0 || strongTopics.length > 0) && (
-        <div className="px-5 pb-5 pt-3 grid sm:grid-cols-2 gap-4 border-t border-slate-100">
-          {strongTopics.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">✓ Strong Topics</p>
-              <div className="flex flex-wrap gap-1.5">
-                {strongTopics.map((t, i) => (
-                  <span key={i} className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">{t}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          {weakTopics.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-xs font-semibold text-red-700 uppercase tracking-wide">⚠ Needs Work</p>
-              <div className="flex flex-wrap gap-1.5">
-                {weakTopics.map((t, i) => (
-                  <span key={i} className="text-xs px-2.5 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-100">{t}</span>
-                ))}
-              </div>
-            </div>
+    <div className="space-y-5">
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+          <FileText className="w-4 h-4 text-teal-600" />
+          <h2 className="text-sm font-semibold text-slate-800">Assessments</h2>
+          {insights.overall_avg !== null && (
+            <span className="ml-auto text-xs text-slate-500">Average <strong className="tabular-nums">{insights.overall_avg}%</strong></span>
           )}
         </div>
-      )}
+        <div className="divide-y divide-slate-50" data-testid="assessment-results">
+          {exams.slice(0, 6).map(ex => {
+            const pct = ex.percentage !== null ? Number(ex.percentage) : null;
+            const band = ex.performance_band;
+            return (
+              <div key={ex.exam_id} className="px-5 py-3 space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      {ex.course_code && (
+                        <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded shrink-0">{ex.course_code}</span>
+                      )}
+                      <span className="text-sm font-semibold text-slate-800 truncate">{ex.exam_title}</span>
+                    </div>
+                    {ex.exam_date && (
+                      <p className="text-xs text-slate-400">
+                        {new Date(ex.exam_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {ex.is_absent ? (
+                      <span className="text-xs font-medium text-slate-500">Absent</span>
+                    ) : (
+                      <span className="text-sm font-bold tabular-nums text-slate-700">
+                        {ex.marks_obtained}/{ex.max_marks}
+                        {pct !== null && <span className="text-xs font-normal text-slate-400 ml-1">({pct}%)</span>}
+                      </span>
+                    )}
+                    {band && <BandBadge band={band} />}
+                  </div>
+                </div>
+                {pct !== null && !ex.is_absent && (
+                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-2 rounded-full ${BAND_BAR[band ?? ''] ?? 'bg-slate-400'}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <TopicMastery topics={topics} title="Topic mastery" singleCourse={courses.size <= 1} />
     </div>
   );
 }
