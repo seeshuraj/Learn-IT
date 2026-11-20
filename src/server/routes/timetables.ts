@@ -39,11 +39,13 @@ import {
 } from '../lib/timetable.js';
 import type { JobQueue } from '../lib/jobs.js';
 import { markPlansStale } from './roadmaps.js';
+import { readSpreadsheet } from '../lib/spreadsheet.js';
+
+export { readSpreadsheet };
 
 
 const require = createRequire(import.meta.url);
 const multer = require('multer');
-const XLSX = require('xlsx');
 
 export const TIMETABLE_BUCKET = 'learnit-timetables';
 const MAX_ROWS = 600;
@@ -60,19 +62,6 @@ const KINDS: Record<string, { kind: 'xlsx' | 'csv' | 'image' | 'pdf'; mime: stri
 };
 
 type Db = { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount?: number | null }> };
-
-const sheetKey = (k: string) => k.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-
-/** First sheet as rows with lower_snake headers, plus a CSV dump for AI reading. */
-export function readSpreadsheet(buffer: Buffer): { rows: Record<string, unknown>[]; headers: string[]; csv: string } {
-  // dateNF: real date cells come out as 2026-12-02 in the CSV sent to the AI;
-  // the default (12/2/26, month first) would be misread as 12 February.
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, dateNF: 'yyyy-mm-dd' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const raw: Record<string, unknown>[] = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true });
-  const rows = raw.map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [sheetKey(k), v])));
-  return { rows, headers: rows[0] ? Object.keys(rows[0]) : [], csv: XLSX.utils.sheet_to_csv(ws, { dateNF: 'yyyy-mm-dd' }) };
-}
 
 /**
  * Match normalised rows to courses and departments and insert them.
