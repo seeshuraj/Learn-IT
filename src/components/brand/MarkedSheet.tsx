@@ -53,7 +53,7 @@ export const MarkedSheet: React.FC<MarkedSheetProps> = ({ tilt = true, scrollPar
           <div className={`lp-grid lp-layer rounded-[14px] border border-rule ${pad} shadow-[0_1px_0_var(--rule),0_24px_48px_-28px_rgba(19,32,59,0.35)]`}>
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b-2 border-ink pb-3">
               <p className="text-[15px] font-semibold">Unit Test 2, Data Structures</p>
-              <p className="text-[13px] text-muted">Yuva R., II year CSE</p>
+              <p className="text-[13px] text-muted">Yuvaraaj B, II year CSE</p>
             </div>
 
             <div className="lp-layer grid gap-x-6 sm:grid-cols-[1fr_auto]">
@@ -112,7 +112,7 @@ export const MarkedSheet: React.FC<MarkedSheetProps> = ({ tilt = true, scrollPar
         {/* Layer 2: what LearnIT does with it, floating highest */}
         <div data-depth="2.2" className={`relative -mt-3 ml-auto w-[92%] ${compact ? "sm:-mt-5 sm:w-[86%]" : "sm:-mt-6 sm:w-[82%]"}`}>
           <div className="lp-plan rounded-[14px] border border-rule bg-paper p-5 shadow-[0_18px_40px_-24px_rgba(19,32,59,0.45)]">
-            <p className="text-[14px] font-semibold">This week's plan for Yuva</p>
+            <p className="text-[14px] font-semibold">This week's plan for Yuvaraaj</p>
             <p className="mt-0.5 text-[13px] text-muted">Built from Unit Test 2 and her course notes</p>
             <ul className="mt-3 space-y-2 text-[14px]">
               {PLAN.map(item => (
