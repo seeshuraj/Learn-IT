@@ -792,7 +792,9 @@ async function paperTopicScores(browser) {
     const michael = rows.find(r => r.student_id === 3)?.topic_breakdown;
     const want = { sarah: { 'Join basics': 0, 'GROUP BY and aggregates': 75, 'Joins and subqueries': 92.31 },
                    michael: { 'Join basics': 0, 'GROUP BY and aggregates': 0, 'Joins and subqueries': 46.15 } };
-    if (saved.status === 200 && JSON.stringify(sarah) === JSON.stringify(want.sarah) && JSON.stringify(michael) === JSON.stringify(want.michael))
+    // jsonb doesn't keep key order: compare sorted.
+    const same = (a, b) => JSON.stringify(Object.entries(a ?? {}).sort()) === JSON.stringify(Object.entries(b).sort());
+    if (saved.status === 200 && same(sarah, want.sarah) && same(michael, want.michael))
       pass('paper topics', 'scores each student by the questions on each topic and the option written');
     else fail('paper topics', `save ${saved.status}; Sarah ${JSON.stringify(sarah)}; Michael ${JSON.stringify(michael)}`);
 
@@ -815,8 +817,10 @@ async function paperTopicScores(browser) {
       pass('paper topics', 'Class analysis lists the topic with "Q3, Q7(b)" and the class average');
     } catch (e) { fail('paper topics', `Class analysis table: ${e.message.split('\n')[0]}`); }
 
+    // The student sees the paper's topics in this assessment's breakdown on My Marks.
     const stu = await signIn(browser, 'student');
     await stu.page.goto(`${APP}/marks`);
+    await stu.page.getByText('Show question-wise marks').first().click().catch(() => {});
     await expectText(stu.page, 'paper topics (student)', 'Join basics');
     await stu.context.close();
   } finally {
