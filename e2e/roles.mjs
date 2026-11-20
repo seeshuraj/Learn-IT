@@ -633,6 +633,19 @@ async function noDeadEnds(browser) {
     await stu.page.waitForURL(/\/courses\/2$/, { timeout: 5000 });
     pass('search', 'student finds “Database Systems” and opens the course');
   } catch { fail('search', `student search did not open the course (at ${stu.page.url()})`); }
+  // Same on a phone: the bar has a Search button that opens the box.
+  await stu.page.setViewportSize({ width: 390, height: 844 });
+  await stu.page.goto(`${APP}/`);
+  try {
+    await stu.page.getByRole('button', { name: 'Search', exact: true }).click({ timeout: 5000 });
+    await stu.page.getByRole('combobox', { name: 'Search' }).fill('Database');
+    await stu.page.getByRole('option', { name: /Database Systems/ }).first().click({ timeout: 6000 });
+    await stu.page.waitForURL(/\/courses\/2$/, { timeout: 5000 });
+    if (await stu.page.locator('#mobile-search').count()) throw new Error('panel stayed open');
+    pass('search (phone)', 'Search button opens the box, the result opens the course and the panel closes');
+  } catch (e) { fail('search (phone)', `${e.message.split('\n')[0]} (at ${stu.page.url()})`); }
+  await stu.page.setViewportSize({ width: 1280, height: 860 });
+
   const leak = await jsonAs(stu.page, 'GET', '/api/search?q=CS');
   const codes = (leak.body?.courses ?? []).map(c => c.code);
   const { rows: mine } = await db.query(`select c.code from enrollments e join courses c on c.id = e.course_id where e.student_id = 2`);
