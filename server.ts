@@ -62,6 +62,7 @@ import { createExamPatternsRouter } from "./src/server/routes/examPatterns.js";
 import { analyticsSummaryMessages, classOverviewMessages } from "./src/server/lib/summaryPrompts.js";
 import { createHash } from "node:crypto";
 import { dbSslConfig, dbCertVerified } from "./src/server/lib/dbSsl.js";
+import { extractPdfText } from "./src/server/lib/pdfText.js";
 import { createCourseNoticesRouter } from "./src/server/routes/courseNotices.js";
 import { createSearchRouter } from "./src/server/routes/search.js";
 import { createDepartmentsRouter } from "./src/server/routes/departments.js";
@@ -203,7 +204,6 @@ async function checkStorageConnectivity(): Promise<void> {
 
 const require = createRequire(import.meta.url);
 const multer   = require("multer");
-const pdfParse = require("pdf-parse");
 const mammoth  = require("mammoth");
 
 const __filename   = fileURLToPath(import.meta.url);
@@ -304,8 +304,7 @@ async function extractTextFromBuffer(
   const ext = path.extname(originalname).toLowerCase();
   try {
     if (ext === ".pdf" || mimetype === "application/pdf") {
-      const data = await pdfParse(buffer);
-      return sanitizeText(data.text ?? "");
+      return sanitizeText(await extractPdfText(buffer));
     }
     if (ext === ".docx" || mimetype.includes("wordprocessingml")) {
       const result = await mammoth.extractRawText({ buffer });
