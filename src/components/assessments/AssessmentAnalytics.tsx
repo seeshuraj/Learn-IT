@@ -78,7 +78,7 @@ function DropZone({
 }
 
 /** Optional: the question paper PDF, used to work out topics and weights. */
-export function PaperUpload({ exam, onUploaded }: { exam: Exam; onUploaded?: () => void }) {
+export function PaperUpload({ exam, onUploaded }: { exam: Exam; onUploaded?: (analysisStatus: string) => void }) {
   const [loading, setLoading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [err, setErr] = useState('');
@@ -87,9 +87,9 @@ export function PaperUpload({ exam, onUploaded }: { exam: Exam; onUploaded?: () 
   const handleFile = async (file: File) => {
     setLoading(true); setErr('');
     try {
-      await api.uploadExamPaper(exam.id, file);
+      const r: any = await api.uploadExamPaper(exam.id, file);
       setUploaded(true);
-      onUploaded?.();
+      onUploaded?.(r?.analysis_status ?? 'processing');
     } catch (e: any) { setErr(e.message); }
     finally { setLoading(false); }
   };
@@ -100,10 +100,12 @@ export function PaperUpload({ exam, onUploaded }: { exam: Exam; onUploaded?: () 
         Optional. Upload the question paper and LearnIT works out which topics it covered and how much each was worth,
         so the analysis can show the topics students found hardest.
       </p>
-      {hasPaper && (
+      {hasPaper && exam.analysis_status === 'failed' ? (
+        <PaperUnreadable />
+      ) : hasPaper && (
         <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
           <CheckCircle2 className="h-5 w-5 shrink-0" />
-          {exam.analysis_status === 'done' && !uploaded ? 'Question paper analysed.' : 'Question paper uploaded. Topics are being worked out.'}
+          {exam.analysis_status === 'done' ? 'Question paper analysed.' : 'Question paper uploaded. Topics are being worked out.'}
         </div>
       )}
       <DropZone
@@ -118,6 +120,19 @@ export function PaperUpload({ exam, onUploaded }: { exam: Exam; onUploaded?: () 
           <AlertCircle className="h-4 w-4 shrink-0" /> {err}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The paper was uploaded but its topics couldn't be worked out. */
+function PaperUnreadable() {
+  return (
+    <div role="status" className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>
+        LearnIT couldn't work out the topics from this question paper. A scanned or photographed paper has no text to
+        read: upload the typed PDF the paper was printed from. Marks and the rest of the analysis are not affected.
+      </span>
     </div>
   );
 }
@@ -327,6 +342,7 @@ export function AnalyticsView({ exam }: { exam: Exam }) {
       )}
 
       {/* Analysis status notice */}
+      {exam.paper_storage_path && exam.analysis_status === 'failed' && <PaperUnreadable />}
       {exam.paper_storage_path && exam.analysis_status === 'processing' && (
         <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-blue-700 text-sm">
           <Loader2 className="w-4 h-4 animate-spin shrink-0" />

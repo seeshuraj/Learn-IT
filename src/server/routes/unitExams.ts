@@ -34,14 +34,17 @@ import {
   computeResult, readSheetRow, usesGrades, allowedGrades, isAssessmentType, gpaSummary, type ResultRow,
 } from '../lib/examGrading.js';
 import { markPlansStale } from './roadmaps.js';
+import { readPdfText } from '../lib/pdfText.js';
 import { validatePattern, paperTotal, topicBreakdown, scoreQuestions, samePattern, type QuestionPattern } from '../lib/questionPattern.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
 const XLSX     = require('xlsx');
-const pdfParse = require('pdf-parse');
 
 const EXAM_PAPERS_BUCKET = 'learnit-exam-papers';
+const PAPER_NO_TEXT =
+  "LearnIT couldn't read any text in this PDF, so its topics weren't worked out. "
+  + 'A scanned or photographed paper has no text to read: upload the typed PDF the paper was printed from.';
 
 // Allowed MIME types for exam paper uploads
 const ALLOWED_PAPER_MIMES = new Set(['application/pdf']);
@@ -839,26 +842,28 @@ export function createUnitExamsRouter(
           return res.status(403).json({ error: 'Access denied: not your exam' });
         }
 
+        // Read the text from the request's own bytes before anything else touches them.
+        const read      = await readPdfText(file.buffer);
+        const paperText = read.text.slice(0, 40000);
+        const status    = paperText.trim() ? 'processing' : 'failed';
+        if (read.error) log.warn('question paper text', { examId, reader: read.engine, reason: read.error });
+
         const storedPath = await uploadPaperToStorage(file.buffer, examId, file.mimetype, ext);
 
-        let paperText = '';
-        try {
-          const parsed = await pdfParse(file.buffer);
-          paperText = (parsed.text ?? '').replace(/\x00/g, '').slice(0, 40000);
-        } catch (_) {}
-
+        // A new paper replaces the old one's topics.
+        await pool.query('DELETE FROM unit_exam_topic_analysis WHERE unit_exam_id=$1', [examId]);
         await pool.query(
           `UPDATE unit_exams
-           SET paper_storage_path=$1, paper_text=$2, analysis_status='processing', updated_at=NOW()
-           WHERE id=$3`,
-          [storedPath, paperText, examId]
+           SET paper_storage_path=$1, paper_text=$2, analysis_status=$3, updated_at=NOW()
+           WHERE id=$4`,
+          [storedPath, paperText, status, examId]
         );
 
         // Fire-and-forget: extract topics from paper text via AI
-        setImmediate(async () => {
+        if (status === 'processing') setImmediate(async () => {
           try {
-            if (!paperText.trim()) return;
             const topics = await extractTopicsFromPaperText(paperText, nimChat);
+            if (!topics.length) throw new Error('the AI returned no topics for this paper');
             for (const t of topics) {
               await pool.query(
                 `INSERT INTO unit_exam_topic_analysis (unit_exam_id, topic_name, weight, difficulty)
@@ -883,10 +888,13 @@ export function createUnitExamsRouter(
         writeAudit({
           action: 'unit_exam.upload_paper', resourceType: 'unit_exam', resourceId: String(examId),
           actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
-          metadata: { file: file.originalname, text_length: paperText.length }, req,
+          metadata: { file: file.originalname, text_length: paperText.length, reader: read.engine, ...(read.error ? { read_error: read.error } : {}) }, req,
         });
 
-        res.json({ success: true, text_length: paperText.length, analysis_status: 'processing' });
+        res.json({
+          success: true, text_length: paperText.length, analysis_status: status,
+          ...(status === 'failed' ? { message: PAPER_NO_TEXT } : {}),
+        });
       } catch (e: any) {
         log.error('unit exam paper upload failed', errorFields(e));
         sendServerError(res, e);

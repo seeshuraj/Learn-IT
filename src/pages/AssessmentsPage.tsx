@@ -277,7 +277,7 @@ function AssessmentDetail({ exam, courses, onBack, onChange, onDeleted }: {
         {/* Kept mounted so unsaved edits survive switching tabs. */}
         <div hidden={tab !== 'marks'}><MarksGrid key={gridKey} exam={exam} onCountsChange={setEntered} /></div>
         {tab === 'analysis' && <AnalyticsView exam={exam} />}
-        {tab === 'paper' && <PaperUpload exam={exam} onUploaded={() => onChange({ ...exam, paper_storage_path: 'uploaded', analysis_status: 'processing' })} />}
+        {tab === 'paper' && <PaperUpload exam={exam} onUploaded={status => onChange({ ...exam, paper_storage_path: 'uploaded', analysis_status: status })} />}
       </div>
 
       {editing && (
