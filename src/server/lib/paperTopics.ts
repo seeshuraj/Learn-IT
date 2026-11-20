@@ -5,6 +5,8 @@ export interface PaperTopic {
   /** Share of the paper's marks, 0–100, or null when the model gave none. */
   weight: number | null;
   difficulty: 'easy' | 'medium' | 'hard' | null;
+  /** Question references as the model wrote them ("Q3", "7(b)"); resolved against the paper later. */
+  questions: string[];
 }
 
 const MAX_TOPICS = 20;
@@ -63,6 +65,11 @@ function pick(o: Record<string, unknown>, names: string[]): unknown {
   return undefined;
 }
 
+function toRefs(v: unknown): string[] {
+  const list = Array.isArray(v) ? v : typeof v === 'string' || typeof v === 'number' ? String(v).split(/[,;/]|\band\b/) : [];
+  return list.map(x => String(x ?? '').trim()).filter(Boolean).slice(0, 30);
+}
+
 function toTopic(item: unknown): PaperTopic | null {
   if (!item || typeof item !== 'object') return null;
   const o = item as Record<string, unknown>;
@@ -72,6 +79,7 @@ function toTopic(item: unknown): PaperTopic | null {
     topic: name,
     weight: toWeight(pick(o, ['weight', 'weightage', 'percentage', 'percent', 'marksshare', 'share'])),
     difficulty: toDifficulty(pick(o, ['difficulty', 'difficultylevel', 'level'])),
+    questions: toRefs(pick(o, ['questions', 'questionnumbers', 'question', 'questionno', 'qnos', 'qs'])),
   };
 }
 

@@ -196,3 +196,85 @@ export function samePattern(a: unknown, b: unknown): boolean {
   if ('error' in na || 'error' in nb) return JSON.stringify(a) === JSON.stringify(b);
   return JSON.stringify(na.pattern) === JSON.stringify(nb.pattern);
 }
+
+// ── Topics from the question paper ───────────────────────────────────────────
+// The paper's analysis names topics and the questions each covers ("3", "7b",
+// "8"). Weights and per-student scores come from the marks, not from the model.
+
+/** A topic with the questions it covers: "7b" is option (b) of Q7, "8" either option. */
+export interface MappedTopic { topic: string; questions: string[] }
+
+/**
+ * Question references normalised against the paper: "Q3" → "3", "7(b)" → "7b".
+ * Unknown questions and options on plain questions are dropped (the plain
+ * question is kept); duplicates removed; order kept.
+ */
+export function resolveQuestionRefs(refs: unknown[], p: QuestionPattern): string[] {
+  const byNo = new Map(p.parts.flatMap(part => part.questions.map(q => [q.no.toLowerCase(), q] as const)));
+  const out: string[] = [];
+  for (const raw of refs) {
+    const m = String(raw ?? '').trim().toLowerCase().match(/^(?:q(?:uestion)?\.?\s*)?(\d+[a-z]?\d*?)\s*\(?\s*([ab])?\s*\)?$/);
+    if (!m) continue;
+    let [, no, opt] = m;
+    if (!byNo.has(no) && /^\d+[ab]$/.test(no) && byNo.has(no.slice(0, -1))) { opt = no.slice(-1); no = no.slice(0, -1); }
+    const q = byNo.get(no);
+    if (!q) continue;
+    const ref = q.either_or && opt ? `${q.no.toLowerCase()}${opt}` : q.no.toLowerCase();
+    if (!out.includes(ref)) out.push(ref);
+  }
+  return out;
+}
+
+/**
+ * Marks each topic is worth and its share of the paper total. An option of an
+ * (a)/(b) question counts the question's full marks (it's what a student who
+ * writes it can earn). Topics without questions are left out.
+ */
+export function paperTopicWeights(p: QuestionPattern, topics: MappedTopic[]): Map<string, { marks: number; share: number }> {
+  const byNo = new Map(p.parts.flatMap(part => part.questions.map(q => [q.no.toLowerCase(), q] as const)));
+  const total = paperTotal(p);
+  const out = new Map<string, { marks: number; share: number }>();
+  for (const t of topics) {
+    const seen = new Set<string>();
+    let marks = 0;
+    for (const ref of t.questions) {
+      const no = ref.replace(/[ab]$/, '');
+      const q = byNo.get(no) ?? byNo.get(ref);
+      if (!q || seen.has(q.no)) continue;
+      seen.add(q.no);
+      marks += q.marks;
+    }
+    if (marks > 0) out.set(t.topic, { marks, share: total > 0 ? round2((marks / total) * 100) : 0 });
+  }
+  return out;
+}
+
+/**
+ * Percentage a student scored per paper topic. A topic on one option of an
+ * (a)/(b) question counts only for students who wrote that option (a plain
+ * number means (a), as in the marks grid). Unanswered questions count as 0,
+ * except in "answer any N" parts. Null when no topic applies.
+ */
+export function paperTopicBreakdown(
+  p: QuestionPattern, marks: Record<string, QuestionMark>, topics: MappedTopic[],
+): Record<string, number> | null {
+  const lookup = new Map(Object.entries(marks ?? {}).map(([k, m]) => [k.toLowerCase(), m]));
+  const questions = p.parts.flatMap(part => part.questions.map(q => ({ q, anyN: part.answer_count !== null })));
+  const out: Record<string, number> = {};
+  for (const t of topics) {
+    const refs = new Set(t.questions.map(r => r.toLowerCase()));
+    let got = 0, max = 0;
+    for (const { q, anyN } of questions) {
+      const no = q.no.toLowerCase();
+      const m = lookup.get(no);
+      if (m === undefined && anyN) continue;
+      const option = q.either_or ? (m !== undefined && typeof m === 'object' ? m.o : 'a') : null;
+      const applies = refs.has(no) || (option !== null && refs.has(`${no}${option}`));
+      if (!applies) continue;
+      got += m === undefined ? 0 : valueOf(m);
+      max += q.marks;
+    }
+    if (max > 0) out[t.topic] = round2((got / max) * 100);
+  }
+  return Object.keys(out).length ? out : null;
+}
