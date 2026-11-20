@@ -35,6 +35,7 @@ import {
 } from '../lib/examGrading.js';
 import { markPlansStale } from './roadmaps.js';
 import { readPdfText } from '../lib/pdfText.js';
+import { parsePaperTopics, type PaperTopic } from '../lib/paperTopics.js';
 import { validatePattern, paperTotal, topicBreakdown, scoreQuestions, samePattern, type QuestionPattern } from '../lib/questionPattern.js';
 
 const require = createRequire(import.meta.url);
@@ -72,7 +73,7 @@ function parseSheet(buffer: Buffer, _mimetype: string, _originalname: string): R
 async function extractTopicsFromPaperText(
   paperText: string,
   nimChat: (msgs: any[], opts?: any) => Promise<string>
-): Promise<{ topic: string; weight: number; difficulty: string }[]> {
+): Promise<{ topics: PaperTopic[]; answer: string; error?: string }> {
   const prompt = [
     {
       role: 'system',
@@ -89,12 +90,14 @@ async function extractTopicsFromPaperText(
     },
   ];
   try {
-    const raw    = await nimChat(prompt, { temperature: 0.2, maxTokens: 512 });
-    const json   = raw.replace(/```[a-z]*/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(json);
-    if (Array.isArray(parsed)) return parsed;
-  } catch (_) {}
-  return [];
+    const answer = await nimChat(prompt, { temperature: 0.2, maxTokens: 900 });
+    const topics = parsePaperTopics(answer);
+    if (!topics.length) log.warn('question paper topics: no list in the answer', { chars: answer.length, hasBracket: answer.includes('[') });
+    return { topics, answer };
+  } catch (e: any) {
+    log.warn('question paper topics: AI call failed', errorFields(e));
+    return { topics: [], answer: '', error: `${e?.name ?? 'Error'}: ${String(e?.message ?? e).slice(0, 200)}` };
+  }
 }
 
 export function createUnitExamsRouter(
@@ -862,14 +865,22 @@ export function createUnitExamsRouter(
         // Fire-and-forget: extract topics from paper text via AI
         if (status === 'processing') setImmediate(async () => {
           try {
-            const topics = await extractTopicsFromPaperText(paperText, nimChat);
-            if (!topics.length) throw new Error('the AI returned no topics for this paper');
+            const { topics, answer, error } = await extractTopicsFromPaperText(paperText, nimChat);
+            if (!topics.length) {
+              // Keep why on record (the model's answer is about the paper, not about students).
+              writeAudit({
+                action: 'unit_exam.paper_analysis_failed', resourceType: 'unit_exam', resourceId: String(examId),
+                actorUserId: auth.legacyUserId, actorEmail: auth.email, actorRole: auth.role,
+                metadata: { reason: error ?? 'no topic list in the answer', answer_chars: answer.length, answer_preview: answer.slice(0, 300) },
+              });
+              throw new Error('the AI returned no topics for this paper');
+            }
             for (const t of topics) {
               await pool.query(
                 `INSERT INTO unit_exam_topic_analysis (unit_exam_id, topic_name, weight, difficulty)
                  VALUES ($1,$2,$3,$4)
                  ON CONFLICT DO NOTHING`,
-                [examId, t.topic, t.weight ?? null, t.difficulty ?? null]
+                [examId, t.topic, t.weight, t.difficulty]
               );
             }
             await pool.query(
