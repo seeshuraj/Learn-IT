@@ -506,6 +506,8 @@ async function publicSite(browser) {
       return d.length >= 50 && d.length <= 160;
     })(),
     'exactly one <h1>': (raw.match(/<h1[\s>]/g) ?? []).length === 1,
+    'prices ₹300 / ₹500 / ₹650': ['₹300', '₹500', '₹650'].every(p => raw.includes(p)),
+    'for universities and colleges': raw.includes('universities and colleges') && !/engineering colleges/i.test(raw),
   };
   const missing = Object.entries(want).filter(([, ok]) => !ok).map(([k]) => k);
   if (missing.length) fail('public / (HTML source)', `missing: ${missing.join(', ')}`);
