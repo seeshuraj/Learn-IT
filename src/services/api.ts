@@ -22,6 +22,103 @@ export interface Department {
   courses: number;
 }
 
+// ── College performance (admin; see src/server/routes/performance.ts) ──────────
+export interface TopicAvg { topic: string; avg_pct: number; n: number }
+
+/** Figures over a set of subjects (a department's courses, a professor's courses). */
+export interface PerformanceRollUp {
+  courses: number;
+  enrolled: number;
+  materials: number;
+  assignments: number;
+  assessments: number;
+  written: number;
+  absent: number;
+  at_risk: number;
+  avg_pct: number | null;
+  pass_rate: number | null;
+  submissions: number;
+  graded: number;
+  pending: number;
+  avg_turnaround_hours: number | null;
+  weak_topics: TopicAvg[];
+}
+
+export interface SubjectPerformance {
+  id: number;
+  code: string;
+  name: string;
+  department_id: number | null;
+  semester: number | null;
+  instructor_id: number | null;
+  instructor_name: string | null;
+  enrolled: number;
+  modules: number;
+  notes: number;
+  assignments: number;
+  assessments: number;
+  written: number;
+  passed: number;
+  absent: number;
+  at_risk: number;
+  submissions: number;
+  graded: number;
+  pending: number;
+  /** Graded submissions with both times (the turnaround's sample). */
+  timed: number;
+  avg_pct: number | null;
+  pass_rate: number | null;
+  avg_turnaround_hours: number | null;
+  weak_topics: TopicAvg[];
+}
+
+export interface StudentFigures { written: number; avg_pct: number | null; pass_rate: number | null }
+
+export interface CollegePerformance {
+  departments: {
+    id: number; code: string; name: string; students: number; professors: number;
+    /** Courses placed in the department. */
+    subjects: PerformanceRollUp | null;
+    /** The department's own students, in whichever courses they wrote. */
+    of_students: StudentFigures;
+  }[];
+  unassigned: { subjects: PerformanceRollUp; of_students: StudentFigures } | null;
+  professors: {
+    id: number; name: string | null; department_id: number | null;
+    course_departments: number[];
+    subjects: PerformanceRollUp | null;
+  }[];
+  courses: SubjectPerformance[];
+}
+
+export interface StudentPerformance {
+  id: number;
+  name: string;
+  department_id: number | null;
+  department_code: string | null;
+  year_of_study: number | null;
+  courses: number;
+  written: number;
+  avg_pct: number | null;
+  latest_pct: number | null;
+  trend: 'up' | 'down' | 'same' | null;
+  absent: number;
+  assignments: number;
+  submitted: number;
+  /** Averaging under 50%, or absent from 2 or more assessments. */
+  at_risk: boolean;
+}
+
+export interface StudentPerformanceQuery {
+  department_id?: number | 'none';
+  year?: number;
+  q?: string;
+  sort?: 'avg_asc' | 'avg_desc' | 'name' | 'latest_asc';
+  at_risk?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
 // ── Assessment types (see src/server/routes/unitExams.ts) ────────────────────
 export type AssessmentType = 'unit_test' | 'model' | 'end_semester' | 'quiz' | 'lab' | 'other';
 
@@ -651,6 +748,18 @@ export const api = {
 
   // ── Departments (admin) ────────────────────────────────────────────────────
   getDepartments: () => request<Department[]>('/api/admin/departments'),
+  getCollegePerformance: () => request<CollegePerformance>('/api/admin/performance'),
+  getStudentPerformance: (f: StudentPerformanceQuery = {}) => {
+    const p = new URLSearchParams();
+    if (f.department_id !== undefined) p.set('department_id', String(f.department_id));
+    if (f.year) p.set('year', String(f.year));
+    if (f.q) p.set('q', f.q);
+    if (f.sort) p.set('sort', f.sort);
+    if (f.at_risk) p.set('at_risk', '1');
+    if (f.limit) p.set('limit', String(f.limit));
+    if (f.offset) p.set('offset', String(f.offset));
+    return request<{ total: number; students: StudentPerformance[] }>(`/api/admin/performance/students?${p}`);
+  },
   createDepartment: (d: { code: string; name: string }) =>
     request<Department>('/api/admin/departments', { method: 'POST', body: JSON.stringify(d) }),
   updateDepartment: (id: number, d: { code?: string; name?: string }) =>
