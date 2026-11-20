@@ -437,7 +437,7 @@ export function createRoadmapRouter(pool: PgPool, nimChat: NimChatFn, queue?: Jo
 
     // ─ Call AI ───────────────────────────────────────────────────────────
     const systemMsg = [
-      'You are a study planner for an Indian engineering student.',
+      'You are a study planner for a student at an Indian university or college.',
       'Make a personalised, day-by-day plan for the coming exam from their real marks, feedback and the exam portion.',
       'Priorities:',
       '  1. WEAK TOPICS marked [PORTION]: learn, then practise each one (most time here)',

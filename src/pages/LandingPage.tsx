@@ -6,7 +6,7 @@ import { MarkedSheet } from "../components/brand/MarkedSheet";
 /**
  * Public landing page for colleges.
  *
- * Visual idea: an engineering student's marked unit test. The hero shows the
+ * Visual idea: a student's marked internal test. The hero shows the
  * examiner's red-pen annotation explaining *why* marks were lost, followed by
  * the study plan LearnIT produces. Red ink is reserved for annotations only;
  * ballpoint blue carries actions; the graph-sheet grid appears only on the
@@ -25,7 +25,7 @@ const ROLES = [
     who: "Students",
     line: "Know what to study, not only what you scored.",
     body:
-      "See the weak topics from every unit test, follow a weekly study plan, and ask an AI tutor that answers from the notes your faculty uploaded.",
+      "See the weak topics from every internal test, follow a weekly study plan, and ask an AI tutor that answers from the notes your faculty uploaded.",
   },
   {
     who: "Faculty",
@@ -44,7 +44,7 @@ const ROLES = [
 const STEPS = [
   {
     title: "Marks go in",
-    body: "Faculty upload unit test marks as a CSV or Excel sheet, with topic-wise scores if they have them.",
+    body: "Faculty upload internal test marks as a CSV or Excel sheet, with topic-wise scores if they have them.",
   },
   {
     title: "Weak topics surface",
@@ -79,7 +79,7 @@ const COMMITMENTS = [
   },
 ];
 
-// Per enrolled student, per semester. USD shown at about ₹95 = US$1.
+// Per enrolled student, per semester. USD shown at about ₹94 = US$1.
 const TIERS = [
   {
     name: "LMS",
@@ -90,14 +90,14 @@ const TIERS = [
     items: [
       "Courses, modules and course notes",
       "Assignments, submissions and grading",
-      "Unit test marks import from CSV or Excel",
+      "Internal test marks import from CSV or Excel",
       "Student, faculty and admin dashboards",
     ],
   },
   {
     name: "LMS + AI tutor",
-    inr: "₹2,000",
-    usd: "about US$21",
+    inr: "₹500",
+    usd: "about US$5",
     fit: "For colleges that want students supported between classes.",
     lead: "Everything in LMS, plus",
     items: [
@@ -107,12 +107,12 @@ const TIERS = [
   },
   {
     name: "Full academic intelligence",
-    inr: "₹8,000",
-    usd: "about US$84",
+    inr: "₹650",
+    usd: "about US$7",
     fit: "For colleges that want every student on a personal plan.",
     lead: "Everything in LMS + AI tutor, plus",
     items: [
-      "Weak-topic detection from every unit test",
+      "Weak-topic detection from every internal test",
       "Personal study roadmaps for each student",
       "AI-drafted grading feedback, approved by faculty",
       "Topic analysis of exam papers",
@@ -149,7 +149,7 @@ export default function LandingPage() {
               Every mark, explained.
             </h1>
             <p className="mt-6 max-w-[34rem] text-[clamp(1.05rem,2vw,1.2rem)] leading-[1.6] text-[var(--muted)]">
-              LearnIT Analytics is a learning platform for Indian engineering colleges. It reads unit test results,
+              LearnIT Analytics is a learning platform for Indian universities and colleges. It reads internal test results,
               finds the topics each student is weak in, and builds a study plan from your own course
               notes, with faculty in charge of every grade.
             </p>
@@ -187,7 +187,7 @@ export default function LandingPage() {
         <section id="how" aria-labelledby="how-h" className="border-t border-[var(--rule)]">
           <div className="mx-auto max-w-[72rem] px-4 py-20 sm:px-6 lg:py-28">
             <h2 id="how-h" className="lp-display max-w-[40rem] text-[clamp(1.9rem,4vw,2.75rem)] font-bold leading-[1.08] tracking-[-0.025em]">
-              From a unit test to a study plan
+              From an internal test to a study plan
             </h2>
             <p className="mt-4 max-w-[38rem] text-[17px] leading-[1.6] text-[var(--muted)]">
               It fits the assessments you already run. Nothing changes about how you set or mark papers.
@@ -255,7 +255,7 @@ export default function LandingPage() {
               ))}
             </div>
             <p className="mt-12 max-w-[40rem] text-[14px] leading-[1.6] text-[var(--muted)]">
-              US dollar amounts are approximate. Pilot terms are agreed with each college before the semester starts.
+              Prices are per student per semester, plus GST. A yearly platform fee covers hosting, backups, security testing and support, and is quoted with your plan. US dollar amounts are approximate. Pilot terms are agreed with each college before the semester starts.
             </p>
           </div>
         </section>
