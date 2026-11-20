@@ -511,6 +511,17 @@ async function publicSite(browser) {
   if (missing.length) fail('public / (HTML source)', `missing: ${missing.join(', ')}`);
   else pass('public / (HTML source)', 'has the landing text, title, canonical link and structured data without JavaScript');
 
+  // Old plain-text reset tokens: both routes are closed.
+  for (const route of ['request-reset', 'reset-password']) {
+    const r = await fetch(`${API}/api/auth/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'sarah@learnit.edu', token: 'x', newPassword: 'x'.repeat(12) }) });
+    if (r.status === 410) pass(`security: /api/auth/${route}`, 'retired (410)');
+    else fail(`security: /api/auth/${route}`, `status ${r.status}`);
+  }
+  const h = (await fetch(`${API}/api/health`)).headers;
+  if (h.get('strict-transport-security')?.includes('max-age=') && h.get('cache-control') === 'no-store')
+    pass('security: API headers', 'HSTS and no-store on responses');
+  else fail('security: API headers', `hsts ${h.get('strict-transport-security')}, cache ${h.get('cache-control')}`);
+
   for (const f of ['robots.txt', 'sitemap.xml']) {
     const r = await fetch(`${APP}/${f}`);
     const body = await r.text();

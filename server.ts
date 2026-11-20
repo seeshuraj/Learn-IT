@@ -61,6 +61,7 @@ import { createUnitExamsRouter } from "./src/server/routes/unitExams.js";
 import { createExamPatternsRouter } from "./src/server/routes/examPatterns.js";
 import { analyticsSummaryMessages, classOverviewMessages } from "./src/server/lib/summaryPrompts.js";
 import { createHash } from "node:crypto";
+import { dbSslConfig, dbCertVerified } from "./src/server/lib/dbSsl.js";
 import { createCourseNoticesRouter } from "./src/server/routes/courseNotices.js";
 import { createSearchRouter } from "./src/server/routes/search.js";
 import { createDepartmentsRouter } from "./src/server/routes/departments.js";
@@ -209,9 +210,14 @@ const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
 const isProduction = process.env.NODE_ENV === "production";
 
+const dbSsl = dbSslConfig();
+if (isProduction && !dbCertVerified(dbSsl)) {
+  log.warn("database TLS is encrypted but the certificate is not verified; set DATABASE_CA_CERT");
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: dbSsl,
   // Supabase's session pooler allows 15 clients in total on this plan, shared by
   // every API instance (and anything else connected). Keep
   // (instances × DB_POOL_MAX) under it; 5 per instance leaves room for a
@@ -730,6 +736,11 @@ async function startServer() {
     res.setHeader("X-Frame-Options",         "DENY");
     res.setHeader("X-XSS-Protection",        "1; mode=block");
     res.setHeader("Referrer-Policy",         "strict-origin-when-cross-origin");
+    // HTTPS only from here on (Cloud Run serves nothing over plain HTTP).
+    res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+    // Responses carry marks, names and notes: no browser or proxy copies by
+    // default. Routes that are safe to cache (the calendar feed) override this.
+    res.setHeader("Cache-Control",           "no-store");
     res.setHeader(
       "Content-Security-Policy",
       "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none';"

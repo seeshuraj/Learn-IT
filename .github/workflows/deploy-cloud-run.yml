@@ -2,7 +2,8 @@
 #
 # - Signs in to Google with Workload Identity Federation: no service-account
 #   key is stored in GitHub. Setup: docs/CLOUD_RUN.md.
-# - The new revision gets no traffic until GET /api/health passes on it, so a
+# - The new revision gets no traffic until GET /api/ready passes on it (it can
+#   reach the database over TLS and storage), so a
 #   broken build never reaches users; the previous revision keeps serving.
 # - Does nothing until the repository variables GCP_PROJECT_ID,
 #   GCP_WIF_PROVIDER and GCP_DEPLOY_SA are set.
@@ -87,9 +88,9 @@ jobs:
         run: |
           URL=$(gcloud run services describe "$SERVICE" --project "${{ vars.GCP_PROJECT_ID }}" --region "$REGION" \
                 --format=json | jq -r --arg t "sha-${GITHUB_SHA::7}" '.status.traffic[] | select(.tag == $t) | .url')
-          echo "Checking $URL/api/health"
+          echo "Checking $URL/api/ready"
           for i in $(seq 1 20); do
-            if curl -fsS --max-time 10 "$URL/api/health" > /dev/null; then echo "healthy"; exit 0; fi
+            if curl -fsS --max-time 10 "$URL/api/ready" > /dev/null; then echo "healthy"; exit 0; fi
             sleep 6
           done
           echo "::error::New revision failed its health check; traffic stays on the previous revision."

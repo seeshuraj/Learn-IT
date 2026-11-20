@@ -6,12 +6,12 @@
  * Routes:
  *   GET  /api/auth/me                    — current user's profile row
  *   GET  /api/auth/me/force-change       — { forceChange: bool } for the auth'd user
- *   POST /api/auth/request-reset         — admin/self issues a reset token
- *   POST /api/auth/reset-password        — consume token, set new password via Supabase Admin API
+ *   POST /api/auth/request-reset         — retired (410): resets use Supabase's recovery email
+ *   POST /api/auth/reset-password        — retired (410)
  *   POST /api/auth/change-password       — auth'd user changes their own password
  */
 
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
 import { createClient } from '@supabase/supabase-js';
@@ -74,98 +74,14 @@ export function createAuthRouter(pool: PgPool): Router {
     }
   });
 
-  // ── POST /api/auth/request-reset ──────────────────────────────────────────
-  router.post('/request-reset', async (req, res) => {
-    try {
-      const { email } = req.body;
-      if (!email) return res.status(400).json({ error: 'email required' });
-
-      const user = await q1(
-        `SELECT id FROM users WHERE email = $1 AND active = 1`,
-        [email.trim().toLowerCase()]
-      );
-      if (!user) return res.json({ message: 'If that email exists, a reset link has been issued.' });
-
-      await pool.query(
-        `UPDATE password_reset_tokens SET used_at = NOW()
-         WHERE user_id = $1 AND used_at IS NULL AND expires_at > NOW()`,
-        [user.id]
-      );
-
-      const row = await q1(
-        `INSERT INTO password_reset_tokens (user_id)
-         VALUES ($1)
-         RETURNING token, expires_at`,
-        [user.id]
-      );
-
-      // Returning the token is only for local development, and only when
-      // explicitly enabled: a non-production NODE_ENV alone must never expose
-      // it, or any misconfigured deploy hands out account takeovers.
-      const returnTokenForLocalDev =
-        process.env.NODE_ENV !== 'production' &&
-        process.env.AUTH_DEV_RETURN_RESET_TOKEN === 'true';
-      if (returnTokenForLocalDev) {
-        return res.json({
-          message: 'Reset token issued (dev mode — token returned directly).',
-          token: row.token,
-          expires_at: row.expires_at,
-        });
-      }
-
-      // TODO(email): deliver the reset link by email. Until an email provider
-      // is configured, production resets are issued but not delivered.
-      log.info('password reset token issued', { userId: user.id });
-      res.json({ message: 'If that email exists, a reset link has been issued.' });
-    } catch (e: any) {
-      sendServerError(res, e);
-    }
-  });
-
-  // ── POST /api/auth/reset-password ─────────────────────────────────────────
-  router.post('/reset-password', async (req, res) => {
-    try {
-      const { token, newPassword } = req.body;
-      if (!token || !newPassword)
-        return res.status(400).json({ error: 'token and newPassword required' });
-      if (newPassword.length < 8)
-        return res.status(400).json({ error: 'Password must be at least 8 characters' });
-
-      const tokenRow = await q1(
-        `SELECT prt.id, prt.user_id, uim.auth_user_id
-         FROM password_reset_tokens prt
-         JOIN user_identity_map uim ON uim.legacy_user_id = prt.user_id
-         WHERE prt.token = $1
-           AND prt.used_at IS NULL
-           AND prt.expires_at > NOW()`,
-        [token]
-      );
-      if (!tokenRow)
-        return res.status(400).json({ error: 'Invalid or expired reset token' });
-
-      const { error: authErr } = await supabaseAdmin.auth.admin.updateUserById(
-        tokenRow.auth_user_id,
-        { password: newPassword }
-      );
-      if (authErr)
-        return sendServerError(res, authErr);
-
-      await pool.query(
-        `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`,
-        [tokenRow.id]
-      );
-      await pool.query(
-        `UPDATE user_identity_map
-         SET force_password_change = FALSE, last_password_change = NOW()
-         WHERE legacy_user_id = $1`,
-        [tokenRow.user_id]
-      );
-
-      res.json({ success: true, message: 'Password updated successfully.' });
-    } catch (e: any) {
-      sendServerError(res, e);
-    }
-  });
+  // ── POST /api/auth/request-reset, /api/auth/reset-password (retired) ─────
+  // Password resets go through Supabase Auth's recovery email (the Forgot
+  // password page → /reset-password). These routes kept their own plain-text
+  // tokens, so they are closed rather than left as a second way in.
+  const retired = (_req: Request, res: Response) =>
+    res.status(410).json({ error: 'Use "Forgot password" on the sign-in page to reset your password.' });
+  router.post('/request-reset', retired);
+  router.post('/reset-password', retired);
 
   // ── POST /api/auth/change-password ────────────────────────────────────────
   router.post('/change-password', requireAuth, async (req, res) => {
