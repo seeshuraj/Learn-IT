@@ -124,6 +124,41 @@ export function PaperUpload({ exam, onUploaded }: { exam: Exam; onUploaded?: (an
   );
 }
 
+const DIFFICULTY_STYLE: Record<string, string> = {
+  easy: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+  medium: 'bg-amber-50 text-amber-800 border-amber-200',
+  hard: 'bg-red-50 text-red-700 border-red-200',
+};
+
+/** The topics the question paper covers, with their share of the marks, as worked out from the paper. */
+function PaperTopics({ topics }: { topics: { topic_name: string; weight: string | number | null; difficulty: string | null }[] }) {
+  return (
+    <section aria-labelledby="paper-topics-h" className="rounded-xl border border-slate-200 bg-white p-4">
+      <h3 id="paper-topics-h" className="text-sm font-semibold text-slate-800">Topics in the question paper</h3>
+      <p className="mt-0.5 text-xs text-slate-500">Worked out from the paper by AI. Check them against the paper before relying on them.</p>
+      <ul className="mt-3 space-y-2.5">
+        {topics.map(t => {
+          const w = t.weight == null ? null : Math.max(0, Math.min(100, Number(t.weight)));
+          return (
+            <li key={t.topic_name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto]">
+              <span className="truncate text-sm text-slate-800" title={t.topic_name}>{t.topic_name}</span>
+              <span className="order-3 col-span-2 flex items-center gap-2 sm:order-none sm:col-span-1">
+                <span className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+                  {w != null && <span className="block h-full rounded-full bg-teal-600" style={{ width: `${w}%` }} />}
+                </span>
+                <span className="w-12 text-right text-xs tabular-nums text-slate-600">{w == null ? '—' : `${Math.round(w)}%`}</span>
+              </span>
+              {t.difficulty
+                ? <span className={`justify-self-end rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${DIFFICULTY_STYLE[t.difficulty] ?? 'border-slate-200 text-slate-600'}`}>{t.difficulty}</span>
+                : <span />}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** The paper was uploaded but its topics couldn't be worked out. */
 function PaperUnreadable() {
   return (
@@ -148,7 +183,7 @@ export function AnalyticsView({ exam }: { exam: Exam }) {
       .then((d: Analytics) => setData(d))
       .catch((e: any) => setErr(e.message))
       .finally(() => setLoading(false));
-  }, [exam.id]);
+  }, [exam.id, exam.analysis_status]);
 
   if (loading) return (
     <div className="flex items-center gap-3 text-slate-500 py-12 justify-center">
@@ -308,6 +343,8 @@ export function AnalyticsView({ exam }: { exam: Exam }) {
           )}
         </div>
       )}
+
+      {topics.length > 0 && <PaperTopics topics={topics} />}
 
       {/* Student results table */}
       {results.length > 0 && (
