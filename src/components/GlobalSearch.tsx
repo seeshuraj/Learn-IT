@@ -23,7 +23,15 @@ function toHits(r: SearchResults, role: string | undefined): Hit[] {
   return hits;
 }
 
-export const GlobalSearch: React.FC<{ role?: string }> = ({ role }) => {
+interface GlobalSearchProps {
+  role?: string;
+  /** Focus the box as soon as it appears (the phone search panel). */
+  autoFocus?: boolean;
+  /** Called after a result is opened or Escape is pressed. */
+  onClose?: () => void;
+}
+
+export const GlobalSearch: React.FC<GlobalSearchProps> = ({ role, autoFocus = false, onClose }) => {
   const navigate = useNavigate();
   const listId = useId();
   const [q, setQ] = useState("");
@@ -55,10 +63,10 @@ export const GlobalSearch: React.FC<{ role?: string }> = ({ role }) => {
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  const go = (h: Hit) => { setOpen(false); setQ(""); navigate(h.to); };
+  const go = (h: Hit) => { setOpen(false); setQ(""); onClose?.(); navigate(h.to); };
 
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") { setOpen(false); return; }
+    if (e.key === "Escape") { setOpen(false); onClose?.(); return; }
     if (!hits.length) return;
     if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive(i => (i + 1) % hits.length); }
     if (e.key === "ArrowUp") { e.preventDefault(); setActive(i => (i - 1 + hits.length) % hits.length); }
@@ -84,6 +92,7 @@ export const GlobalSearch: React.FC<{ role?: string }> = ({ role }) => {
         onChange={e => { setQ(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKey}
+        autoFocus={autoFocus}
         placeholder={placeholder}
         className="w-full pl-10 pr-9 py-2 bg-white border border-rule rounded-[10px] text-sm text-ink placeholder:text-muted focus:outline-none focus:border-brand focus:ring-4 focus:ring-brand/15 transition-colors"
       />
