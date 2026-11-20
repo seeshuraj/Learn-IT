@@ -620,6 +620,8 @@ export const api = {
   getStudentStats:      (studentId: number) => request(`/api/student/${studentId}/stats`),
   getStudentAnalytics:  (studentId: number) => request(`/api/students/${studentId}/analytics`),
   getStudentNotes:      (studentId: number) => request(`/api/students/${studentId}/notes`),
+  // Every note the signed-in user may read (course material, and a student's own notes).
+  getMyNotes:           () => request('/api/notes'),
   // aggregated grading insights (strengths + improvements from ai_feedback)
   getStudentGradingInsights: (studentId: number) =>
     request(`/api/student/${studentId}/grading-insights`),

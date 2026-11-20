@@ -69,7 +69,7 @@ export default function NotesPage({ user }: Props) {
   useEffect(() => {
     if (!hasPending || !user) return;
     const t = setTimeout(async () => {
-      const data = await api.getStudentNotes(user.id).catch(() => null);
+      const data = await api.getMyNotes().catch(() => null);
       if (Array.isArray(data)) setNotes(data);
     }, 5_000);
     return () => clearTimeout(t);
@@ -84,7 +84,7 @@ export default function NotesPage({ user }: Props) {
       // Modules of every course and the notes list load in parallel, not one after another.
       const [moduleLists, notesData] = await Promise.all([
         Promise.all(courseList.map(course => api.getCourseModules(course.id).catch(() => []))),
-        api.getStudentNotes(user.id).catch(() => []),
+        api.getMyNotes().catch(() => []),
       ]);
       const allModules: Module[] = [];
       moduleLists.forEach((mods: any, i) =>

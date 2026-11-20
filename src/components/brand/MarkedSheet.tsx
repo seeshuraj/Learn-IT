@@ -113,7 +113,7 @@ export const MarkedSheet: React.FC<MarkedSheetProps> = ({ tilt = true, scrollPar
         <div data-depth="2.2" className={`relative -mt-3 ml-auto w-[92%] ${compact ? "sm:-mt-5 sm:w-[86%]" : "sm:-mt-6 sm:w-[82%]"}`}>
           <div className="lp-plan rounded-[14px] border border-rule bg-paper p-5 shadow-[0_18px_40px_-24px_rgba(19,32,59,0.45)]">
             <p className="text-[14px] font-semibold">This week's plan for Yuvaraaj</p>
-            <p className="mt-0.5 text-[13px] text-muted">Built from Unit Test 2 and her course notes</p>
+            <p className="mt-0.5 text-[13px] text-muted">Built from Unit Test 2 and his course notes</p>
             <ul className="mt-3 space-y-2 text-[14px]">
               {PLAN.map(item => (
                 <li key={item} className="flex gap-2.5">

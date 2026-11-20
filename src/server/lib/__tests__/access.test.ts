@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   managesCourse, canAccessCourse, loadNoteForCaller, loadSubmissionForCaller,
-  assertManagesCourse, assertCanAccessCourse, AccessDenied, Caller,
+  assertManagesCourse, assertCanAccessCourse, AccessDenied, Caller, notesVisibleTo,
 } from '../access.js';
 
 const users: Record<number, { role: string }> = {
@@ -134,4 +134,31 @@ test('a student who moved institutions loses access to old enrollments and recor
   assert.equal(await canAccessCourse(pool, movedStudent, 1), false);
   await assert.rejects(assertCanAccessCourse(pool, movedStudent, 1), denied(404));
   await assert.rejects(loadNoteForCaller(pool, movedStudent, 18, 'read'), denied(404));
+});
+
+test('notesVisibleTo: every role is held to its own college', () => {
+  for (const role of ['admin', 'instructor', 'student'] as const) {
+    const { where, params } = notesVisibleTo({ legacyUserId: 4, role, institutionId: A });
+    assert.equal(params[0], A);
+    assert.match(where, /n\.institution_id = \$1 AND c\.institution_id = \$1/);
+  }
+});
+
+test('notesVisibleTo: a professor sees every note in the courses they teach', () => {
+  const { where, params } = notesVisibleTo({ legacyUserId: 4, role: 'instructor', institutionId: A });
+  assert.match(where, /c\.instructor_id = \$2/);
+  assert.deepEqual(params, [A, 4]);
+});
+
+test('notesVisibleTo: a student sees course material and their own notes in enrolled courses only', () => {
+  const { where, params } = notesVisibleTo({ legacyUserId: 2, role: 'student', institutionId: A });
+  assert.match(where, /FROM enrollments e WHERE e\.course_id = c\.id AND e\.student_id = \$2 AND e\.institution_id = \$1/);
+  assert.match(where, /up\.role <> 'student'/);
+  assert.deepEqual(params, [A, 2]);
+});
+
+test('notesVisibleTo: an admin sees all notes of the college', () => {
+  const { where, params } = notesVisibleTo({ legacyUserId: 1, role: 'admin', institutionId: A });
+  assert.doesNotMatch(where, /instructor_id|enrollments/);
+  assert.deepEqual(params, [A]);
 });
