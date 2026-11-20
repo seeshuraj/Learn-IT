@@ -66,6 +66,7 @@ import { extractPdfText } from "./src/server/lib/pdfText.js";
 import { createCourseNoticesRouter } from "./src/server/routes/courseNotices.js";
 import { createSearchRouter } from "./src/server/routes/search.js";
 import { createDepartmentsRouter } from "./src/server/routes/departments.js";
+import { createPerformanceRouter } from "./src/server/routes/performance.js";
 import { createTimetablesRouter, storeEntries, TIMETABLE_BUCKET } from "./src/server/routes/timetables.js";
 import { createExamCalendarRouter } from "./src/server/routes/examCalendar.js";
 import { resolveDepartmentId } from "./src/server/lib/departments.js";
@@ -759,6 +760,7 @@ async function startServer() {
   app.use("/api",                    createCourseNoticesRouter(pool));
   app.use("/api",                    createSearchRouter(pool));
   app.use("/api/admin",              createDepartmentsRouter(pool));
+  app.use("/api/admin",              createPerformanceRouter(pool));
   app.use("/api/admin",              createTimetablesRouter(pool, supabaseAdmin, jobQueue));
   app.use("/api",                    createExamCalendarRouter(pool, { publicApiUrl: process.env.PUBLIC_API_URL }));
   app.use("/api/admin/audit-logs",   createAuditLogsRouter(pool));

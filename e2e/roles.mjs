@@ -883,7 +883,83 @@ async function paperTopicScores(browser) {
   }
 }
 
-export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, noDeadEnds };
+
+/**
+ * Admin performance: departments, professors' subjects and students, from the
+ * same published results the other pages use. Figures are checked against the
+ * database; professors and students are refused.
+ */
+async function adminPerformance(browser) {
+  const { rows: [want] } = await db.query(
+    `select round(avg(r.percentage) filter (where not r.is_absent and r.percentage is not null), 1)::float as avg_pct,
+            count(*) filter (where not r.is_absent and r.percentage is not null)::int as written
+     from unit_exam_results r join unit_exams e on e.id = r.unit_exam_id
+     where e.course_id = 2 and e.published_at is not null`);
+  const { rows: [course] } = await db.query(
+    `select c.code, c.department_id, d.name as department from courses c left join departments d on d.id = c.department_id where c.id = 2`);
+
+  const admin = await signIn(browser, 'admin');
+  try {
+    const perf = await jsonAs(admin.page, 'GET', '/api/admin/performance');
+    const db2 = (perf.body?.courses ?? []).find(c => c.id === 2);
+    if (perf.status === 200 && db2 && db2.written === want.written && db2.avg_pct === want.avg_pct
+        && typeof db2.modules === 'number' && Array.isArray(db2.weak_topics) && Array.isArray(perf.body.departments))
+      pass('performance', `subject figures match the published results (${db2.written} written, ${db2.avg_pct}% average)`);
+    else fail('performance', `GET /api/admin/performance ${perf.status} ${JSON.stringify(db2)} want ${JSON.stringify(want)}`);
+
+    const deptRow = course.department_id === null ? perf.body?.unassigned : (perf.body?.departments ?? []).find(d => d.id === course.department_id);
+    if (deptRow?.subjects?.courses >= 1) pass('performance', 'the subject is counted in its department');
+    else fail('performance', `department roll-up ${JSON.stringify(deptRow)?.slice(0, 200)}`);
+
+    const found = await jsonAs(admin.page, 'GET', '/api/admin/performance/students?q=Sarah');
+    const sarah = (found.body?.students ?? []).find(s => s.id === 2);
+    if (found.status === 200 && sarah && typeof sarah.written === 'number' && found.body.students.every(s => /sarah/i.test(s.name)))
+      pass('performance', 'student search finds Sarah with her figures');
+    else fail('performance', `student search ${found.status} ${JSON.stringify(found.body)?.slice(0, 200)}`);
+    const risky = await jsonAs(admin.page, 'GET', '/api/admin/performance/students?at_risk=1&limit=100');
+    if (risky.status === 200 && (risky.body?.students ?? []).every(s => s.at_risk)) pass('performance', '“At risk only” lists only students at risk');
+    else fail('performance', `at-risk filter ${risky.status} ${JSON.stringify(risky.body)?.slice(0, 200)}`);
+    const injected = await jsonAs(admin.page, 'GET', `/api/admin/performance/students?sort=${encodeURIComponent('name; drop table users')}&q=${encodeURIComponent("%' or 1=1 --")}`);
+    if (injected.status === 200 && (injected.body?.students ?? []).length === 0) pass('performance', 'sort and search are not injectable');
+    else fail('performance', `injection probe ${injected.status} ${JSON.stringify(injected.body)?.slice(0, 120)}`);
+
+    await admin.page.goto(`${APP}/admin/performance`);
+    try {
+      await admin.page.getByRole('heading', { name: 'Performance' }).waitFor({ timeout: 8000 });
+      await admin.page.getByTestId('department-table').waitFor({ timeout: 8000 });
+      await admin.page.getByLabel('Department', { exact: true }).selectOption(course.department_id === null ? 'none' : String(course.department_id));
+      await admin.page.getByTestId('subject-table').locator(`[data-subject="${course.code}"]`).waitFor({ timeout: 5000 });
+      pass('performance', `choosing ${course.department ?? 'No department'} shows its subjects`);
+
+      await admin.page.getByRole('tab', { name: 'Professors & subjects' }).click();
+      const prof = admin.page.getByTestId('professor-table').locator('tr[data-professor]').first();
+      await prof.click();
+      await admin.page.getByTestId('professor-table').getByTestId('subject-table').first().waitFor({ timeout: 5000 });
+      pass('performance', 'a professor expands to their subjects with class average and grading');
+
+      await admin.page.getByLabel('Department', { exact: true }).selectOption('all');
+      await admin.page.getByRole('tab', { name: 'Students' }).click();
+      await admin.page.getByPlaceholder('Search by name').fill('Sarah');
+      await admin.page.getByTestId('student-table').getByRole('button', { name: 'Sarah Johnson' }).first().click({ timeout: 8000 });
+      const panel = admin.page.getByRole('dialog', { name: "Sarah Johnson's performance" });
+      await panel.getByRole('heading', { name: 'Assessments' }).waitFor({ timeout: 8000 });
+      pass('performance', 'Students → a student opens their assessments and topic mastery');
+    } catch (e) { fail('performance', `page: ${e.message.split('\n')[0]}`); }
+  } finally {
+    await admin.context.close();
+  }
+
+  for (const role of ['professor', 'student']) {
+    const who = await signIn(browser, role);
+    const a = await jsonAs(who.page, 'GET', '/api/admin/performance');
+    const b = await jsonAs(who.page, 'GET', '/api/admin/performance/students');
+    if (a.status === 403 && b.status === 403) pass('performance', `${role}s are refused`);
+    else fail('performance', `${role} → ${a.status} / ${b.status}`);
+    await who.context.close();
+  }
+}
+
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, adminPerformance, noDeadEnds };
 
 async function main() {
   const browser = await chromium.launch();

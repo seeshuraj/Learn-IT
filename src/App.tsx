@@ -58,6 +58,7 @@ const RoadmapPage           = lazyPage(() => import("./pages/RoadmapPage"));
 const AssessmentsPage       = lazyPage(() => import("./pages/AssessmentsPage"));
 const MyMarksPage           = lazyPage(() => import("./pages/MyMarksPage"));
 const AdminTimetablesPage   = lazyPage(() => import("./pages/AdminTimetablesPage"));
+const AdminPerformancePage  = lazyPage(() => import("./pages/AdminPerformancePage"));
 const ExamsPage             = lazyPage(() => import("./pages/ExamsPage"));
 
 /** Shown while a page's code downloads (usually well under a second). */
@@ -207,6 +208,7 @@ const AppContent: React.FC = () => {
                 <Route path="/admin/settings" element={<AdminSettings />} />
                 <Route path="/admin/data" element={<AdminDataPage />} />
                 <Route path="/admin/timetables" element={<AdminTimetablesPage />} />
+                <Route path="/admin/performance" element={<AdminPerformancePage />} />
               </>
             )}
             <Route path="*" element={<Navigate to="/" replace />} />
