@@ -71,6 +71,28 @@ for NAME in DATABASE_URL SUPABASE_SERVICE_ROLE_KEY NVIDIA_API_KEY CLAUDE_API; do
 done
 ```
 
+### Verified database TLS (`DATABASE_CA_CERT`)
+
+The API always encrypts its connection to Supabase. To also verify the database's certificate (which blocks a man-in-the-middle), download the CA from Supabase → **Database → Settings → SSL configuration → Download certificate** (`prod-ca-2021.crt`) and attach it:
+
+```bash
+gcloud secrets create DATABASE_CA_CERT --data-file=prod-ca-2021.crt \
+  --replication-policy=user-managed --locations="$REGION"
+gcloud secrets add-iam-policy-binding DATABASE_CA_CERT \
+  --member="serviceAccount:$RUNTIME_SA" --role=roles/secretmanager.secretAccessor
+# New revision with the certificate, no traffic yet
+gcloud run services update learnit-api --region="$REGION" \
+  --update-secrets=DATABASE_CA_CERT=DATABASE_CA_CERT:latest --no-traffic --tag=ca-check
+URL=$(gcloud run services describe learnit-api --region="$REGION" --format=json \
+  | jq -r '.status.traffic[] | select(.tag=="ca-check") | .url')
+curl -fsS "$URL/api/ready"      # must print "status":"ready"
+# Only then move users over and drop the temporary tag
+gcloud run services update-traffic learnit-api --region="$REGION" --to-latest
+gcloud run services update-traffic learnit-api --region="$REGION" --remove-tags=ca-check
+```
+
+If `/api/ready` reports `"db":{"ok":false}`, the certificate doesn't match: users are still on the previous revision, so remove the secret (`gcloud run services update learnit-api --region="$REGION" --remove-secrets=DATABASE_CA_CERT`) and check the file. Later deploys keep the secret. Without it the API logs `database TLS is encrypted but the certificate is not verified` at start-up.
+
 To change a secret later: `printf '%s' "new value" | gcloud secrets versions add NAME --data-file=-`, then deploy again (step 9 runs on every merge, or run the workflow by hand).
 
 ## 6. First deploy from Cloud Shell

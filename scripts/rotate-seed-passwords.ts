@@ -20,6 +20,7 @@
 import { randomInt } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import pkg from "pg";
+import { dbSslConfig } from "../src/server/lib/dbSsl.js";
 const { Pool } = pkg;
 import dotenv from "dotenv";
 
@@ -40,7 +41,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: dbSslConfig(),
   max: 3,
 });
 
