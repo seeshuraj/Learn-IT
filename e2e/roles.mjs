@@ -763,7 +763,75 @@ async function noDeadEnds(browser) {
   await admin.context.close();
 }
 
-export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, noDeadEnds };
+
+/**
+ * Question-paper topics mapped to questions: each student is scored by the
+ * questions on each topic (and the (a)/(b) option they wrote), the class
+ * analysis shows the averages, and the student sees their weakest topic.
+ * The AI step is replaced by inserting its result directly.
+ */
+async function paperTopicScores(browser) {
+  const { rows: [ex] } = await db.query(`select id from unit_exams where title = 'E2E Unit test 1'`);
+  if (!ex) { fail('paper topics', 'E2E Unit test 1 is missing'); return; }
+  const marks = [
+    { student_id: 2, questions: { 1: '2', 2: '2', 3: '1.5', 4: '2', 5: '0', 6: '10b', 7: '12', 8: '11' } },
+    { student_id: 3, questions: { 1: '1', 2: '1', 6: '7', 7: '6a', 8: '5' } },
+  ];
+  await db.query(`delete from unit_exam_topic_analysis where unit_exam_id = $1`, [ex.id]);
+  await db.query(
+    `insert into unit_exam_topic_analysis (unit_exam_id, topic_name, weight, difficulty, evidence) values
+       ($1, 'Join basics', 4, 'easy', '{"questions":["5"],"marks":2}'),
+       ($1, 'GROUP BY and aggregates', 30, 'medium', '{"questions":["3","7b"],"marks":15}'),
+       ($1, 'Joins and subqueries', 26, 'hard', '{"questions":["7a"],"marks":13}')`, [ex.id]);
+  const prof = await signIn(browser, 'professor');
+  try {
+    const saved = await jsonAs(prof.page, 'PUT', `/api/unit-exams/${ex.id}/results`, { results: marks });
+    const { rows } = await db.query(
+      `select student_id, topic_breakdown from unit_exam_results where unit_exam_id = $1 and student_id in (2, 3) order by student_id`, [ex.id]);
+    const sarah = rows.find(r => r.student_id === 2)?.topic_breakdown;
+    const michael = rows.find(r => r.student_id === 3)?.topic_breakdown;
+    const want = { sarah: { 'Join basics': 0, 'GROUP BY and aggregates': 75, 'Joins and subqueries': 92.31 },
+                   michael: { 'Join basics': 0, 'GROUP BY and aggregates': 0, 'Joins and subqueries': 46.15 } };
+    // jsonb doesn't keep key order: compare sorted.
+    const same = (a, b) => JSON.stringify(Object.entries(a ?? {}).sort()) === JSON.stringify(Object.entries(b).sort());
+    if (saved.status === 200 && same(sarah, want.sarah) && same(michael, want.michael))
+      pass('paper topics', 'scores each student by the questions on each topic and the option written');
+    else fail('paper topics', `save ${saved.status}; Sarah ${JSON.stringify(sarah)}; Michael ${JSON.stringify(michael)}`);
+
+    const an = await jsonAs(prof.page, 'GET', `/api/unit-exams/${ex.id}/analytics`);
+    const avg = Object.fromEntries((an.body?.topics ?? []).map(t => [t.topic_name, t.class_avg]));
+    const qs = (an.body?.topics ?? []).find(t => t.topic_name === 'GROUP BY and aggregates')?.questions;
+    if (avg['Join basics'] === 0 && avg['GROUP BY and aggregates'] === 37.5 && avg['Joins and subqueries'] === 69.23
+        && JSON.stringify(qs) === '["3","7b"]' && an.body?.stats?.weakest_topics?.[0] === 'Join basics')
+      pass('paper topics', 'class analysis shows each topic\'s questions and class average; weakest is "Join basics"');
+    else fail('paper topics', `analytics ${JSON.stringify({ avg, qs, weakest: an.body?.stats?.weakest_topics })}`);
+
+    await prof.page.goto(`${APP}/assessments`);
+    await prof.page.getByText('E2E Unit test 1').first().click();
+    await prof.page.getByRole('tab', { name: 'Class analysis' }).click();
+    try {
+      await prof.page.getByRole('heading', { name: 'Topics in the question paper' }).waitFor({ timeout: 8000 });
+      const row = prof.page.getByRole('row', { name: /GROUP BY and aggregates/ });
+      await row.getByText('Q3, Q7(b)').waitFor({ timeout: 3000 });
+      await row.getByText('38%').waitFor({ timeout: 3000 });
+      pass('paper topics', 'Class analysis lists the topic with "Q3, Q7(b)" and the class average');
+    } catch (e) { fail('paper topics', `Class analysis table: ${e.message.split('\n')[0]}`); }
+
+    // The student sees the paper's topics in this assessment's breakdown on My Marks.
+    const stu = await signIn(browser, 'student');
+    await stu.page.goto(`${APP}/marks`);
+    await stu.page.getByText('Show question-wise marks').first().click().catch(() => {});
+    await expectText(stu.page, 'paper topics (student)', 'Join basics');
+    await stu.context.close();
+  } finally {
+    // Back to unit-based scores for the flows after this one.
+    await db.query(`delete from unit_exam_topic_analysis where unit_exam_id = $1`, [ex.id]);
+    await jsonAs(prof.page, 'PUT', `/api/unit-exams/${ex.id}/results`, { results: marks });
+    await prof.context.close();
+  }
+}
+
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, noDeadEnds };
 
 async function main() {
   const browser = await chromium.launch();

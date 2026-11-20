@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePaperTopics } from '../paperTopics.js';
+import { parsePaperTopics as parseAll } from '../paperTopics.js';
+
+// These cases are about names, weights and difficulty; question lists have their own tests.
+const parsePaperTopics = (raw: string) => parseAll(raw).map(({ questions: _q, ...rest }) => rest);
 
 const arr = '[{"topic":"SQL joins","weight":30,"difficulty":"medium"},{"topic":"Normalisation","weight":28,"difficulty":"hard"}]';
 const expected = [

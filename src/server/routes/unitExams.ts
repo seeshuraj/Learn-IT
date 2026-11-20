@@ -36,7 +36,10 @@ import {
 import { markPlansStale } from './roadmaps.js';
 import { readPdfText } from '../lib/pdfText.js';
 import { parsePaperTopics, type PaperTopic } from '../lib/paperTopics.js';
-import { validatePattern, paperTotal, topicBreakdown, scoreQuestions, samePattern, type QuestionPattern } from '../lib/questionPattern.js';
+import {
+  validatePattern, paperTotal, topicBreakdown, scoreQuestions, samePattern, type QuestionPattern,
+  resolveQuestionRefs, paperTopicWeights, paperTopicBreakdown, type MappedTopic,
+} from '../lib/questionPattern.js';
 
 const require = createRequire(import.meta.url);
 const multer   = require('multer');
@@ -70,23 +73,34 @@ function parseSheet(buffer: Buffer, _mimetype: string, _originalname: string): R
 }
 
 // ── AI topic extraction from exam paper text ────────────────────────────────────
+/** The paper's questions as the model should refer to them: "1 (2 marks)", "6 (13 marks, (a) or (b))". */
+function describeQuestions(p: QuestionPattern | null): string {
+  if (!p) return '';
+  return p.parts.map(part => `${part.label}: ` + part.questions
+    .map(q => `${q.no} (${q.marks} marks${q.either_or ? ', (a) or (b)' : ''})`).join(', ')).join('\n');
+}
+
 async function extractTopicsFromPaperText(
   paperText: string,
-  nimChat: (msgs: any[], opts?: any) => Promise<string>
+  nimChat: (msgs: any[], opts?: any) => Promise<string>,
+  pattern: QuestionPattern | null = null,
 ): Promise<{ topics: PaperTopic[]; answer: string; error?: string }> {
+  const questions = describeQuestions(pattern);
   const prompt = [
     {
       role: 'system',
       content:
-        'You are an educational analyst. Given an exam paper, extract the main topics covered, '
-        + 'their approximate weight (percentage of total marks) and difficulty (easy/medium/hard). '
+        'You are an educational analyst. Given an exam paper, list the topics it tests, as a teacher would name them '
+        + '(3 to 15 topics). For each topic give the question numbers that test it and its difficulty (easy/medium/hard). '
+        + 'Write question numbers exactly as on the paper; for an (a)/(b) question, give the option, like "7b". '
+        + 'Every question should belong to at least one topic. '
         + 'Respond ONLY with a valid JSON array like '
-        + '[{"topic":"Recursion","weight":25,"difficulty":"hard"}]. '
+        + '[{"topic":"Recursion","questions":["3","11a"],"difficulty":"hard"}]. '
         + 'No explanation, no markdown fences.',
     },
     {
       role: 'user',
-      content: paperText.slice(0, 4000),
+      content: (questions ? `Questions on this paper:\n${questions}\n\nPaper:\n` : '') + paperText.slice(0, 4000),
     },
   ];
   try {
@@ -292,11 +306,41 @@ export function createUnitExamsRouter(
     return new Map(r.rows.map((m: any) => [m.id, m.name]));
   }
 
-  /** Per-unit % for a computed row, when the exam has a tagged pattern. */
-  function withTopics(exam: any, row: ResultRow, names: Map<number, string>) {
-    const topics = exam.question_pattern && row.question_marks
-      ? topicBreakdown(exam.question_pattern, row.question_marks, names) : null;
+  /** Paper topics mapped to questions by the question-paper analysis. */
+  async function loadPaperTopics(examId: number | string): Promise<MappedTopic[]> {
+    const r = await pool.query(
+      `SELECT topic_name, evidence FROM unit_exam_topic_analysis WHERE unit_exam_id = $1 ORDER BY id`, [examId]);
+    return r.rows
+      .map((t: any) => ({ topic: t.topic_name, questions: Array.isArray(t.evidence?.questions) ? t.evidence.questions.map(String) : [] }))
+      .filter((t: MappedTopic) => t.questions.length > 0);
+  }
+
+  /**
+   * A result's % per topic: the question paper's topics when the paper has
+   * been analysed and mapped to questions, otherwise the units tagged on the
+   * questions. Null when neither applies.
+   */
+  function withTopics(exam: any, row: ResultRow, names: Map<number, string>, paperTopics: MappedTopic[] = []) {
+    const p = exam.question_pattern as QuestionPattern | null;
+    const marks = row.question_marks;
+    const topics = !p || !marks ? null
+      : (paperTopics.length ? paperTopicBreakdown(p, marks, paperTopics) : null) ?? topicBreakdown(p, marks, names);
     return { ...row, topic_breakdown: topics };
+  }
+
+  /** Recompute every stored result's topic scores (after the paper's topics change). */
+  async function refreshTopicBreakdowns(examId: number | string): Promise<void> {
+    const { rows: [exam] } = await pool.query('SELECT id, course_id, question_pattern FROM unit_exams WHERE id = $1', [examId]);
+    if (!exam?.question_pattern) return;
+    const [names, paperTopics] = await Promise.all([moduleNames(exam.course_id), loadPaperTopics(exam.id)]);
+    const { rows } = await pool.query(
+      'SELECT student_id, question_marks FROM unit_exam_results WHERE unit_exam_id = $1 AND question_marks IS NOT NULL', [exam.id]);
+    for (const r of rows) {
+      const { topic_breakdown } = withTopics(exam, { question_marks: r.question_marks } as ResultRow, names, paperTopics);
+      await pool.query(
+        'UPDATE unit_exam_results SET topic_breakdown = $1 WHERE unit_exam_id = $2 AND student_id = $3',
+        [topic_breakdown ? JSON.stringify(topic_breakdown) : null, exam.id, r.student_id]);
+    }
   }
 
   /** Upsert computed rows and delete cleared ones, in the caller's transaction. */
@@ -477,7 +521,7 @@ export function createUnitExamsRouter(
           return res.status(409).json({ error: 'Unpublish the results before changing the question paper' });
         }
         const next = { ...exam, ...v };
-        const names = await moduleNames(exam.course_id);
+        const [names, paperTopics] = await Promise.all([moduleNames(exam.course_id), loadPaperTopics(exam.id)]);
         const out = await inTransaction(async client => {
           // Re-grade what is already entered against the new maximums.
           const { rows: stored } = await client.query(
@@ -505,7 +549,7 @@ export function createUnitExamsRouter(
               external: split ? s.external_marks : null,
               grade: overridden ? s.grade : null,
             });
-            if (r.kind === 'row') rows.push(withTopics(next, r.row, names));
+            if (r.kind === 'row') rows.push(withTopics(next, r.row, names, samePattern(next.question_pattern, exam.question_pattern) ? paperTopics : []));
             else problems.push({
               student_id: s.student_id,
               error: r.kind === 'error' ? r.error
@@ -635,7 +679,9 @@ export function createUnitExamsRouter(
         );
         const allowed = new Set(enrolled.map((r: any) => r.student_id));
 
-        const names = exam.question_pattern ? await moduleNames(exam.course_id) : new Map<number, string>();
+        const [names, paperTopics] = exam.question_pattern
+          ? await Promise.all([moduleNames(exam.course_id), loadPaperTopics(exam.id)])
+          : [new Map<number, string>(), [] as MappedTopic[]];
         const rows: (ResultRow & { topic_breakdown?: unknown })[] = [];
         const cleared: number[] = [];
         const errors: { student_id: number; error: string }[] = [];
@@ -650,7 +696,7 @@ export function createUnitExamsRouter(
             internal: raw.internal, external: raw.external, grade: raw.grade, remarks: raw.remarks,
             questions: raw.questions ?? null,
           });
-          if (out.kind === 'row') rows.push(withTopics(exam, out.row, names));
+          if (out.kind === 'row') rows.push(withTopics(exam, out.row, names, paperTopics));
           else if (out.kind === 'clear') cleared.push(sid);
           else errors.push({ student_id: sid, error: out.error });
         }
@@ -855,6 +901,7 @@ export function createUnitExamsRouter(
 
         // A new paper replaces the old one's topics.
         await pool.query('DELETE FROM unit_exam_topic_analysis WHERE unit_exam_id=$1', [examId]);
+        await refreshTopicBreakdowns(examId);
         await pool.query(
           `UPDATE unit_exams
            SET paper_storage_path=$1, paper_text=$2, analysis_status=$3, updated_at=NOW()
@@ -865,7 +912,8 @@ export function createUnitExamsRouter(
         // Fire-and-forget: extract topics from paper text via AI
         if (status === 'processing') setImmediate(async () => {
           try {
-            const { topics, answer, error } = await extractTopicsFromPaperText(paperText, nimChat);
+            const pattern = (exam.question_pattern ?? null) as QuestionPattern | null;
+            const { topics, answer, error } = await extractTopicsFromPaperText(paperText, nimChat, pattern);
             if (!topics.length) {
               // Keep why on record (the model's answer is about the paper, not about students).
               writeAudit({
@@ -875,14 +923,21 @@ export function createUnitExamsRouter(
               });
               throw new Error('the AI returned no topics for this paper');
             }
-            for (const t of topics) {
+            // Weights come from the marks of the questions each topic covers;
+            // the model's own guess is kept only when it gave no questions.
+            const mapped = topics.map(t => ({ ...t, refs: pattern ? resolveQuestionRefs(t.questions, pattern) : [] }));
+            const weights = pattern ? paperTopicWeights(pattern, mapped.map(t => ({ topic: t.topic, questions: t.refs }))) : new Map();
+            for (const t of mapped) {
+              const w = weights.get(t.topic);
               await pool.query(
-                `INSERT INTO unit_exam_topic_analysis (unit_exam_id, topic_name, weight, difficulty)
-                 VALUES ($1,$2,$3,$4)
+                `INSERT INTO unit_exam_topic_analysis (unit_exam_id, topic_name, weight, difficulty, evidence)
+                 VALUES ($1,$2,$3,$4,$5)
                  ON CONFLICT DO NOTHING`,
-                [examId, t.topic, t.weight, t.difficulty]
+                [examId, t.topic, w ? w.share : t.weight, t.difficulty,
+                 t.refs.length ? JSON.stringify({ questions: t.refs, marks: w?.marks ?? null }) : null]
               );
             }
+            await refreshTopicBreakdowns(examId);
             await pool.query(
               `UPDATE unit_exams SET analysis_status='done', updated_at=NOW() WHERE id=$1`,
               [examId]
@@ -937,10 +992,19 @@ export function createUnitExamsRouter(
           [examId]
         );
 
-        const topics = await q(
-          'SELECT topic_name, weight, difficulty FROM unit_exam_topic_analysis WHERE unit_exam_id=$1 ORDER BY weight DESC NULLS LAST',
+        const paperTopicRows = await q(
+          'SELECT topic_name, weight, difficulty, evidence FROM unit_exam_topic_analysis WHERE unit_exam_id=$1 ORDER BY weight DESC NULLS LAST, id',
           [examId]
         );
+        // The paper's topics with the questions they cover and the class average on them.
+        const shapeTopics = (avgByTopic: Map<string, number>) => paperTopicRows.map((t: any) => ({
+          topic_name: t.topic_name,
+          weight: t.weight == null ? null : Number(t.weight),
+          difficulty: t.difficulty,
+          questions: Array.isArray(t.evidence?.questions) ? t.evidence.questions : [],
+          marks: t.evidence?.marks ?? null,
+          class_avg: avgByTopic.get(t.topic_name) ?? null,
+        }));
 
         // Absent students are listed but left out of averages and pass rate.
         const results = allResults.filter((r: any) => !r.is_absent);
@@ -949,7 +1013,7 @@ export function createUnitExamsRouter(
         for (const r of allResults) if (r.grade) grades[r.grade] = (grades[r.grade] ?? 0) + 1;
 
         const total = results.length;
-        if (total === 0) return res.json({ exam, results: allResults, topics, stats: null });
+        if (total === 0) return res.json({ exam, results: allResults, topics: shapeTopics(new Map()), stats: null });
 
         const marks  = results.map((r: any) => parseFloat(r.marks_obtained));
         const pcts   = results.map((r: any) => parseFloat(r.percentage));
@@ -1019,6 +1083,8 @@ export function createUnitExamsRouter(
         const passed = usesGrades(exam)
           ? results.filter((r: any) => r.grade && !failGrades.has(r.grade)).length
           : bands.strong + bands.moderate;
+
+        const topics = shapeTopics(new Map(topicAverages.map(t => [t.topic, t.avg])));
 
         res.json({
           exam,
