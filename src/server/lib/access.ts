@@ -136,3 +136,23 @@ export async function loadSubmissionForCaller(pool: Pool, caller: Caller, submis
 export const studentVisibleNotes = (param: string) =>
   `(n.uploaded_by IS NULL OR n.uploaded_by = ${param}
     OR EXISTS (SELECT 1 FROM users up WHERE up.id = n.uploaded_by AND up.role <> 'student'))`;
+
+/**
+ * WHERE clause over `n` (notes) joined to `c` (courses) for the notes a caller
+ * may list: an admin every note of the college, a professor every note in the
+ * courses they teach, a student course material and their own notes in the
+ * courses they are enrolled in. Always held to the caller's college.
+ */
+export function notesVisibleTo(caller: Caller): { where: string; params: unknown[] } {
+  const college = 'n.institution_id = $1 AND c.institution_id = $1';
+  if (caller.role === 'admin') return { where: college, params: [caller.institutionId] };
+  if (caller.role === 'instructor') {
+    return { where: `${college} AND c.instructor_id = $2`, params: [caller.institutionId, caller.legacyUserId] };
+  }
+  return {
+    where: `${college}
+      AND EXISTS (SELECT 1 FROM enrollments e WHERE e.course_id = c.id AND e.student_id = $2 AND e.institution_id = $1)
+      AND ${studentVisibleNotes('$2')}`,
+    params: [caller.institutionId, caller.legacyUserId],
+  };
+}

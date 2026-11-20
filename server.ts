@@ -98,7 +98,7 @@ import { normaliseEntry } from './src/server/lib/timetable.js';
 import {
   AccessDenied, Caller, courseOfModule, courseOfAssignment, isEnrolled,
   assertManagesCourse, assertCanAccessCourse, loadNoteForCaller,
-  loadSubmissionForCaller, studentVisibleNotes, isMemberOfInstitution,
+  loadSubmissionForCaller, studentVisibleNotes, notesVisibleTo, isMemberOfInstitution,
 } from './src/server/lib/access.js';
 
 const callerOf = (req: Request): Caller => {
@@ -1453,6 +1453,26 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
+  // Every note the caller may read, newest first: the Notes page's list.
+  app.get("/api/notes", requireAuth, async (req, res) => {
+    try {
+      const { where, params } = notesVisibleTo(callerOf(req));
+      const notes = await query(
+        `SELECT n.*, m.name AS module_name, c.id AS course_id, c.name AS course_name, u.name AS uploader_name,
+                (SELECT COUNT(*) FROM note_chunks nc WHERE nc.note_id = n.id)::int AS chunk_count
+         FROM notes n
+         JOIN modules m ON m.id = n.module_id
+         JOIN courses c ON c.id = m.course_id
+         LEFT JOIN users u ON u.id = n.uploaded_by
+         WHERE ${where}
+         ORDER BY n.uploaded_at DESC`,
+        params
+      );
+      res.json(notes);
+    } catch (e: any) { sendServerError(res, e); }
+  });
+
+  // A user's own uploads (kept for older clients; the Notes page uses /api/notes).
   app.get("/api/students/:id/notes", requireAuth, requireSelfOrAdmin(), async (req, res) => {
     try {
       const notes = await query(

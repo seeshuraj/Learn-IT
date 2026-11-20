@@ -317,6 +317,35 @@ async function notesModules(browser) {
     else pass(`${role} /notes`, 'lists course modules');
     await context.close();
   }
+
+  // Notes someone else uploaded: course material from staff, and a classmate's
+  // private note. The professor sees both; a student sees only the material.
+  const { rows: [mod] } = await db.query(
+    `select m.id, c.institution_id from modules m join courses c on c.id = m.course_id where m.course_id = 2 order by m.id limit 1`);
+  await db.query(
+    `insert into notes (id, student_id, module_id, filename, original_name, content_text, file_type, uploaded_by, institution_id, processing_status)
+     values (9101, 1, $1, 'e2e-a.txt', 'E2E staff lecture.txt', 'x', 'text/plain', 1, $2, 'ready'),
+            (9102, 3, $1, 'e2e-b.txt', 'E2E classmate private.txt', 'x', 'text/plain', 3, $2, 'ready')
+     on conflict (id) do nothing`, [mod.id, mod.institution_id]);
+  try {
+    for (const [role, sees, hidden] of [
+      ['professor', ['E2E staff lecture.txt', 'E2E classmate private.txt'], []],
+      ['student', ['E2E staff lecture.txt'], ['E2E classmate private.txt']],
+    ]) {
+      const { context, page } = await signIn(browser, role);
+      await page.goto(`${APP}/notes?module=${mod.id}`);
+      await page.waitForLoadState('networkidle');
+      const missing = [];
+      for (const name of sees) if (!(await page.getByText(name).count())) missing.push(name);
+      const leaked = [];
+      for (const name of hidden) if (await page.getByText(name).count()) leaked.push(name);
+      if (missing.length || leaked.length) fail(`${role} /notes`, `missing ${JSON.stringify(missing)}, should not see ${JSON.stringify(leaked)}`);
+      else pass(`${role} /notes`, `shows ${sees.join(' and ')}${hidden.length ? `, not ${hidden.join(', ')}` : ''}`);
+      await context.close();
+    }
+  } finally {
+    await db.query(`delete from notes where id in (9101, 9102)`);
+  }
 }
 
 /** Admin dashboard shows real numbers, not blanks. */
