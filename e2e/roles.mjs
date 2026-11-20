@@ -940,7 +940,7 @@ async function adminPerformance(browser) {
       await admin.page.getByLabel('Department', { exact: true }).selectOption('all');
       await admin.page.getByRole('tab', { name: 'Students' }).click();
       await admin.page.getByPlaceholder('Search by name').fill('Sarah');
-      await admin.page.getByTestId('student-table').getByRole('button', { name: 'Sarah Johnson' }).click({ timeout: 8000 });
+      await admin.page.getByTestId('student-table').getByRole('button', { name: 'Sarah Johnson' }).first().click({ timeout: 8000 });
       const panel = admin.page.getByRole('dialog', { name: "Sarah Johnson's performance" });
       await panel.getByRole('heading', { name: 'Assessments' }).waitFor({ timeout: 8000 });
       pass('performance', 'Students → a student opens their assessments and topic mastery');
