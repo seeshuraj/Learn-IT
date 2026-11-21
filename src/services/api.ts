@@ -75,6 +75,8 @@ export interface SubjectPerformance {
 export interface StudentFigures { written: number; avg_pct: number | null; pass_rate: number | null }
 
 export interface CollegePerformance {
+  /** Files stored for the college, in bytes. */
+  storage: { notes_bytes: number; notes_files: number; submission_bytes: number; submission_files: number };
   departments: {
     id: number; code: string; name: string; students: number; professors: number;
     /** Courses placed in the department. */
@@ -702,7 +704,32 @@ export const api = {
       body: JSON.stringify({ assignment_id: assignmentId, content }),
     }),
 
+  /**
+   * Files go straight to storage: the API checks the plan and hands out one
+   * upload URL per file, the browser sends each file there, then the API
+   * checks what arrived and records the submission.
+   */
   uploadSubmission: async (assignmentId: number, files: File[], content = ''): Promise<any> => {
+    const plan: any = await request('/api/submissions/upload-urls', {
+      method: 'POST',
+      body: JSON.stringify({ assignment_id: assignmentId, files: files.map(f => ({ name: f.name, size: f.size, type: f.type })) }),
+    });
+    await Promise.all(plan.uploads.map(async (u: { url: string }, i: number) => {
+      const put = await fetch(u.url, {
+        method: 'PUT',
+        headers: { 'Content-Type': files[i].type || 'application/octet-stream', 'x-upsert': 'false' },
+        body: files[i],
+      });
+      if (!put.ok) throw new Error(`Uploading ${files[i].name} failed. Check your connection and try again.`);
+    }));
+    return request('/api/submissions/complete', {
+      method: 'POST',
+      body: JSON.stringify({ assignment_id: assignmentId, content, files: plan.uploads.map((u: any) => ({ path: u.path, name: u.name })) }),
+    });
+  },
+
+  /** Older single-request upload through the API; kept for compatibility. */
+  uploadSubmissionLegacy: async (assignmentId: number, files: File[], content = ''): Promise<any> => {
     const ah = await authHeaders();
     const formData = new FormData();
     formData.append('assignment_id', String(assignmentId));

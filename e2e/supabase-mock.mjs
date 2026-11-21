@@ -133,7 +133,39 @@ async function handle(req, res) {
     const f = files.get(decodeURIComponent(signPath[1]));
     return f ? send(res, 200, f.body, f.type) : send(res, 404, { error: 'not_found', message: 'Object not found' });
   }
+  // Signed uploads: the server asks for a URL, the browser PUTs the file to it.
+  const uploadSign = p.match(/^\/storage\/v1\/object\/upload\/sign\/(.+)$/);
+  if (uploadSign && req.method === 'POST') {
+    return send(res, 200, { url: `/object/upload/sign/${uploadSign[1]}?token=e2e-upload` });
+  }
+  if (uploadSign && req.method === 'PUT') {
+    if (url.searchParams.get('token') !== 'e2e-upload') return send(res, 400, { error: 'invalid_token' });
+    files.set(decodeURIComponent(uploadSign[1]), { type: req.headers['content-type'] ?? 'application/octet-stream', body: raw });
+    return send(res, 200, { Key: uploadSign[1] });
+  }
+  const listIn = p.match(/^\/storage\/v1\/object\/list\/(.+)$/);
+  if (listIn && req.method === 'POST') {
+    const b = jsonOf(raw);
+    const prefix = `${decodeURIComponent(listIn[1])}/${b.prefix ? `${b.prefix}/` : ''}`;
+    const out = [...files.entries()]
+      .filter(([k]) => k.startsWith(prefix) && !k.slice(prefix.length).includes('/') && (!b.search || k.slice(prefix.length).includes(b.search)))
+      .map(([k, f]) => ({ name: k.slice(prefix.length), id: k, metadata: { size: f.body.length, mimetype: f.type } }));
+    return send(res, 200, out);
+  }
   const obj = p.match(/^\/storage\/v1\/object\/(?:authenticated\/)?(.+)$/);
+  if (obj && req.method === 'HEAD') {
+    const f = files.get(decodeURIComponent(obj[1]));
+    res.writeHead(f ? 200 : 404, f ? { 'Content-Type': f.type, 'Content-Length': f.body.length } : {});
+    return res.end();
+  }
+  const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? '');
+  if (obj && req.method === 'GET' && range) {
+    const f = files.get(decodeURIComponent(obj[1]));
+    if (!f) return send(res, 404, { error: 'not_found', message: 'Object not found' });
+    const part = f.body.subarray(Number(range[1]), Number(range[2]) + 1);
+    res.writeHead(206, { 'Content-Type': f.type, 'Content-Range': `bytes ${range[1]}-${range[1] * 1 + part.length - 1}/${f.body.length}` });
+    return res.end(part);
+  }
   if (obj && (req.method === 'POST' || req.method === 'PUT')) {
     files.set(decodeURIComponent(obj[1]), { type: req.headers['content-type'] ?? 'application/octet-stream', body: raw });
     return send(res, 200, { Key: obj[1], Id: crypto.randomUUID() });
@@ -153,8 +185,8 @@ async function handle(req, res) {
 
 http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*');
-  res.setHeader('Access-Control-Allow-Headers', 'authorization, apikey, content-type, x-client-info, x-supabase-api-version, x-upsert, cache-control');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, apikey, content-type, x-client-info, x-supabase-api-version, x-upsert, cache-control, range');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   handle(req, res).catch(e => { console.error('[mock]', e); send(res, 500, { error: 'mock_error', message: e.message }); });
 }).listen(PORT, '127.0.0.1', () => console.log(`[mock] Supabase stand-in on :${PORT}`));

@@ -139,3 +139,10 @@ export const studentsSql = (order: string) => `WITH s AS (
          WHERE NOT $5::boolean OR avg_pct < 50 OR absent >= 2
          ORDER BY ${order}
          LIMIT $6 OFFSET $7`;
+
+/** Files this college has stored: course notes and assignment submissions, in bytes. */
+export const STORAGE_SQL = `SELECT
+  (SELECT COALESCE(sum(n.file_size), 0) FROM notes n WHERE n.institution_id = $1) AS notes_bytes,
+  (SELECT count(*) FROM notes n WHERE n.institution_id = $1 AND n.file_size IS NOT NULL) AS notes_files,
+  (SELECT COALESCE(sum(f.file_size), 0) FROM submission_files f JOIN submissions s ON s.id = f.submission_id WHERE s.institution_id = $1) AS submission_bytes,
+  (SELECT count(*) FROM submission_files f JOIN submissions s ON s.id = f.submission_id WHERE s.institution_id = $1) AS submission_files`;

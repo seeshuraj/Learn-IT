@@ -744,6 +744,9 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
           confidence:       typeof raw.confidence === 'number' ? raw.confidence : estimateConfidence(raw),
           graded_via:       'pdf',
         };
+        if (Array.isArray(raw.unread_files) && raw.unread_files.length) {
+          toast(`The AI couldn't read: ${raw.unread_files.slice(0, 4).join(', ')}${raw.unread_files.length > 4 ? '…' : ''}. Check these yourself.`, { icon: '⚠️', duration: 8000 });
+        }
       } else {
         // Text-only fallback (legacy ephemeral route)
         const raw = await api.aiGrade(selectedSubmission.content ?? '', rubric);

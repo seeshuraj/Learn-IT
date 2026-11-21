@@ -61,6 +61,14 @@ export default function AssignmentsPage({ user }: Props) {
     if (!selected) return;
     if (submitMode === 'text' && !textContent.trim()) return setError('Answer cannot be empty.');
     if (submitMode === 'file' && (!files || files.length === 0)) return setError('Select at least one file.');
+    if (submitMode === 'file') {
+      const list = Array.from(files!);
+      const total = list.reduce((s, f) => s + f.size, 0);
+      if (list.length > 5) return setError('A submission can have at most 5 files.');
+      if (total > 25 * 1024 * 1024) {
+        return setError(`These files come to ${(total / 1048576).toFixed(1)} MB. A submission can be 25 MB in total; compress scans or split the work.`);
+      }
+    }
 
     setSubmitting(true); setError(''); setSuccess('');
     try {
@@ -242,13 +250,13 @@ export default function AssignmentsPage({ user }: Props) {
                     />
                   ) : (
                     <div className="space-y-3">
-                      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Attach files (PDF, DOCX, images)</label>
+                      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Attach files (PDF, DOCX, images or a .zip)</label>
                       <div className="border-2 border-dashed border-slate-200 rounded-xl p-5 text-center hover:border-teal-300 transition">
                         <input
                           ref={fileRef}
                           type="file"
                           multiple
-                          accept=".pdf,.docx,.doc,.txt,.jpg,.jpeg,.png"
+                          accept=".pdf,.docx,.xlsx,.txt,.jpg,.jpeg,.png,.zip"
                           onChange={e => setFiles(e.target.files)}
                           className="hidden"
                           id="assignment-file-input"
@@ -258,7 +266,7 @@ export default function AssignmentsPage({ user }: Props) {
                           <p className="text-sm text-slate-600">
                             <span className="text-teal-700 font-medium underline">Browse files</span> or drag & drop
                           </p>
-                          <p className="text-xs text-slate-400 mt-1">PDF, DOCX, TXT, JPG, PNG · max 20MB each</p>
+                          <p className="text-xs text-slate-400 mt-1">Up to 5 files, 25 MB in total · PDF, DOCX, XLSX, TXT, JPG, PNG or ZIP</p>
                         </label>
                       </div>
                       {files && files.length > 0 && (

@@ -950,6 +950,83 @@ async function reviewGrades(browser) {
 }
 
 /**
+ * Submissions go straight to storage: the API checks the plan (5 files, 25 MB
+ * in total), the browser uploads, and the API checks what arrived before
+ * recording it. Files whose content doesn't match their type are refused,
+ * and a student can't claim another student's upload.
+ */
+async function submissionUploads(browser) {
+  const prof = await signIn(browser, 'professor');
+  const stu = await signIn(browser, 'student');
+  const MB = 1024 * 1024;
+  const { rows: [mod] } = await db.query(`select id from modules where course_id = 2 order by id limit 1`);
+  const asg = await jsonAs(prof.page, 'POST', `/api/modules/${mod.id}/assignments`,
+    { title: 'E2E Upload assignment', description: 'x', due_date: '2099-04-01', max_points: 10, status: 'active' });
+  const aid = asg.body?.id;
+  const pdf = (name, size = 2000) => ({ name, size, type: 'application/pdf' });
+
+  let r = await jsonAs(stu.page, 'POST', '/api/submissions/upload-urls', { assignment_id: aid, files: [1, 2, 3, 4, 5, 6].map(i => pdf(`${i}.pdf`)) });
+  const six = r.status === 400 && /at most 5 files/.test(r.body?.error);
+  r = await jsonAs(stu.page, 'POST', '/api/submissions/upload-urls', { assignment_id: aid, files: [pdf('a.pdf', 20 * MB), pdf('b.pdf', 10 * MB)] });
+  const big = r.status === 400 && /25 MB in total/.test(r.body?.error);
+  r = await jsonAs(stu.page, 'POST', '/api/submissions/upload-urls', { assignment_id: aid, files: [{ name: 'x.exe', size: 10, type: 'application/x-msdownload' }] });
+  const exe = r.status === 400;
+  if (six && big && exe) pass('uploads', 'more than 5 files, over 25 MB in total, and programs are refused before anything is uploaded');
+  else fail('uploads', `limits: six=${six} big=${big} exe=${exe}`);
+
+  // A real PDF and a "PDF" that is really a web page.
+  const realPdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
+  const fakePdf = Buffer.from('<html><script>alert(1)</script></html>');
+  const plan = async (files) => jsonAs(stu.page, 'POST', '/api/submissions/upload-urls', { assignment_id: aid, files });
+  const put = async (url, body, type) => (await fetch(url, { method: 'PUT', headers: { 'Content-Type': type }, body })).status;
+
+  r = await plan([{ name: 'fake.pdf', size: fakePdf.length, type: 'application/pdf' }]);
+  await put(r.body.uploads[0].url, fakePdf, 'application/pdf');
+  const fake = await jsonAs(stu.page, 'POST', '/api/submissions/complete', { assignment_id: aid, files: [{ path: r.body.uploads[0].path, name: 'fake.pdf' }] });
+  if (fake.status === 415) pass('uploads', 'a web page renamed .pdf is refused and removed');
+  else fail('uploads', `fake pdf → ${fake.status} ${JSON.stringify(fake.body)}`);
+
+  const other = await jsonAs(stu.page, 'POST', '/api/submissions/complete',
+    { assignment_id: aid, files: [{ path: `submissions/999/${aid}/1_0_theirs.pdf`, name: 'theirs.pdf' }] });
+  if (other.status === 400) pass('uploads', "a student can't submit a file from someone else's folder");
+  else fail('uploads', `other folder → ${other.status}`);
+
+  // Through the page: choose a file, submit.
+  await stu.page.goto(`${APP}/assignments?id=${aid}`);
+  try {
+    await stu.page.getByRole('button', { name: /Upload PDF \/ files/ }).click({ timeout: 8000 });
+    await stu.page.locator('#assignment-file-input').setInputFiles({ name: 'answer.pdf', mimeType: 'application/pdf', buffer: realPdf });
+    await stu.page.getByRole('button', { name: /Submit Assignment/ }).click();
+    // The form gives way to the submitted state; an error would stay in the form.
+    await stu.page.getByText('Submitted — awaiting grade').waitFor({ timeout: 10000 }).catch(async e => {
+      const err = await stu.page.locator('form p.text-red-600').textContent().catch(() => null);
+      throw new Error(err ? `page error: ${err}` : e.message);
+    });
+    const { rows: [f] } = await db.query(
+      `select f.file_size, f.file_type, f.storage_path from submission_files f join submissions s on s.id = f.submission_id
+       where s.assignment_id = $1 and s.student_id = 2`, [aid]);
+    if (f && Number(f.file_size) === realPdf.length && f.file_type === 'application/pdf' && f.storage_path.startsWith(`submissions/2/${aid}/`))
+      pass('uploads', 'the page uploads straight to storage and the submission records the real size and type');
+    else fail('uploads', `recorded ${JSON.stringify(f)}`);
+  } catch (e) { fail('uploads', `page: ${e.message.split('\n')[0]}`); }
+
+  // Professors' notes: a renamed file is refused too.
+  const note = await prof.page.evaluate(async ({ api, mod }) => {
+    const store = [sessionStorage, localStorage].find(st => Object.keys(st).some(k => k.endsWith('-auth-token')));
+    const token = JSON.parse(store.getItem(Object.keys(store).find(k => k.endsWith('-auth-token')))).access_token;
+    const fd = new FormData();
+    fd.append('file', new Blob(['<html>not a pdf</html>'], { type: 'application/pdf' }), 'notes.pdf');
+    const res = await fetch(`${api}/api/modules/${mod}/notes`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+    return res.status;
+  }, { api: API, mod: mod.id });
+  if (note === 415) pass('uploads', 'a notes upload whose content is not a PDF is refused');
+  else fail('uploads', `fake notes upload → ${note}`);
+
+  await stu.context.close();
+  await prof.context.close();
+}
+
+/**
  * Admin performance: departments, professors' subjects and students, from the
  * same published results the other pages use. Figures are checked against the
  * database; professors and students are refused.
@@ -1024,7 +1101,7 @@ async function adminPerformance(browser) {
   }
 }
 
-export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, adminPerformance, reviewGrades, noDeadEnds };
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, adminPerformance, reviewGrades, submissionUploads, noDeadEnds };
 
 async function main() {
   const browser = await chromium.launch();
