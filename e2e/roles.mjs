@@ -997,7 +997,11 @@ async function submissionUploads(browser) {
     await stu.page.getByRole('button', { name: /Upload PDF \/ files/ }).click({ timeout: 8000 });
     await stu.page.locator('#assignment-file-input').setInputFiles({ name: 'answer.pdf', mimeType: 'application/pdf', buffer: realPdf });
     await stu.page.getByRole('button', { name: /Submit Assignment/ }).click();
-    await stu.page.getByText('Submitted successfully').waitFor({ timeout: 10000 });
+    // The form gives way to the submitted state; an error would stay in the form.
+    await stu.page.getByText('Submitted — awaiting grade').waitFor({ timeout: 10000 }).catch(async e => {
+      const err = await stu.page.locator('form p.text-red-600').textContent().catch(() => null);
+      throw new Error(err ? `page error: ${err}` : e.message);
+    });
     const { rows: [f] } = await db.query(
       `select f.file_size, f.file_type, f.storage_path from submission_files f join submissions s on s.id = f.submission_id
        where s.assignment_id = $1 and s.student_id = 2`, [aid]);
