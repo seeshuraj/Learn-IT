@@ -1180,15 +1180,33 @@ async function startServer() {
       if (grade > maxPoints) {
         return res.status(400).json({ error: `Grade cannot exceed ${maxPoints} points`, field: "grade" });
       }
+      // Re-grading is allowed; the earlier grade is kept in the audit log.
       const sub = await queryOne(
-        "UPDATE submissions SET grade=$1,feedback=$2,graded_at=NOW() WHERE id=$3 RETURNING *",
+        `WITH prev AS (SELECT grade, feedback FROM submissions WHERE id = $3)
+         UPDATE submissions SET grade=$1, feedback=$2, graded_at=NOW() WHERE id=$3
+         RETURNING submissions.*, (SELECT grade FROM prev) AS previous_grade, (SELECT feedback FROM prev) AS previous_feedback`,
         [grade, feedback, req.params.id]
       );
       if (!sub) return res.status(404).json({ error: "Submission not found" });
-      if (sub.student_id) {
-        notify(pool, sub.student_id, "grade_posted", `Your submission has been graded: ${grade}`, { submission_id: sub.id, grade });
+      const regrade = sub.previous_grade !== null && sub.previous_grade !== undefined;
+      const changed = !regrade || Number(sub.previous_grade) !== Number(grade) || (sub.previous_feedback ?? "") !== (feedback ?? "");
+      if (changed) {
+        const a = (req as AuthenticatedRequest).auth;
+        writeAudit({
+          action: regrade ? "submission.regrade" : "submission.grade", resourceType: "submission", resourceId: String(sub.id),
+          actorUserId: a.legacyUserId, actorEmail: a.email, actorRole: a.role,
+          metadata: { assignment_id: sub.assignment_id, grade, ...(regrade ? { previous_grade: Number(sub.previous_grade) } : {}) }, req,
+        });
+        if (sub.student_id) {
+          notify(pool, sub.student_id, "grade_posted",
+            !regrade ? `Your submission has been graded: ${grade}`
+              : Number(sub.previous_grade) !== Number(grade) ? `Your grade was updated: ${grade} (was ${sub.previous_grade})`
+              : "The feedback on your submission was updated",
+            { submission_id: sub.id, grade });
+        }
       }
-      res.json(sub);
+      const { previous_grade, previous_feedback, ...out } = sub;
+      res.json(out);
     } catch (e: any) { sendServerError(res, e); }
   });
 
