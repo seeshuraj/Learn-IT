@@ -15,7 +15,7 @@ import type pkg from 'pg';
 import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
 import { sendServerError } from '../lib/httpErrors.js';
 import { rollUp, type CourseStats, type TopicAvg } from '../lib/performance.js';
-import { COURSES_SQL, TOPICS_SQL, DEPARTMENTS_SQL, PROFESSORS_SQL, DEPT_STUDENTS_SQL, studentsSql } from '../lib/performanceSql.js';
+import { COURSES_SQL, TOPICS_SQL, DEPARTMENTS_SQL, PROFESSORS_SQL, DEPT_STUDENTS_SQL, STORAGE_SQL, studentsSql } from '../lib/performanceSql.js';
 
 const STUDENT_SORTS: Record<string, string> = {
   avg_asc: 'avg_pct ASC NULLS LAST, name',
@@ -36,13 +36,14 @@ export function createPerformanceRouter(pool: pkg.Pool): Router {
   router.get('/performance', ...admin, async (req: Request, res: Response) => {
     try {
       const inst = (req as AuthenticatedRequest).auth.institutionId;
-      const [courseRows, topicRows, deptRows, profRows, deptStudentRows] = await Promise.all([
+      const [courseRows, topicRows, deptRows, profRows, deptStudentRows, [storageRow]] = await Promise.all([
         q(COURSES_SQL, [inst]),
         q(TOPICS_SQL, [inst]),
         q(DEPARTMENTS_SQL, [inst]),
         q(PROFESSORS_SQL, [inst]),
         // Results of each department's own students, whichever courses they wrote.
         q(DEPT_STUDENTS_SQL, [inst]),
+        q(STORAGE_SQL, [inst]),
       ]);
 
       const topics = new Map<number, TopicAvg[]>();
@@ -92,6 +93,10 @@ export function createPerformanceRouter(pool: pkg.Pool): Router {
       }));
 
       res.json({
+        storage: {
+          notes_bytes: num(storageRow?.notes_bytes), notes_files: num(storageRow?.notes_files),
+          submission_bytes: num(storageRow?.submission_bytes), submission_files: num(storageRow?.submission_files),
+        },
         departments,
         unassigned: unplaced ? { subjects: unplaced, of_students: studentFigures(null) } : null,
         professors,

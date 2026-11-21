@@ -14,6 +14,7 @@
  *   - Admins bypass all ownership checks.
  */
 
+import { verifyUploadedContent } from '../middleware/verifyUploads.js';
 import { Router, Request, Response } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
@@ -940,6 +941,7 @@ export function createUnitExamsRouter(
     uploadLimiter,
     aiGradeLimiter,
     uploadFile.single('file'),
+    verifyUploadedContent,
     async (req: any, res: Response) => {
       const examId = req.params.id;
       const auth   = (req as AuthenticatedRequest).auth;

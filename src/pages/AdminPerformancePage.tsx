@@ -14,6 +14,7 @@ const PAGE = 50;
 const fmtPct = (n: number | null | undefined) => (n === null || n === undefined ? '—' : `${Number.isInteger(n) ? n : n.toFixed(1)}%`);
 const pctTone = (n: number | null | undefined) =>
   n === null || n === undefined ? 'text-slate-400' : n < 50 ? 'text-red-600' : n < 75 ? 'text-amber-600' : 'text-emerald-600';
+const fmtBytes = (b: number) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB` : `${(b / 1024 ** 2).toFixed(b >= 10 * 1024 ** 2 ? 0 : 1)} MB`);
 const fmtHours = (h: number | null) => (h === null ? '—' : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} days`);
 
 function Pct({ value }: { value: number | null | undefined }) {
@@ -452,6 +453,12 @@ export default function AdminPerformancePage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Performance</h1>
           <p className="text-sm text-slate-500">Published assessment results, what's been taught and grading, by department, professor and student.</p>
+          {data?.storage && (
+            <p className="text-xs text-slate-400 mt-1" data-testid="storage-used">
+              Files stored: {fmtBytes(data.storage.notes_bytes + data.storage.submission_bytes)}
+              {' '}(course notes {fmtBytes(data.storage.notes_bytes)}, submissions {fmtBytes(data.storage.submission_bytes)})
+            </p>
+          )}
         </div>
         <label className="text-sm text-slate-600 flex items-center gap-2">
           Department

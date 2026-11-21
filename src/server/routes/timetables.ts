@@ -21,6 +21,7 @@
  * department and year when the row has no course).
  */
 
+import { verifyUploadedContent } from '../middleware/verifyUploads.js';
 import { Router, Request, Response } from 'express';
 import type pkg from 'pg';
 import path from 'path';
@@ -163,7 +164,7 @@ export function createTimetablesRouter(pool: pkg.Pool, supabaseAdmin: Pick<Supab
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  router.post('/timetables', ...admin, uploadLimiter, upload.single('file'), async (req: any, res: Response) => {
+  router.post('/timetables', ...admin, uploadLimiter, upload.single('file'), verifyUploadedContent, async (req: any, res: Response) => {
     const auth = authOf(req);
     try {
       const file = req.file;

@@ -50,6 +50,10 @@ import {
 } from "./src/server/validation/schemas.js";
 import { validateEnv } from "./src/server/config/env.js";
 import { writeAudit, setAuditPool } from "./src/server/middleware/audit.js";
+import { verifyUploadedContent } from "./src/server/middleware/verifyUploads.js";
+import { checkSubmissionFiles, SUBMISSION_LIMITS } from "./src/server/lib/submissionLimits.js";
+import { contentMatchesType } from "./src/server/lib/fileSignature.js";
+import { readZipEntries } from "./src/server/lib/safeZip.js";
 import { todayIst } from "./src/server/lib/studyPlan.js";
 import { startCronJobs } from "./src/server/jobs/cron.js";
 import { createRoadmapRouter, generateRoadmap, RoadmapNotEnrolled } from "./src/server/routes/roadmaps.js";
@@ -183,6 +187,40 @@ async function downloadFromStorage(
   return { buffer: buf, contentType: data.type || "application/octet-stream" };
 }
 
+/** A signed URL the browser can upload one object to directly (valid for 2 hours, one use). */
+async function createUploadUrl(bucket: string, objectPath: string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(bucket).createSignedUploadUrl(objectPath);
+  if (error || !data) {
+    log.error("storage upload URL failed", { bucket, objectPath, ...errorFields(error) });
+    throw new HttpProblem(502, "Couldn't prepare the upload. Please try again.");
+  }
+  return data.signedUrl;
+}
+
+const objectUrl = (bucket: string, objectPath: string) =>
+  `${SUPABASE_URL}/storage/v1/object/authenticated/${bucket}/${objectPath.split("/").map(encodeURIComponent).join("/")}`;
+const serviceHeaders = () => ({ apikey: SUPABASE_SERVICE_ROLE, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE}` });
+
+/** Size and type of a stored object, without downloading it; null when it doesn't exist. */
+async function storageObjectInfo(bucket: string, objectPath: string): Promise<{ size: number; type: string } | null> {
+  const slash = objectPath.lastIndexOf("/");
+  const folder = objectPath.slice(0, slash), name = objectPath.slice(slash + 1);
+  const { data, error } = await supabaseAdmin.storage.from(bucket).list(folder, { search: name, limit: 10 });
+  if (error) { log.error("storage list failed", { bucket, ...errorFields(error) }); return null; }
+  const hit = (data ?? []).find((o: any) => o.name === name);
+  if (!hit) return null;
+  const meta: any = (hit as any).metadata ?? {};
+  return { size: Number(meta.size ?? meta.contentLength ?? 0), type: String(meta.mimetype ?? meta.contentType ?? "") };
+}
+
+/** The first `n` bytes of a stored object (a range request), for checking what it really is. */
+async function storageObjectHead(bucket: string, objectPath: string, n = 4096): Promise<Buffer | null> {
+  const r = await fetch(objectUrl(bucket, objectPath), { headers: { ...serviceHeaders(), Range: `bytes=0-${n - 1}` } });
+  if (!r.ok) return null;
+  const buf = Buffer.from(await r.arrayBuffer());
+  return buf.subarray(0, n);
+}
+
 async function deleteFromStorage(bucket: string, objectPath: string): Promise<void> {
   if (!objectPath) return;
   const { error } = await supabaseAdmin.storage.from(bucket).remove([objectPath]);
@@ -291,9 +329,11 @@ const uploadNote       = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: makeMimeFilter(ALLOWED_NOTE_MIMES),
 });
+// Older clients only: the app uploads submissions straight to storage
+// (/api/submissions/upload-urls), so the server never holds them in memory.
 const uploadSubmission = multer({
   storage: memStorage,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: SUBMISSION_LIMITS.maxFileBytes, files: SUBMISSION_LIMITS.maxFiles },
   fileFilter: makeMimeFilter(ALLOWED_SUBMISSION_MIMES),
 });
 
@@ -636,12 +676,26 @@ async function draftAiGrade(caller: Caller, body: { submission_id: number; rubri
     [submission_id]
   );
   let content = sub.content ?? "";
+  const unread: string[] = [];
   for (const file of files) {
     const result = await downloadFromStorage(SUBMISSIONS_BUCKET, file.storage_path);
-    if (result) {
-      const extracted = await extractTextFromBuffer(result.buffer, file.file_type, file.original_name);
-      if (extracted) content += "\n" + extracted;
+    if (!result) { unread.push(file.original_name); continue; }
+    const isZip = /zip/i.test(file.file_type) || /\.zip$/i.test(file.original_name);
+    if (isZip) {
+      // A zip of answers: read the files inside, within strict size limits.
+      const zip = readZipEntries(result.buffer);
+      for (const entry of zip.entries) {
+        const text = await extractTextFromBuffer(entry.data, "", entry.name);
+        if (text) content += `\n\n[${file.original_name} › ${entry.name}]\n${text}`;
+        else unread.push(`${file.original_name} › ${entry.name}`);
+      }
+      unread.push(...zip.skipped.map(n => `${file.original_name} › ${n}`));
+      if (zip.errors.length) log.warn("zip submission partly read", { submission_id, errors: zip.errors.slice(0, 5) });
+      continue;
     }
+    const extracted = await extractTextFromBuffer(result.buffer, file.file_type, file.original_name);
+    if (extracted) content += `\n\n[${file.original_name}]\n${extracted}`;
+    else unread.push(file.original_name);
   }
 
   let context = "";
@@ -669,7 +723,9 @@ async function draftAiGrade(caller: Caller, body: { submission_id: number; rubri
     actorUserId: caller.legacyUserId, actorRole: caller.role,
     metadata: { ai_score: result.score, max_points: maxPoints },
   });
-  return result;
+  // Files the draft could not read (images, scans, unsupported types) so the
+  // instructor knows what to check by hand.
+  return unread.length ? { ...result, unread_files: unread.slice(0, 20) } : result;
 }
 
 async function startServer() {
@@ -955,7 +1011,7 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.post("/api/modules/:id/notes", requireAuth, uploadLimiter, validateParams(routeParamId), uploadNote.single("file"), async (req, res) => {
+  app.post("/api/modules/:id/notes", requireAuth, uploadLimiter, validateParams(routeParamId), uploadNote.single("file"), verifyUploadedContent, async (req, res) => {
     try {
       const authReq  = req as AuthenticatedRequest;
       const file     = (req as any).file;
@@ -1121,7 +1177,7 @@ async function startServer() {
     } catch (e: any) { sendServerError(res, e); }
   });
 
-  app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadLimiter, uploadSubmission.array("files", 5), async (req, res) => {
+  app.post("/api/submissions/upload", requireAuth, requireRole("student"), uploadLimiter, uploadSubmission.array("files", SUBMISSION_LIMITS.maxFiles), verifyUploadedContent, async (req, res) => {
     try {
       const authReq     = req as AuthenticatedRequest;
       const files       = (req as any).files as Express.Multer.File[];
@@ -1132,6 +1188,8 @@ async function startServer() {
         return res.status(400).json({ error: "assignment_id required" });
       }
       await assertCanSubmit(req, assignmentId);
+      const tooMuch = checkSubmissionFiles((files ?? []).map(f => ({ name: f.originalname, size: f.size, type: f.mimetype })));
+      if (tooMuch) return res.status(400).json({ error: tooMuch, field: "files" });
 
       const sub = await queryOne(
         "INSERT INTO submissions (assignment_id,student_id,content,submitted_at) VALUES ($1,$2,$3,NOW()) RETURNING *",
@@ -1150,6 +1208,86 @@ async function startServer() {
         fileRecords.push(fileRecord);
       }
 
+      await notifySubmitted(sub);
+      res.status(201).json({ ...sub, files: fileRecords });
+    } catch (e: any) { sendServerError(res, e); }
+  });
+
+  // ── Direct uploads ──────────────────────────────────────────────────────
+  // 1. upload-urls: check the planned files against the limits and hand back
+  //    one signed upload URL each; the browser sends the files straight to
+  //    storage, so this server never holds them.
+  // 2. complete: check what actually arrived (size, type, first bytes) under
+  //    the caller's own folder, then record the submission.
+  const pendingFolder = (userId: number, assignmentId: number) => `submissions/${userId}/${assignmentId}/`;
+
+  app.post("/api/submissions/upload-urls", requireAuth, requireRole("student"), uploadLimiter, async (req, res) => {
+    try {
+      const auth = (req as AuthenticatedRequest).auth;
+      const assignmentId = Number(req.body?.assignment_id);
+      const planned = Array.isArray(req.body?.files) ? req.body.files : [];
+      if (!Number.isInteger(assignmentId) || assignmentId <= 0) return res.status(400).json({ error: "assignment_id required" });
+      const files = planned.slice(0, SUBMISSION_LIMITS.maxFiles + 1).map((f: any) => ({
+        name: String(f?.name ?? "").slice(0, 200), size: Number(f?.size), type: String(f?.type ?? ""),
+      }));
+      const problem = checkSubmissionFiles(files);
+      if (problem) return res.status(400).json({ error: problem, field: "files" });
+      await assertCanSubmit(req, assignmentId);
+
+      const stamp = Date.now();
+      const uploads = await Promise.all(files.map(async (f: any, i: number) => {
+        const objectPath = `${pendingFolder(auth.legacyUserId, assignmentId)}${stamp}_${i}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+        return { name: f.name, path: objectPath, url: await createUploadUrl(SUBMISSIONS_BUCKET, objectPath) };
+      }));
+      res.json({ uploads, limits: SUBMISSION_LIMITS });
+    } catch (e: any) { sendServerError(res, e); }
+  });
+
+  app.post("/api/submissions/complete", requireAuth, requireRole("student"), uploadLimiter, async (req, res) => {
+    try {
+      const auth = (req as AuthenticatedRequest).auth;
+      const assignmentId = Number(req.body?.assignment_id);
+      const content = typeof req.body?.content === "string" ? req.body.content.slice(0, 50_000) : "";
+      const sent = Array.isArray(req.body?.files) ? req.body.files.slice(0, SUBMISSION_LIMITS.maxFiles + 1) : [];
+      if (!Number.isInteger(assignmentId) || assignmentId <= 0) return res.status(400).json({ error: "assignment_id required" });
+      await assertCanSubmit(req, assignmentId);
+
+      const folder = pendingFolder(auth.legacyUserId, assignmentId);
+      const paths: string[] = sent.map((f: any) => String(f?.path ?? ""));
+      // Only objects in the caller's own folder for this assignment, each once.
+      if (!paths.length || new Set(paths).size !== paths.length
+          || paths.some(p => !p.startsWith(folder) || p.includes("..") || p.slice(folder.length).includes("/"))) {
+        return res.status(400).json({ error: "Those files weren't uploaded for this assignment.", field: "files" });
+      }
+      const found = await Promise.all(paths.map(async (p, i) => {
+        const info = await storageObjectInfo(SUBMISSIONS_BUCKET, p);
+        return info && { path: p, name: String(sent[i]?.name ?? p.slice(folder.length)).slice(0, 200), size: info.size, type: info.type.split(";")[0] };
+      }));
+      const discard = () => Promise.all(paths.map(p => deleteFromStorage(SUBMISSIONS_BUCKET, p)));
+      if (found.some(f => !f)) return res.status(400).json({ error: "An upload didn't finish. Please choose the files and submit again.", field: "files" });
+      const files = found as { path: string; name: string; size: number; type: string }[];
+      const problem = checkSubmissionFiles(files);
+      if (problem) { await discard(); return res.status(400).json({ error: problem, field: "files" }); }
+      for (const f of files) {
+        const head = await storageObjectHead(SUBMISSIONS_BUCKET, f.path);
+        if (!head || !contentMatchesType(head, f.type)) {
+          await discard();
+          return res.status(415).json({ error: `${f.name} doesn't look like a ${f.type} file. Save it again in that format and re-submit.`, field: "files" });
+        }
+      }
+
+      const sub = await queryOne(
+        "INSERT INTO submissions (assignment_id,student_id,content,submitted_at) VALUES ($1,$2,$3,NOW()) RETURNING *",
+        [assignmentId, auth.legacyUserId, content]
+      );
+      const fileRecords = [];
+      for (const f of files) {
+        fileRecords.push(await queryOne(
+          `INSERT INTO submission_files (submission_id, filename, original_name, file_type, file_size, storage_path)
+           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+          [sub.id, path.basename(f.path), f.name, f.type, f.size, f.path]
+        ));
+      }
       await notifySubmitted(sub);
       res.status(201).json({ ...sub, files: fileRecords });
     } catch (e: any) { sendServerError(res, e); }
