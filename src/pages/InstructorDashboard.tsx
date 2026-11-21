@@ -560,6 +560,11 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   // Grading queue, one page at a time (newest first). File counts come with
   // each row, so there is no per-submission request.
   const [queueTotal, setQueueTotal] = useState(0);
+  // "To grade" (pending) or "Graded" (to review and re-grade). The pending
+  // count is kept separately for the "Waiting to be graded" figure.
+  const [queueStatus, setQueueStatus] = useState<'pending' | 'graded'>('pending');
+  const [pendingTotal, setPendingTotal] = useState(0);
+  const queueStatusRef = useRef<'pending' | 'graded'>('pending');
   const [queueCursor, setQueueCursor] = useState<string | null>(null);
   const [queueLoadingMore, setQueueLoadingMore] = useState(false);
 
@@ -578,10 +583,12 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     setQueueCursor(page.nextCursor);
   }
 
-  function loadSubmissions() {
-    api.getSubmissionQueue({ status: 'pending' })
+  function loadSubmissions(status: 'pending' | 'graded' = queueStatus) {
+    api.getSubmissionQueue({ status })
       .then((d: any) => {
         const page = asPage<any>(d);
+        if (status === 'pending') setPendingTotal(page.total);
+        if (status !== queueStatusRef.current) return;   // switched views while loading
         absorbPage(page, false);
         // Older backend without file counts: fall back to one request per row.
         page.items.filter(s => s.file_count == null).forEach((s: any) => {
@@ -596,8 +603,8 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
   function loadMoreSubmissions() {
     if (!queueCursor || queueLoadingMore) return;
     setQueueLoadingMore(true);
-    api.getSubmissionQueue({ status: 'pending', cursor: queueCursor })
-      .then((d: any) => absorbPage(asPage<any>(d), true))
+    api.getSubmissionQueue({ status: queueStatus, cursor: queueCursor })
+      .then((d: any) => { if (queueStatusRef.current === queueStatus) absorbPage(asPage<any>(d), true); })
       .catch(() => toast.error('Could not load more submissions.'))
       .finally(() => setQueueLoadingMore(false));
   }
@@ -627,8 +634,36 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     }).catch(() => {}).finally(() => setStudentsLoading(false));
   }
 
+  function switchQueue(status: 'pending' | 'graded') {
+    if (status === queueStatus) return;
+    setQueueStatus(status);
+    queueStatusRef.current = status;
+    setSelectedSubmission(null); setAiResult(null);
+    setSubmissions([]); setQueueCursor(null); setQueueTotal(0);
+    loadSubmissions(status);
+  }
+
+  /** Open a submission: a graded one shows the saved grade and feedback; otherwise a saved AI draft, if any. */
+  function openSubmission(sub: any) {
+    setSelectedSubmission(sub);
+    const savedAi = sub.ai_score != null ? {
+      score: sub.ai_score ?? 0, feedback: sub.ai_feedback ?? '',
+      strengths: sub.ai_strengths ?? [], improvements: sub.ai_improvements ?? [], graded_via: 'pdf',
+    } as AiGradeResult : null;
+    setAiResult(savedAi);
+    if (sub.grade != null) {
+      setGrade(Number(sub.grade));
+      setFeedback(sub.feedback ?? '');
+    } else if (savedAi) {
+      setGrade(savedAi.score);
+      setFeedback(savedAi.feedback);
+    } else {
+      setGrade(0); setFeedback('');
+    }
+  }
+
   useEffect(() => {
-    loadSubmissions();
+    loadSubmissions('pending');
     api.getInstructorCourses()
       .then((d: any) => setCourses(Array.isArray(d) ? d : []))
       .catch(() => {});
@@ -761,12 +796,21 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
     if (!selectedSubmission) return;
     setIsSubmitting(true);
     try {
-      await api.gradeSubmission(selectedSubmission.id, grade, feedback);
-      toast.success('Grade published successfully!');
-      setSubmissions(prev => prev.filter(s => s.id !== selectedSubmission.id));
-      setQueueTotal(t => Math.max(0, t - 1));
-      setSelectedSubmission(null); setAiResult(null);
-    } catch { toast.error('Failed to publish grade.'); }
+      const saved: any = await api.gradeSubmission(selectedSubmission.id, grade, feedback);
+      if ((selectedSubmission as any).grade != null) {
+        // Re-grade: keep it in the Graded list with the new grade.
+        const updated = { ...selectedSubmission, grade, feedback, graded_at: saved?.graded_at ?? new Date().toISOString() } as any;
+        setSubmissions(prev => prev.map(s => (s.id === updated.id ? updated : s)));
+        setSelectedSubmission(updated);
+        toast.success('Grade updated. The student has been told.');
+      } else {
+        toast.success('Grade published successfully!');
+        setSubmissions(prev => prev.filter(s => s.id !== selectedSubmission.id));
+        setQueueTotal(t => Math.max(0, t - 1));
+        setPendingTotal(t => Math.max(0, t - 1));
+        setSelectedSubmission(null); setAiResult(null);
+      }
+    } catch { toast.error('Failed to save the grade.'); }
     finally { setIsSubmitting(false); }
   };
 
@@ -803,7 +847,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
       </AnimatePresence>
 
       <AnimatePresence>
-        {showCreateAssignment && <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={loadSubmissions} />}
+        {showCreateAssignment && <CreateAssignmentModal courses={courses} onClose={() => setShowCreateAssignment(false)} onCreated={() => loadSubmissions()} />}
         {showUploadNotes && (
           <UploadNotesModal
             courses={courses}
@@ -840,7 +884,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
-          { label: "Waiting to be graded", value: queueTotal, sub: "Submissions without a grade", icon: Clock, tone: "bg-indigo-100 text-indigo-600" },
+          { label: "Waiting to be graded", value: pendingTotal, sub: "Submissions without a grade", icon: Clock, tone: "bg-indigo-100 text-indigo-600" },
           { label: "Assignment average", value: studentsLoading && !students.length ? '…' : classAvg > 0 ? `${classAvg}%` : '—', sub: "Across your courses", icon: CheckCircle2, tone: "bg-emerald-100 text-emerald-600" },
           { label: "Below 55%", value: studentsLoading && !students.length ? '…' : new Set(students.filter(s => s.status === 'At Risk').map(s => s.student_id ?? s.name)).size, sub: "Students under 55% in at least one course", icon: AlertCircle, tone: "bg-red-100 text-red-600" },
         ].map((kpi, i) => (
@@ -872,28 +916,21 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
               <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Grading Queue</h3>
               <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{queueTotal}</span>
             </div>
+            <div role="tablist" aria-label="Submissions" className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-2xl">
+              {([['pending', 'To grade'], ['graded', 'Graded']] as const).map(([key, label]) => (
+                <button key={key} type="button" role="tab" aria-selected={queueStatus === key} onClick={() => switchQueue(key)}
+                  className={`py-2 rounded-xl text-sm font-semibold transition-colors ${
+                    queueStatus === key ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+                  {label}{key === 'pending' ? ` (${pendingTotal})` : ''}
+                </button>
+              ))}
+            </div>
             <div className="space-y-3">
               {submissions.map(sub => {
                 const fileCount = submissionFileCount[sub.id] ?? 0;
                 const hasSavedAi = !!(sub as any).ai_score;
                 return (
-                  <button key={sub.id} onClick={() => {
-                    setSelectedSubmission(sub);
-                    // Pre-populate grade/feedback from saved ai_score if exists
-                    if (hasSavedAi) {
-                      setGrade((sub as any).ai_score ?? 0);
-                      setFeedback((sub as any).ai_feedback ?? '');
-                      setAiResult({
-                        score:        (sub as any).ai_score ?? 0,
-                        feedback:     (sub as any).ai_feedback ?? '',
-                        strengths:    (sub as any).ai_strengths ?? [],
-                        improvements: (sub as any).ai_improvements ?? [],
-                        graded_via:   'pdf',
-                      });
-                    } else {
-                      setGrade(0); setFeedback(''); setAiResult(null);
-                    }
-                  }}
+                  <button key={sub.id} onClick={() => openSubmission(sub)}
                     className={`w-full text-left p-6 rounded-3xl border transition-all ${
                       selectedSubmission?.id === sub.id
                         ? "bg-white border-indigo-500 shadow-xl shadow-indigo-600/5 ring-1 ring-indigo-500"
@@ -921,7 +958,16 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                     </div>
                     <h4 className="font-bold text-slate-900 text-sm mb-1">{sub.student_name}</h4>
                     <p className="text-xs text-slate-500 mb-4">{sub.assignment_title}</p>
-                    <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Grade Now →</div>
+                    {(sub as any).grade != null ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                          {(sub as any).grade}/{(sub as any).max_points ?? 100}
+                        </span>
+                        <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Review →</span>
+                      </div>
+                    ) : (
+                      <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Grade Now →</div>
+                    )}
                   </button>
                 );
               })}
@@ -938,7 +984,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
               {submissions.length === 0 && (
                 <div className="p-8 text-center bg-white rounded-2xl border border-dashed border-slate-200">
                   <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
-                  <p className="text-sm text-slate-400">All caught up!</p>
+                  <p className="text-sm text-slate-400">{queueStatus === 'graded' ? 'Nothing graded yet.' : 'All caught up!'}</p>
                 </div>
               )}
             </div>
@@ -961,7 +1007,14 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                       <div>
                         <h3 className="text-2xl font-bold text-slate-900">{selectedSubmission.student_name}</h3>
                         <p className="text-sm text-slate-500">{selectedSubmission.assignment_title}</p>
-                        <div className="flex items-center gap-2 mt-2">
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          {(selectedSubmission as any).grade != null && (
+                            <span data-testid="graded-badge" className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Graded {(selectedSubmission as any).grade}/{maxPts}
+                              {(selectedSubmission as any).graded_at && <> on {new Date((selectedSubmission as any).graded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</>}
+                            </span>
+                          )}
                           {(submissionFileCount[selectedSubmission.id] ?? 0) > 0 && (
                             <span className="flex items-center gap-1 text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
                               <FileText className="w-3 h-3" />
@@ -1088,7 +1141,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                       <div className="md:col-span-1">
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Grade (0–{maxPts})</label>
                         <div className="relative">
-                          <input type="number" value={grade} onChange={(e) => setGrade(Number(e.target.value))}
+                          <input type="number" aria-label="Grade" value={grade} onChange={(e) => setGrade(Number(e.target.value))}
                             className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-2xl font-bold text-indigo-600 focus:ring-2 focus:ring-indigo-500 text-center"
                             min="0" max={maxPts} />
                           <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">/{maxPts}</span>
@@ -1096,7 +1149,7 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
                       </div>
                       <div className="md:col-span-3">
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Feedback</label>
-                        <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={4}
+                        <textarea aria-label="Feedback" value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={4}
                           className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 transition-all resize-none"
                           placeholder="Provide constructive feedback…" />
                       </div>
@@ -1104,10 +1157,12 @@ const InstructorDashboard: React.FC<InstructorDashboardProps> = ({ user }) => {
 
                     <div className="flex justify-end gap-4">
                       <button onClick={() => { setSelectedSubmission(null); setAiResult(null); }}
-                        className="px-8 py-3 text-sm font-bold text-slate-500 hover:text-slate-700">Skip for Now</button>
+                        className="px-8 py-3 text-sm font-bold text-slate-500 hover:text-slate-700">
+                        {(selectedSubmission as any).grade != null ? 'Close' : 'Skip for Now'}
+                      </button>
                       <button onClick={submitGrade} disabled={isSubmitting}
                         className="px-10 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50">
-                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Publish Grade <CheckCircle2 className="w-4 h-4" /></>}
+                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <>{(selectedSubmission as any).grade != null ? 'Update Grade' : 'Publish Grade'} <CheckCircle2 className="w-4 h-4" /></>}
                       </button>
                     </div>
                   </div>

@@ -885,6 +885,71 @@ async function paperTopicScores(browser) {
 
 
 /**
+ * A professor can reopen work they have graded: Graded lists it with the
+ * grade, opening it shows the saved grade and feedback, and changing it
+ * updates the grade, tells the student and keeps the old grade in the audit log.
+ */
+async function reviewGrades(browser) {
+  const prof = await signIn(browser, 'professor');
+  const stu = await signIn(browser, 'student');
+  const { rows: [mod] } = await db.query(`select id from modules where course_id = 2 order by id limit 1`);
+  const asg = await jsonAs(prof.page, 'POST', `/api/modules/${mod.id}/assignments`,
+    { title: 'E2E Regrade assignment', description: 'x', due_date: '2099-03-01', max_points: 10, status: 'active' });
+  const sub = await jsonAs(stu.page, 'POST', '/api/submissions', { assignment_id: asg.body?.id, content: 'Regrade answer' });
+  await stu.context.close();
+  const subId = sub.body?.id;
+
+  try {
+    await prof.page.goto(`${APP}/`);
+    const card = prof.page.getByRole('button').filter({ hasText: 'E2E Regrade assignment' }).first();
+    await card.click({ timeout: 8000 });
+    await prof.page.getByLabel('Grade', { exact: true }).fill('7');
+    await prof.page.getByLabel('Feedback', { exact: true }).fill('Good start');
+    await prof.page.getByRole('button', { name: /Publish Grade/ }).click();
+    await card.waitFor({ state: 'detached', timeout: 8000 });
+    pass('regrade', 'publishing a grade takes it off “To grade”');
+
+    await prof.page.getByRole('tab', { name: 'Graded' }).click();
+    const graded = prof.page.getByRole('button').filter({ hasText: 'E2E Regrade assignment' }).first();
+    await graded.getByText('7/10').waitFor({ timeout: 8000 });
+    await graded.click();
+    await prof.page.getByTestId('graded-badge').filter({ hasText: 'Graded 7/10' }).waitFor({ timeout: 5000 });
+    const shown = await prof.page.getByLabel('Grade', { exact: true }).inputValue();
+    const fb = await prof.page.getByLabel('Feedback', { exact: true }).inputValue();
+    if (shown === '7' && fb === 'Good start') pass('regrade', 'Graded lists it with 7/10 and opening it shows the saved grade and feedback');
+    else fail('regrade', `opened graded submission shows grade ${shown}, feedback “${fb}”`);
+
+    await prof.page.getByLabel('Grade', { exact: true }).fill('9');
+    await prof.page.getByRole('button', { name: /Update Grade/ }).click();
+    await graded.getByText('9/10').waitFor({ timeout: 8000 });
+    pass('regrade', '“Update Grade” changes it in place to 9/10');
+  } catch (e) { fail('regrade', `page: ${e.message.split('\n')[0]}`); }
+
+  const { rows: [row] } = await db.query(`select grade, feedback from submissions where id = $1`, [subId]);
+  const { rows: notes } = await db.query(
+    `select message from notifications where user_id = 2 and type = 'grade_posted' and metadata->>'submission_id' = $1 order by id`, [String(subId)]);
+  let audit = null;
+  for (let i = 0; i < 20 && !audit; i++) {
+    ({ rows: [audit] } = await db.query(
+      `select metadata from audit_logs where action = 'submission.regrade' and resource_id = $1`, [String(subId)]));
+    if (!audit) await new Promise(r => setTimeout(r, 250));
+  }
+  if (row?.grade === 9 && row.feedback === 'Good start') pass('regrade', 'the new grade is saved with the feedback');
+  else fail('regrade', `saved ${JSON.stringify(row)}`);
+  if (notes.length === 2 && notes[1].message === 'Your grade was updated: 9 (was 7)') pass('regrade', `student told: “${notes[1].message}”`);
+  else fail('regrade', `student notifications ${JSON.stringify(notes)}`);
+  if (audit?.metadata?.previous_grade === 7 && audit.metadata.grade === 9) pass('regrade', 'the audit log keeps the old grade (7 → 9)');
+  else fail('regrade', `audit ${JSON.stringify(audit)}`);
+
+  // Saving it again unchanged tells nobody.
+  await jsonAs(prof.page, 'POST', `/api/submissions/${subId}/grade`, { grade: 9, feedback: 'Good start' });
+  const { rows: [{ n }] } = await db.query(
+    `select count(*)::int as n from notifications where user_id = 2 and type = 'grade_posted' and metadata->>'submission_id' = $1`, [String(subId)]);
+  if (n === 2) pass('regrade', 'saving the same grade again sends no notification'); else fail('regrade', `${n} notifications after an unchanged save`);
+  await prof.context.close();
+}
+
+/**
  * Admin performance: departments, professors' subjects and students, from the
  * same published results the other pages use. Figures are checked against the
  * database; professors and students are refused.
@@ -959,7 +1024,7 @@ async function adminPerformance(browser) {
   }
 }
 
-export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, adminPerformance, noDeadEnds };
+export const FLOWS = { publicSite, adminStats, notesModules, allPages, courses, bell, questionWiseMarks, paperTopicScores, patternEditsAndImport, timetableFlow, noticeBoard, classEnrolment, adminPerformance, reviewGrades, noDeadEnds };
 
 async function main() {
   const browser = await chromium.launch();
